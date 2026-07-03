@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import flet as ft
 
+from app.image_proxy import _handle_thumb, start_cache_server
 from app.views.home import create_view as home_view
 from app.views.subscriptions import create_view as subscriptions_view
 from app.views.popular import create_view as popular_view
@@ -90,26 +91,35 @@ def main(page: ft.Page):
     render(0)
 
 
-if __name__ == "__main__":
-    web_mode = "--web" in sys.argv or "--server" in sys.argv
-    if web_mode:
-        import uvicorn
-        import flet_web.fastapi as flet_fastapi
+# Flet build 的入口要求顶层即调用 ft.run，不能包在 if __name__ == "__main__": 内。
+# 通过 sys.argv 的 --web 判断走 web 模式还是桌面模式。
+web_mode = "--web" in sys.argv or "--server" in sys.argv
+if web_mode:
+    import uvicorn
+    import flet_web.fastapi as flet_fastapi
+    from fastapi import Response
 
-        os.environ["FLETVIEWER_WEB"] = "1"
+    os.environ["FLETVIEWER_WEB"] = "1"
 
-        app = flet_fastapi.FastAPI()
-        app.mount(
-            "/",
-            flet_fastapi.app(
-                main,
-                upload_dir=None,
-                assets_dir=str(Path(__file__).resolve().parent / "assets"),
-                web_renderer=ft.WebRenderer.AUTO,
-                route_url_strategy=ft.RouteUrlStrategy.PATH,
-                no_cdn=False,
-            ),
-        )
-        uvicorn.run(app, host="0.0.0.0", port=8765)
-    else:
-        ft.run(main)
+    app = flet_fastapi.FastAPI()
+
+    @app.get("/thumb")
+    async def thumb(url: str):
+        data, ct = _handle_thumb(url)
+        return Response(content=data, media_type=ct)
+
+    app.mount(
+        "/",
+        flet_fastapi.app(
+            main,
+            upload_dir=None,
+            assets_dir=str(Path(__file__).resolve().parent / "assets"),
+            web_renderer=ft.WebRenderer.AUTO,
+            route_url_strategy=ft.RouteUrlStrategy.PATH,
+            no_cdn=False,
+        ),
+    )
+    uvicorn.run(app, host="0.0.0.0", port=8765)
+else:
+    start_cache_server()
+    ft.run(main)

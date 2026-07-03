@@ -2,6 +2,7 @@ import threading
 
 import flet as ft
 
+from app.image_proxy import public_src
 from app.storage import load_eh_config
 from lib.provider.ehgrabber import EHentaiClient, SearchResult, Comic
 
@@ -9,8 +10,14 @@ from lib.provider.ehgrabber import EHentaiClient, SearchResult, Comic
 def _make_card(comic: Comic) -> ft.Control:
     return ft.Card(
         content=ft.Container(
-            content=ft.Column(
+            content=ft.Stack(
                 controls=[
+                    ft.Image(
+                        src=public_src(comic.cover) if comic.cover else None,
+                        fit=ft.BoxFit.COVER,
+                        width=float("inf"),
+                        height=180,
+                    ),
                     ft.Container(
                         content=ft.Column(
                             controls=[
@@ -20,12 +27,13 @@ def _make_card(comic: Comic) -> ft.Control:
                                     overflow=ft.TextOverflow.ELLIPSIS,
                                     size=13,
                                     weight=ft.FontWeight.W_500,
+                                    color=ft.Colors.WHITE,
                                 ),
                                 ft.Row(
                                     controls=[
-                                        ft.Text(comic.type, size=11, color=ft.Colors.SECONDARY),
-                                        ft.Text(f"{comic.max_page}P", size=11, color=ft.Colors.ON_SURFACE_VARIANT),
-                                        ft.Text(f"★{comic.stars}", size=11, color=ft.Colors.TERTIARY),
+                                        ft.Text(comic.type, size=11, color=ft.Colors.WHITE),
+                                        ft.Text(f"{comic.max_page}P", size=11, color=ft.Colors.WHITE),
+                                        ft.Text(f"★{comic.stars}", size=11, color=ft.Colors.WHITE),
                                     ],
                                     spacing=8,
                                 ),
@@ -33,12 +41,17 @@ def _make_card(comic: Comic) -> ft.Control:
                             spacing=4,
                         ),
                         padding=8,
+                        bgcolor=ft.Colors.with_opacity(0.55, ft.Colors.BLACK),
+                        bottom=0, left=0, right=0,
+                        expand=True,
+                        alignment=ft.Alignment(-1, 1),
                     ),
                 ],
-                spacing=0,
+                expand=True,
             ),
             border_radius=8,
             clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            height=220,
         ),
     )
 

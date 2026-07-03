@@ -1,0 +1,34 @@
+[project]
+name = "fletviewer"
+version = "0.1.0"
+description = "Anime Provider viewer (EHentai/Booru/Pixiv) built with Flet"
+requires-python = ">=3.9"
+dependencies = [
+    "flet==0.85.3",
+    "requests",
+    "beautifulsoup4",
+    "lxml",
+    "fastapi",
+    "uvicorn",
+]
+
+[tool.flet.app]
+path = "."
+module = "main"
+exclude = [
+    "tests",
+    "FletViewer",
+    "build",
+    ".git",
+    "lib/provider/eh_grabber.js",
+    "storage_demo.py",
+]
+
+[tool.flet]
+product = "FletViewer"
+
+[tool.flet.android]
+org = "io.fletviewer"
+
+[tool.flet.android.permission]
+"android.permission.INTERNET" = true

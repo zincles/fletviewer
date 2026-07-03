@@ -114,3 +114,51 @@ Flet 会将 Flutter Web 编译产物（WASM）缓存在 `~/.flet`（即 `C:\User
 Remove-Item -LiteralPath "$env:USERPROFILE\.flet" -Recurse -Force
 ```
 
+**注意**：不要在工具调用中尝试以 Web 模式启动 Flet（`python app/main.py --web`），会导致进程阻塞、工具卡死。Web 模式的启动和测试由用户手动进行。
+
+
+### Android 构建环境（未就绪，注意事项）：
+
+Flet 0.85.3 配套 Flutter 3.41.7。**不要用 scoop/winget 装 Flutter**：
+- scoop 只装最新版（3.44.4），版本不匹配 Flet 0.85.3
+- winget 源里根本没有 Flutter SDK 包
+
+**Puro 不可靠**：虽然 `winget install pingbird.Puro` 能装一个 Flutter 版本管理器，但它不像 conda/venv 那样自动激活 shell 环境 —— 它的命令必须始终追加 `puro` 前缀（例如 `puro flutter ...`、`puro dart ...`），Flet CLI 调用的 `flutter` 子进程会拿不到正确版本。**不要用 Puro**。
+
+**当前推荐方案**：让 Flet CLI 自动下载配套 Flutter。`flet build apk` 第一次运行时会问 "Flutter SDK is required... Proceed?"，回答 y 后 Flet 会把 3.41.7 装到 `C:\Users\<用户名>\flutter\3.41.7\`，自动版本配对。前提是 PATH 上没有其他 Flutter 干扰（若 scoop 装过 `flutter`，先 `scoop uninstall flutter`）。
+
+**Android SDK 必须手动装**：Flet CLI 那个 "Android SDK is required... Proceed? y" 提示在 Windows 上不可靠，按了 y 也不真装。需要手动安装：
+
+```
+# 选项 A：Android Studio（最省心，3GB，自带 GUI manager）
+# 下载：https://developer.android.com/studio
+# 装完 SDK 在 %LOCALAPPDATA%\Android\Sdk
+
+# 选项 B：命令行工具（更轻，1GB）
+# 下载 cmdline-tools：https://developer.android.com/studio#command-line-tools-only
+# 解压到 %USERPROFILE%\Android\sdk\cmdline-tools\latest\（必须放 latest 子目录）
+sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+flutter doctor --android-licenses   # 关键：必须接受所有许可，全 y
+```
+
+Flutter 3.41.7 要求 Android SDK 36 + BuildTools（最低 28.0.3，推荐装 36.0.0）。
+
+**Windows 开发者模式必须开启**：`flet build apk` 在 Windows 上要求符号链接权限，否则会卡在 "Building with plugins requires symlink support"。开启方式：
+```
+start ms-settings:developers
+```
+打开"开发人员模式"开关。
+
+**ANDROID_HOME 环境变量**：必须指向真实 SDK 路径。若用 Android Studio 默认装到 `%LOCALAPPDATA%\Android\Sdk` 但 ANDROID_HOME 指向 `%USERPROFILE%\Android\sdk`，需要纠正：
+```
+[System.Environment]::SetEnvironmentVariable("ANDROID_HOME", "$env:LOCALAPPDATA\Android\Sdk", "User")
+[System.Environment]::SetEnvironmentVariable("ANDROID_SDK_ROOT", "$env:LOCALAPPDATA\Android\Sdk", "User")
+```
+重开 PowerShell 后生效。
+
+**Flet 自动下载的 Flutter 路径**：若曾经让 Flet 自动装过 Flutter，它会放在 `C:\Users\<用户名>\flutter\<version>\`。这个目录由 Flet 管理，不要手动改。要清理时直接删 `C:\Users\<用户名>\flutter\` 整个目录，Flet 下次会重新下载。
+
+**APK 产物**：`flet build apk` 成功后产物在 `<项目根>\build\apk\app-release.apk`。默认用 debug key 签名，能本地安装测试但不能上架 Play Store。要上架需在 `pyproject.toml` 配 `[tool.flet.android.signing]` 的 keystore。
+
+**入口点要求**：Flet 的 `flet build` 在 app path 根目录找 `main.py`，`[tool.flet.app].module` 字段只接受文件名（stem），不接受子路径。我们的入口在 `app/main.py`，所以根目录有一个 thin shim `main.py` 用 `runpy.run_path` 转发到 `app/main.py`。改入口逻辑时改 `app/main.py`，根 `main.py` shim 不动。
+
