@@ -23,6 +23,8 @@ Mihon(原Tachiyomi)
 Emby
 
 
+免责声明：用户及使用者均已成年，且目标网站已过滤了不符合普世价值的内容，且目标网站并不含有版权相关资源。
+
 ---
 
 计划实现的内容：
@@ -61,7 +63,41 @@ EHViewer下载画廊有三种方式：
 
 我们将默认用户拥有账户，且内部有代币。获得代币的方法很简单：托管一台运行着HatH的VPS即可获得稳定的代币来源，可以说是过量的。
 
+
+#### 分析任务：
+
+我们将通过分析 Venera 和 EHviewer 的源代码，将图像下载、获取画廊、搜索 等方法，抽象为Python函数。
+
+我们将分析EH的Kotlin工程、以及Venera中负责grab的部分。参考eh_grabber.js。
+
+
+
 ## 文件存储：其他：
 
 TODO...
+
+
+---
+
+## 开发环境备注：
+
+### Shell：
+
+本机通过 scoop 安装了 MSYS2/MinGW64 包，提供了基于 MinGW 编译的 GNU coreutils + bash/sh（`uname` 显示 `MINGW64_NT`），运行在 Windows 原生，不依赖 WSL。
+
+但 Windows 默认将 `bash` 命令 wrapped 到 WSL2，而本机 WSL 不可用（RAM不足等原因），因此**不要直接使用 `bash`**。
+
+若需要类 Unix shell 环境（解决 PowerShell 引号转义、编码等问题），请使用 `sh`（未被 WSL 拦截，会正确调用 MSYS2 的 shell）：
+
+```
+sh -c "your command here"
+```
+
+并设置 UTF-8 编码以正确显示中文/日文：
+
+```
+sh -c "export PYTHONIOENCODING=utf-8 LANG=zh_CN.UTF-8; python script.py"
+```
+
+PowerShell 5.1 的默认编码为 GBK，会导致非 ASCII 字符乱码。通过 `sh -c` 配合环境变量可以规避此问题。
 

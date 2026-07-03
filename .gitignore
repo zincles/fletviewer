@@ -1,0 +1,15 @@
+# Secrets / credentials
+eh_config.json
+*.secret
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+Thumbs.db
