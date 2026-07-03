@@ -101,3 +101,16 @@ sh -c "export PYTHONIOENCODING=utf-8 LANG=zh_CN.UTF-8; python script.py"
 
 PowerShell 5.1 的默认编码为 GBK，会导致非 ASCII 字符乱码。通过 `sh -c` 配合环境变量可以规避此问题。
 
+
+### Flet Web 缓存：
+
+Flet 会将 Flutter Web 编译产物（WASM）缓存在 `~/.flet`（即 `C:\Users\<用户名>\.flet`）。
+
+**问题**：修改了 Python 代码后，如果 Web 端行为异常（例如删除了 `ft.Image` 但浏览器仍在请求旧图片 URL），可能是 Flet 本地缓存未更新，与浏览器缓存无关。
+
+**解决**：删除 `~/.flet` 目录后重启应用，Flet 会重新生成最新版本的编译产物。
+
+```
+Remove-Item -LiteralPath "$env:USERPROFILE\.flet" -Recurse -Force
+```
+

@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -27,6 +28,8 @@ PAGES = [
 
 def main(page: ft.Page):
     page.title = "FletViewer"
+    if page.web:
+        os.environ["FLETVIEWER_WEB"] = "1"
 
     content = ft.Container(expand=True, padding=40)
 
@@ -88,4 +91,25 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.run(main)
+    web_mode = "--web" in sys.argv or "--server" in sys.argv
+    if web_mode:
+        import uvicorn
+        import flet_web.fastapi as flet_fastapi
+
+        os.environ["FLETVIEWER_WEB"] = "1"
+
+        app = flet_fastapi.FastAPI()
+        app.mount(
+            "/",
+            flet_fastapi.app(
+                main,
+                upload_dir=None,
+                assets_dir=str(Path(__file__).resolve().parent / "assets"),
+                web_renderer=ft.WebRenderer.AUTO,
+                route_url_strategy=ft.RouteUrlStrategy.PATH,
+                no_cdn=False,
+            ),
+        )
+        uvicorn.run(app, host="0.0.0.0", port=8765)
+    else:
+        ft.run(main)

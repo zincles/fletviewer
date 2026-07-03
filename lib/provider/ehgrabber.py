@@ -111,6 +111,7 @@ class SearchResult:
     """搜索结果"""
     comics: list[Comic] = field(default_factory=list)
     next_url: Optional[str] = None
+    prev_url: Optional[str] = None
 
 
 @dataclass
@@ -598,7 +599,12 @@ class EHentaiClient:
         if next_url and not next_url.startswith("http"):
             next_url = self.base_url + next_url
 
-        return SearchResult(comics=galleries, next_url=next_url)
+        prev_btn = soup.select_one("a#dprev")
+        prev_url = prev_btn.get("href") if prev_btn else None
+        if prev_url and not prev_url.startswith("http"):
+            prev_url = self.base_url + prev_url
+
+        return SearchResult(comics=galleries, next_url=next_url, prev_url=prev_url)
 
     # -----------------------------------------------------------------------
     # 画廊详细信息 + 标签
