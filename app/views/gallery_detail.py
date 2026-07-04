@@ -9,8 +9,9 @@ from app.controls.async_image import async_image
 from app.debug_log import Timer, log_debug, log_exception
 from app.download_manager import download_manager, now_iso
 from app.gallery_cache import get_eh_gallery_cache, put_eh_gallery_cache
+from app.storage import should_render_gallery_cards
 from app.ui_update import request_update
-from lib.provider.ehgrabber import Comic, ThumbnailItem
+from lib.provider.ehgrabber import Comic, Comment, ThumbnailItem
 from app.views.image_viewer import ImageViewerItem
 
 
@@ -42,8 +43,33 @@ def _make_tag_controls(tags: dict[str, list[str]]) -> list[ft.Control]:
     return controls
 
 
+def _make_comment_card(comment: Comment) -> ft.Control:
+    meta = ft.Row(
+        [
+            ft.Text(comment.user_name or "Unknown", size=13, weight=ft.FontWeight.BOLD),
+            ft.Text(comment.time or "", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text(f"score: {comment.score}", size=12, color=ft.Colors.ON_SURFACE_VARIANT) if comment.score is not None else ft.Container(),
+        ],
+        spacing=10,
+        wrap=True,
+    )
+    return ft.Container(
+        content=ft.Column(
+            [
+                meta,
+                ft.Text(comment.content or "", size=13, selectable=True),
+            ],
+            spacing=6,
+        ),
+        border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+        border_radius=8,
+        padding=10,
+    )
+
+
 def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
     state = {"details": None, "thumbs": None}
+    show_raw_json = not should_render_gallery_cards()
     title = ft.Text(comic.title or "加载中...", size=28, weight=ft.FontWeight.BOLD, selectable=True)
     subtitle = ft.Text(comic.id, size=13, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True)
     status = ft.Text("加载中...", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
@@ -81,6 +107,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         child_aspect_ratio=0.72,
     )
     raw_json = ft.Text("{}", size=12, selectable=True)
+    comments_column = ft.Column(spacing=8)
     load_more_thumbs_button = ft.Button("加载更多缩略图", visible=False)
     thumb_state = {"items": [], "loaded": 0, "make_thumb": None}
     resolved_image_urls: dict[int, str] = {}
@@ -117,7 +144,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         dialog = ft.AlertDialog(title=ft.Text("选择 Archive 下载"))
 
         def choose_archive(archive):
-            page.close(dialog)
+            page.pop_dialog()
             download_status.value = f"正在获取 {archive.title} 下载链接..."
             page.update()
             page.run_thread(lambda: create_archive_task(archive))
@@ -135,8 +162,9 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             width=520,
             tight=True,
         )
-        dialog.actions = [ft.Button("取消", on_click=lambda e: page.close(dialog))]
-        page.open(dialog)
+        dialog.actions = [ft.Button("取消", on_click=lambda e: page.pop_dialog())]
+        dialog.open = True
+        page.show_dialog(dialog)
 
     def create_archive_task(archive):
         try:
@@ -227,6 +255,10 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
                 cover_box.content = async_image(page, details.cover, width=260, height=360, fit=ft.BoxFit.COVER, cache_width=520)
 
             tags_wrap.controls = _make_tag_controls(details.tags)
+            comments_column.controls = [
+                _make_comment_card(comment)
+                for comment in details.comments
+            ] or [ft.Text("暂无评论", size=14, color=ft.Colors.ON_SURFACE_VARIANT)]
             thumb_items = thumbs.items or [
                 ThumbnailItem(url=thumb, page_url=page_url)
                 for page_url, thumb in zip(thumbs.urls, thumbs.thumbnails)
@@ -305,8 +337,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
 
     page.run_thread(worker)
 
-    return ft.Column(
-        controls=[
+    controls = [
             ft.Row(
                 [
                     ft.Button("返回", icon=ft.Icons.ARROW_BACK, on_click=lambda e: on_back()),
@@ -320,18 +351,29 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             ft.Row([cover_box, meta], spacing=24, vertical_alignment=ft.CrossAxisAlignment.START),
             ft.Text("标签", size=18, weight=ft.FontWeight.BOLD),
             tags_wrap,
+            ft.Text("评论", size=18, weight=ft.FontWeight.BOLD),
+            comments_column,
             ft.Text("缩略图", size=18, weight=ft.FontWeight.BOLD),
             thumbs_grid,
             load_more_thumbs_button,
-            ft.Text("原始详情 JSON", size=18, weight=ft.FontWeight.BOLD),
-            ft.Container(
-                content=ft.Column([raw_json], scroll=ft.ScrollMode.AUTO),
-                height=420,
-                border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-                border_radius=8,
-                padding=16,
-            ),
-        ],
+    ]
+
+    if show_raw_json:
+        controls.extend(
+            [
+                ft.Text("原始详情 JSON", size=18, weight=ft.FontWeight.BOLD),
+                ft.Container(
+                    content=ft.Column([raw_json], scroll=ft.ScrollMode.AUTO),
+                    height=420,
+                    border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                    border_radius=8,
+                    padding=16,
+                ),
+            ]
+        )
+
+    return ft.Column(
+        controls=controls,
         spacing=12,
         scroll=ft.ScrollMode.AUTO,
         expand=True,

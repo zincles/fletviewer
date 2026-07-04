@@ -135,6 +135,13 @@ alignment=ft.Alignment(0, 0)
 
 图片不要直接把 bytes 塞给 `ft.Image(src=...)`。桌面端 bytes 可显示，但 Flet Web/Flutter Web 下可能出现图片已加载但透明不显示。统一使用 `app.controls.async_image.image_src_for_page(page, data, mime)`，当前所有端都返回 `data:<mime>;base64,...`，让桌面和 Web 走同一条显示路径。raw bytes 路径开销更低，代码里保留注释，后续如果确实需要优化桌面内存/CPU 再恢复。
 
+Web 模式下浏览器不能直接读取服务器本地文件路径，因此不要对本地文件使用 `ft.Image(src=str(path))`。桌面端可能可用，但 Web 端会无法显示。需要展示本地图片文件时，读取 bytes 后统一走：
+
+```
+from app.controls.async_image import image_src_for_page
+ft.Image(src=image_src_for_page(page, path.read_bytes(), mime), ...)
+```
+
 当前 Flet 版本中 `ft.Tab` 不接受 `text=` 或 `tab_content=` 参数；分别会报 `Tab.__init__() got an unexpected keyword argument 'text'` / `tab_content`。实际签名是 `ft.Tab(label=..., icon=...)`，内容应通过 `ft.TabBarView` 提供。选项卡结构使用：
 
 ```
@@ -145,6 +152,14 @@ ft.Tabs(
     ]),
     length=1,
 )
+```
+
+当前 Flet 版本中 `Page` 不提供 `page.open(dialog)` / `page.close(dialog)`；会报 `AttributeError: 'Page' object has no attribute 'open'`。Dialog 使用：
+
+```
+dialog.open = True
+page.show_dialog(dialog)
+page.pop_dialog()
 ```
 
 

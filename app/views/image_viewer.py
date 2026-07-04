@@ -205,8 +205,9 @@ def create_view(
             title=ft.Text("图片详情"),
             content=ft.Container(content=detail_text, width=700, height=360),
         )
-        dialog.actions = [ft.Button("关闭", on_click=lambda ev: page.close(dialog))]
-        page.open(dialog)
+        dialog.actions = [ft.Button("关闭", on_click=lambda ev: page.pop_dialog())]
+        dialog.open = True
+        page.show_dialog(dialog)
 
     def vertical_frame(idx: int, content: ft.Control) -> ft.Control:
         return ft.Container(

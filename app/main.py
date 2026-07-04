@@ -23,6 +23,7 @@ from app.views.subscriptions import create_view as subscriptions_view
 from app.views.popular import create_view as popular_view
 from app.views.leaderboard import create_view as leaderboard_view
 from app.views.favorites import create_view as favorites_view
+from app.views.local_galleries import create_view as local_galleries_view
 from app.views.gallery_detail import create_view as gallery_detail_view
 from app.views.image_viewer import create_view as image_viewer_view
 from app.views.search import create_view as search_view
@@ -34,6 +35,7 @@ PAGES = [
     ("热门", ft.Icons.LOCAL_FIRE_DEPARTMENT, popular_view),
     ("排行榜", ft.Icons.LEADERBOARD, leaderboard_view),
     ("收藏", ft.Icons.BOOKMARK, favorites_view),
+    ("本地画廊", ft.Icons.FOLDER, local_galleries_view),
     ("历史", ft.Icons.HISTORY, None),
     ("下载", ft.Icons.DOWNLOAD, downloads_view),
     ("设置", ft.Icons.SETTINGS, settings_view),
