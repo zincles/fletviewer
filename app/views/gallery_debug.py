@@ -1,6 +1,5 @@
 import dataclasses
 import json
-import threading
 from typing import Callable
 
 import flet as ft
@@ -8,6 +7,7 @@ import flet as ft
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.storage import load_eh_config
+from app.ui_update import request_update
 from lib.provider.ehgrabber import EHentaiClient, SearchResult
 
 
@@ -69,9 +69,9 @@ def create_gallery_debug_view(
                     log_exception("gallery_debug", f"{title} worker failed: {ex}")
                 finally:
                     refresh_btn.disabled = False
-                    page.update()
+                    request_update(page)
 
-            threading.Thread(target=worker, daemon=True).start()
+            page.run_thread(worker)
 
         def on_prev(e):
             if state["prev_url"]:

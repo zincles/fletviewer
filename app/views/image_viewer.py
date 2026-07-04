@@ -11,6 +11,7 @@ from app.controls.async_image import image_placeholder, image_src_for_page
 from app.debug_log import Timer, log_debug, log_exception
 from app.image_fetcher import image_fetcher
 from app.storage import ROOT_DIR, get_image_viewer_mode, should_load_images
+from app.ui_update import request_update
 
 
 @dataclass(slots=True)
@@ -136,7 +137,7 @@ def create_view(
             return
 
         status.value = f"加载中... {pos}"
-        image_box.content = image_placeholder()
+        image_box.content = image_placeholder(loading=True)
         state["current_url"] = ""
         state["current_path"] = None
         update_nav()
@@ -162,9 +163,9 @@ def create_view(
                 status.value = f"错误: {ex}"
                 log_exception("viewer", f"image load failed index={state['index']}: {ex}")
             finally:
-                page.update()
+                request_update(page)
 
-        threading.Thread(target=worker, daemon=True).start()
+        page.run_thread(worker)
 
     def move(delta: int):
         next_index = state["index"] + delta
@@ -217,7 +218,7 @@ def create_view(
     def vertical_placeholder(idx: int) -> ft.Control:
         return ft.Column(
             controls=[
-                vertical_frame(idx, image_placeholder(width=float("inf"), height=estimated_heights[idx])),
+                vertical_frame(idx, image_placeholder(width=float("inf"), height=estimated_heights[idx], loading=True)),
                 ft.Text(f"#{idx + 1}", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
             ],
             spacing=4,
@@ -313,9 +314,9 @@ def create_view(
                 log_exception("viewer", f"vertical image load failed index={idx}: {ex}")
             finally:
                 vertical_loading.discard(idx)
-                page.update()
+                request_update(page)
 
-        threading.Thread(target=worker, daemon=True).start()
+        page.run_thread(worker)
 
     def update_vertical_window(pixels: float, viewport: float):
         set_current_from_scroll(pixels)
@@ -395,7 +396,7 @@ def create_view(
             except Exception as ex:
                 log_exception("viewer", f"vertical scroll_to failed index={target}: {ex}")
 
-        threading.Thread(target=scroll_worker, daemon=True).start()
+        page.run_thread(scroll_worker)
 
     def toggle_mode(e):
         if state["mode"] == "paged":

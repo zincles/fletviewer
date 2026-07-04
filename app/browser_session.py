@@ -79,12 +79,19 @@ class BrowserSessionService:
             self.configure_from_storage()
         return EHentaiClient(domain=domain, session=self.session)
 
+    def get_session(self) -> requests.Session:
+        self.configure_from_storage()
+        return self.session
+
     def get(self, url: str, **kwargs) -> requests.Response:
         self.configure_from_storage()
         with self._lock:
             with Timer("browser", f"GET {url}"):
                 resp = self.session.get(url, **kwargs)
-            log_debug("browser", f"GET status={resp.status_code} bytes={len(resp.content)} final_url={resp.url}")
+            if kwargs.get("stream"):
+                log_debug("browser", f"GET status={resp.status_code} stream final_url={resp.url}")
+            else:
+                log_debug("browser", f"GET status={resp.status_code} bytes={len(resp.content)} final_url={resp.url}")
             return resp
 
     def post(self, url: str, **kwargs) -> requests.Response:

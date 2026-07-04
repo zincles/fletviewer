@@ -4,9 +4,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+if sys.platform.startswith("linux") and "--web" not in sys.argv and "--server" not in sys.argv:
+    from app.storage import should_prefer_linux_wayland_window_backend
+
+    backend = "wayland" if should_prefer_linux_wayland_window_backend() else "x11"
+    os.environ.setdefault("GDK_BACKEND", backend)
+    os.environ.setdefault("GTK_CSD", "0")
+
 import flet as ft
 
 from app.debug_log import log_debug
+from app.local_gallery_manager import local_gallery_manager
+from app.storage import should_use_linux_builtin_title_bar
+from app.views.downloads import create_view as downloads_view
 from app.views.home import create_view as home_view
 from app.views.subscriptions import create_view as subscriptions_view
 from app.views.popular import create_view as popular_view
@@ -24,15 +34,79 @@ PAGES = [
     ("排行榜", ft.Icons.LEADERBOARD, leaderboard_view),
     ("收藏", ft.Icons.BOOKMARK, favorites_view),
     ("历史", ft.Icons.HISTORY, None),
-    ("下载", ft.Icons.DOWNLOAD, None),
+    ("下载", ft.Icons.DOWNLOAD, downloads_view),
     ("设置", ft.Icons.SETTINGS, settings_view),
 ]
+
+
+def _is_linux_desktop(page: ft.Page) -> bool:
+    return sys.platform.startswith("linux") and not page.web
+
+
+def _use_builtin_title_bar(page: ft.Page) -> bool:
+    return _is_linux_desktop(page) and should_use_linux_builtin_title_bar()
+
+
+def _enable_builtin_title_bar(page: ft.Page) -> bool:
+    window = page.window
+    if hasattr(window, "title_bar_hidden"):
+        window.title_bar_hidden = True
+        if hasattr(window, "title_bar_buttons_hidden"):
+            window.title_bar_buttons_hidden = True
+        return True
+    log_debug("nav", "linux builtin title bar requested but title_bar_hidden is unavailable")
+    return False
+
+
+def _create_title_bar(page: ft.Page) -> ft.Control:
+    def minimize(e):
+        page.window.minimized = True
+        page.update()
+
+    def toggle_maximize(e):
+        page.window.maximized = not page.window.maximized
+        page.update()
+
+    def close(e):
+        page.window.close()
+
+    return ft.Container(
+        height=38,
+        bgcolor=ft.Colors.SURFACE,
+        border=ft.border.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
+        content=ft.Row(
+            [
+                ft.WindowDragArea(
+                    content=ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Icon(ft.Icons.IMAGE_SEARCH, size=18),
+                                ft.Text("FletViewer", size=13, weight=ft.FontWeight.W_500),
+                            ],
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        padding=ft.Padding(12, 0, 0, 0),
+                        alignment=ft.Alignment(-1, 0),
+                    ),
+                    expand=True,
+                ),
+                ft.IconButton(ft.Icons.REMOVE, tooltip="最小化", on_click=minimize),
+                ft.IconButton(ft.Icons.CROP_SQUARE, tooltip="最大化/还原", on_click=toggle_maximize),
+                ft.IconButton(ft.Icons.CLOSE, tooltip="关闭", on_click=close),
+            ],
+            spacing=0,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
 
 
 def main(page: ft.Page):
     page.title = "FletViewer"
     if page.web:
         os.environ["FLETVIEWER_WEB"] = "1"
+    local_gallery_manager.initialize()
+    use_builtin_title_bar = _use_builtin_title_bar(page) and _enable_builtin_title_bar(page)
 
     content = ft.Container(expand=True, padding=40)
     view_cache: dict[str, ft.Control] = {}
@@ -91,6 +165,7 @@ def main(page: ft.Page):
         page.update()
 
     def render(idx):
+        rail.selected_index = idx
         view_fn = PAGES[idx][2]
         cache_key = f"page:{idx}"
         if view_fn is None:
@@ -140,16 +215,28 @@ def main(page: ft.Page):
         on_change=on_nav_change,
     )
 
-    page.add(
-        ft.Row(
-            [
-                rail,
-                ft.VerticalDivider(width=1),
-                content,
-            ],
-            expand=True,
-        ),
+    body = ft.Row(
+        [
+            rail,
+            ft.VerticalDivider(width=1),
+            content,
+        ],
+        expand=True,
     )
+
+    if use_builtin_title_bar:
+        page.add(
+            ft.Column(
+            [
+                    _create_title_bar(page),
+                    body,
+            ],
+                spacing=0,
+            expand=True,
+            )
+        )
+    else:
+        page.add(body)
 
     render(0)
 

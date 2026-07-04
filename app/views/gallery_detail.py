@@ -1,14 +1,19 @@
 import dataclasses
 import json
-import threading
+from urllib.parse import urlsplit
 
 import flet as ft
 
 from app.browser_session import browser_session
 from app.controls.async_image import async_image
 from app.debug_log import Timer, log_debug, log_exception
+from app.download_manager import download_manager, now_iso
+from app.ui_update import request_update
 from lib.provider.ehgrabber import Comic, ThumbnailItem
 from app.views.image_viewer import ImageViewerItem
+
+
+THUMBNAIL_BATCH_SIZE = 12
 
 
 def _to_jsonable(value):
@@ -37,9 +42,11 @@ def _make_tag_controls(tags: dict[str, list[str]]) -> list[ft.Control]:
 
 
 def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
+    state = {"details": None, "thumbs": None}
     title = ft.Text(comic.title or "加载中...", size=28, weight=ft.FontWeight.BOLD, selectable=True)
     subtitle = ft.Text(comic.id, size=13, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True)
     status = ft.Text("加载中...", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
+    download_status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
     cover_box = ft.Container(
         content=async_image(page, comic.cover, width=260, height=360, fit=ft.BoxFit.COVER, cache_width=520),
         width=260,
@@ -73,6 +80,125 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         child_aspect_ratio=0.72,
     )
     raw_json = ft.Text("{}", size=12, selectable=True)
+    load_more_thumbs_button = ft.Button("加载更多缩略图", visible=False)
+    thumb_state = {"items": [], "loaded": 0, "make_thumb": None}
+
+    def render_thumb_batch():
+        viewer_items = thumb_state["items"]
+        start = thumb_state["loaded"]
+        end = min(len(viewer_items), start + THUMBNAIL_BATCH_SIZE)
+        make_thumb_fn = thumb_state.get("make_thumb")
+        if not callable(make_thumb_fn):
+            return
+        for idx in range(start, end):
+            item = viewer_items[idx]
+            thumbs_grid.controls.append(make_thumb_fn(idx, item.detail["thumbnail_url"]))
+        thumb_state["loaded"] = end
+        load_more_thumbs_button.visible = end < len(viewer_items)
+        if viewer_items:
+            load_more_thumbs_button.text = f"加载更多缩略图（{end}/{len(viewer_items)}）"
+
+    def load_more_thumbs(e):
+        render_thumb_batch()
+        page.update()
+
+    load_more_thumbs_button.on_click = load_more_thumbs
+
+    def show_archive_dialog(archives):
+        options = [archive for archive in archives if not archive.id.startswith("h@h_")]
+        if not options:
+            download_status.value = "没有可用的 Archive 下载选项"
+            page.update()
+            return
+
+        dialog = ft.AlertDialog(title=ft.Text("选择 Archive 下载"))
+
+        def choose_archive(archive):
+            page.close(dialog)
+            download_status.value = f"正在获取 {archive.title} 下载链接..."
+            page.update()
+            page.run_thread(lambda: create_archive_task(archive))
+
+        dialog.content = ft.Column(
+            controls=[
+                ft.ListTile(
+                    title=ft.Text(archive.title),
+                    subtitle=ft.Text(archive.description or ""),
+                    trailing=ft.Icon(ft.Icons.DOWNLOAD),
+                    on_click=lambda e, a=archive: choose_archive(a),
+                )
+                for archive in options
+            ],
+            width=520,
+            tight=True,
+        )
+        dialog.actions = [ft.Button("取消", on_click=lambda e: page.close(dialog))]
+        page.open(dialog)
+
+    def create_archive_task(archive):
+        try:
+            client = browser_session.get_eh_client(require_login=True)
+            details = state["details"]
+            thumbs = state["thumbs"]
+            if details is None:
+                with Timer("detail", f"download load_comic_info {comic.id}"):
+                    details = client.load_comic_info(comic.id)
+            if thumbs is None:
+                with Timer("detail", f"download load_thumbnails {comic.id}"):
+                    thumbs = client.load_thumbnails(comic.id)
+            with Timer("detail", f"get archive url {comic.id} {archive.id}"):
+                download_url = client.get_archive_download_url(comic.id, archive.id)
+            if not download_url:
+                raise RuntimeError("该 Archive 选项未返回可下载 URL")
+
+            gid, token = client.parse_url(comic.id)
+            domain = urlsplit(comic.id).netloc or "e-hentai.org"
+            task = download_manager.create_task(
+                download_url,
+                "archive.zip",
+                tags=["eh_archive"],
+                headers={"Referer": comic.id},
+                tag_data={
+                    "provider": "ehentai",
+                    "domain": domain,
+                    "gallery_url": comic.id,
+                    "gid": str(gid),
+                    "token": token,
+                    "archive_id": archive.id,
+                    "archive_title": archive.title,
+                    "archive_description": archive.description,
+                    "download_url_acquired_at": now_iso(),
+                    "download_url_valid_seconds": 86400,
+                    "max_ip_count": 2,
+                    "gallery_details": dataclasses.asdict(details) if dataclasses.is_dataclass(details) else {},
+                    "thumbnails_result": dataclasses.asdict(thumbs) if dataclasses.is_dataclass(thumbs) else {},
+                },
+            )
+            download_manager.start_task(task.id)
+            download_status.value = f"已加入下载队列: {archive.title}"
+            log_debug("detail", f"archive task created {task.id} {comic.id}")
+        except Exception as ex:
+            download_status.value = f"创建下载任务失败: {ex}"
+            log_exception("detail", f"create archive task failed {comic.id}: {ex}")
+        finally:
+            request_update(page)
+
+    def load_archives(e):
+        download_status.value = "正在加载 Archive 选项..."
+        page.update()
+
+        def archive_worker():
+            try:
+                client = browser_session.get_eh_client(require_login=True)
+                with Timer("detail", f"get archives {comic.id}"):
+                    archives = client.get_archives(comic.id)
+                show_archive_dialog(archives)
+            except Exception as ex:
+                download_status.value = f"加载 Archive 失败: {ex}"
+                log_exception("detail", f"load archives failed {comic.id}: {ex}")
+                request_update(page)
+
+        page.run_thread(archive_worker)
 
     def worker():
         try:
@@ -82,6 +208,8 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
                 details = client.load_comic_info(comic.id)
             with Timer("detail", f"load_thumbnails {comic.id}"):
                 thumbs = client.load_thumbnails(comic.id)
+            state["details"] = details
+            state["thumbs"] = thumbs
 
             title.value = details.title or comic.title
             subtitle.value = details.sub_title or details.url or comic.id
@@ -131,7 +259,11 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
                     )
                 return box
 
-            thumbs_grid.controls = [make_thumb(idx, item.detail["thumbnail_url"]) for idx, item in enumerate(viewer_items)]
+            thumbs_grid.controls = []
+            thumb_state["items"] = viewer_items
+            thumb_state["loaded"] = 0
+            thumb_state["make_thumb"] = make_thumb
+            render_thumb_batch()
             raw_json.value = json.dumps(
                 {
                     "details": _to_jsonable(details),
@@ -146,25 +278,28 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             status.value = f"错误: {ex}"
             log_exception("detail", f"load failed {comic.id}: {ex}")
         finally:
-            page.update()
+            request_update(page)
 
-    threading.Thread(target=worker, daemon=True).start()
+    page.run_thread(worker)
 
     return ft.Column(
         controls=[
             ft.Row(
                 [
                     ft.Button("返回", icon=ft.Icons.ARROW_BACK, on_click=lambda e: on_back()),
+                    ft.Button("下载 Archive", icon=ft.Icons.DOWNLOAD, on_click=load_archives),
                     ft.Text("画廊详情", size=18, weight=ft.FontWeight.W_500),
                 ],
                 spacing=12,
             ),
+            download_status,
             ft.Divider(),
             ft.Row([cover_box, meta], spacing=24, vertical_alignment=ft.CrossAxisAlignment.START),
             ft.Text("标签", size=18, weight=ft.FontWeight.BOLD),
             tags_wrap,
             ft.Text("缩略图", size=18, weight=ft.FontWeight.BOLD),
             thumbs_grid,
+            load_more_thumbs_button,
             ft.Text("原始详情 JSON", size=18, weight=ft.FontWeight.BOLD),
             ft.Container(
                 content=ft.Column([raw_json], scroll=ft.ScrollMode.AUTO),

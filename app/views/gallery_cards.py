@@ -1,4 +1,3 @@
-import threading
 from typing import Callable
 
 import flet as ft
@@ -7,6 +6,7 @@ from app.controls.async_image import async_image
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.storage import load_eh_config
+from app.ui_update import request_update
 from lib.provider.ehgrabber import EHentaiClient, Comic, SearchResult
 
 
@@ -135,9 +135,9 @@ def create_gallery_cards_view(
                     log_exception("gallery", f"{title} worker failed: {ex}")
                 finally:
                     refresh_btn.disabled = False
-                    page.update()
+                    request_update(page)
 
-            threading.Thread(target=worker, daemon=True).start()
+            page.run_thread(worker)
 
         def on_refresh(e):
             load(state["current_url"])

@@ -1,12 +1,12 @@
 import dataclasses
 import json
-import threading
 
 import flet as ft
 
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.storage import load_eh_config
+from app.ui_update import request_update
 
 
 def _comic_to_dict(c):
@@ -50,9 +50,9 @@ def _make_loader(call_fn, needs_login=False):
                 log_exception("gallery_list", f"load failed: {ex}")
             finally:
                 btn.disabled = False
-                page.update()
+                request_update(page)
 
-        threading.Thread(target=worker, daemon=True).start()
+        page.run_thread(worker)
 
     return load
 

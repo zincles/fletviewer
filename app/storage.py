@@ -6,18 +6,33 @@ ROOT_DIR = Path(os.environ.get("FLETVIEWER_HOME", "FletViewer"))
 CONFIG_DIR = ROOT_DIR / "Config"
 EH_CONFIG_PATH = CONFIG_DIR / "EHArchieve.json"
 APP_CONFIG_PATH = CONFIG_DIR / "AppConfig.json"
+DOWNLOADS_DIR = ROOT_DIR / "Downloads"
+DOWNLOADING_DIR = DOWNLOADS_DIR / "Downloading"
+EH_ARCHIVE_DIR = DOWNLOADS_DIR / "EHArchieve"
+DOWNLOADS_DATA_DIR = ROOT_DIR / "Data" / "Downloads"
+DOWNLOAD_TASKS_INDEX_PATH = DOWNLOADS_DATA_DIR / "tasks.json"
 
 EH_CONFIG_KEYS = ("ipb_member_id", "ipb_pass_hash", "igneous", "star")
 APP_CONFIG_DEFAULTS = {
     "load_images": True,
     "render_gallery_cards": True,
     "image_viewer_mode": "paged",
+    "linux_builtin_title_bar": False,
+    "linux_prefer_wayland_window_backend": False,
 }
 IMAGE_VIEWER_MODES = {"paged", "vertical"}
 
 
 def ensure_dirs():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_download_dirs():
+    ensure_dirs()
+    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    DOWNLOADING_DIR.mkdir(parents=True, exist_ok=True)
+    EH_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    DOWNLOADS_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_eh_config() -> dict:
@@ -61,3 +76,11 @@ def should_render_gallery_cards() -> bool:
 def get_image_viewer_mode() -> str:
     mode = str(load_app_config().get("image_viewer_mode", "paged"))
     return mode if mode in IMAGE_VIEWER_MODES else "paged"
+
+
+def should_use_linux_builtin_title_bar() -> bool:
+    return bool(load_app_config().get("linux_builtin_title_bar", False))
+
+
+def should_prefer_linux_wayland_window_backend() -> bool:
+    return bool(load_app_config().get("linux_prefer_wayland_window_backend", False))

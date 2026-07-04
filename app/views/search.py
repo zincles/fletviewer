@@ -1,12 +1,12 @@
 import dataclasses
 import json
-import threading
 
 import flet as ft
 
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.storage import should_render_gallery_cards
+from app.ui_update import request_update
 from app.views.gallery_cards import make_gallery_card
 
 
@@ -98,9 +98,9 @@ def create_view(page: ft.Page) -> ft.Control:
                 log_exception("search", f"search failed keyword={kw} page_url={page_url}: {ex}")
             finally:
                 btn.disabled = False
-                page.update()
+                request_update(page)
 
-        threading.Thread(target=worker, daemon=True).start()
+        page.run_thread(worker)
 
     def on_search(e=None):
         load(keyword=query.value)
