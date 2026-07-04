@@ -20,7 +20,7 @@ def make_gallery_card(page: ft.Page, comic: Comic) -> ft.Control:
                         comic.cover,
                         fit=ft.BoxFit.COVER,
                         width=float("inf"),
-                        height=180,
+                        height=float("inf"),
                         cache_width=360,
                         cache_height=360,
                     ),
@@ -51,7 +51,6 @@ def make_gallery_card(page: ft.Page, comic: Comic) -> ft.Control:
                         bottom=0,
                         left=0,
                         right=0,
-                        expand=True,
                         alignment=ft.Alignment(-1, 1),
                     ),
                 ],
@@ -59,7 +58,7 @@ def make_gallery_card(page: ft.Page, comic: Comic) -> ft.Control:
             ),
             border_radius=8,
             clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-            height=220,
+            expand=True,
         ),
     )
     open_detail = getattr(page, "fletviewer_open_gallery_detail", None)
@@ -85,7 +84,7 @@ def create_gallery_cards_view(
             runs_count=5,
             spacing=10,
             run_spacing=10,
-            child_aspect_ratio=0.65,
+            child_aspect_ratio=0.72,
             padding=10,
         )
         status_text = ft.Text("加载中...", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
@@ -97,7 +96,7 @@ def create_gallery_cards_view(
         state = {"page_num": 1, "prev_url": None, "next_url": None, "current_url": None}
 
         def load(page_url=None):
-            log_debug("gallery", f"{title} load requested page_url={page_url}")
+            log_debug("画廊列表", f"{title} 开始加载 page_url={page_url}")
             refresh_btn.disabled = True
             prev_btn.disabled = True
             next_btn.disabled = True
@@ -107,10 +106,10 @@ def create_gallery_cards_view(
 
             def worker():
                 try:
-                    log_debug("gallery", f"{title} worker start needs_login={needs_login}")
+                    log_debug("画廊列表", f"{title} worker 启动 needs_login={needs_login}")
                     cfg = load_eh_config()
                     if needs_login and (not cfg.get("ipb_member_id") or not cfg.get("ipb_pass_hash")):
-                        log_debug("gallery", f"{title} missing credentials")
+                        log_debug("画廊列表", f"{title} 缺少登录凭据")
                         status_text.value = "请先在账户页填写凭据"
                         return
 
@@ -118,10 +117,7 @@ def create_gallery_cards_view(
 
                     with Timer("gallery", f"{title} load_fn page_url={page_url}"):
                         result = load_fn(client, page_url)
-                    log_debug(
-                        "gallery",
-                        f"{title} result count={len(result.comics)} prev={result.prev_url} next={result.next_url}",
-                    )
+                    log_debug("画廊列表", f"{title} 加载完成 count={len(result.comics)} prev={bool(result.prev_url)} next={bool(result.next_url)}")
                     grid.controls = [make_gallery_card(page, comic) for comic in result.comics]
                     state["prev_url"] = result.prev_url
                     state["next_url"] = result.next_url
@@ -132,7 +128,7 @@ def create_gallery_cards_view(
                     status_text.value = f"共 {len(result.comics)} 个画廊"
                 except Exception as ex:
                     status_text.value = f"错误: {ex}"
-                    log_exception("gallery", f"{title} worker failed: {ex}")
+                    log_exception("画廊列表", f"{title} 加载失败: {ex}")
                 finally:
                     refresh_btn.disabled = False
                     request_update(page)

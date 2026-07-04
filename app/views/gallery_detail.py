@@ -8,6 +8,7 @@ from app.browser_session import browser_session
 from app.controls.async_image import async_image
 from app.debug_log import Timer, log_debug, log_exception
 from app.download_manager import download_manager, now_iso
+from app.gallery_cache import get_eh_gallery_cache, put_eh_gallery_cache
 from app.ui_update import request_update
 from lib.provider.ehgrabber import Comic, ThumbnailItem
 from app.views.image_viewer import ImageViewerItem
@@ -82,6 +83,8 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
     raw_json = ft.Text("{}", size=12, selectable=True)
     load_more_thumbs_button = ft.Button("加载更多缩略图", visible=False)
     thumb_state = {"items": [], "loaded": 0, "make_thumb": None}
+    resolved_image_urls: dict[int, str] = {}
+    image_key_state = {"key": None}
 
     def render_thumb_batch():
         viewer_items = thumb_state["items"]
@@ -204,10 +207,17 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         try:
             log_debug("detail", f"load start {comic.id}")
             client = browser_session.get_eh_client(require_login=False)
-            with Timer("detail", f"load_comic_info {comic.id}"):
-                details = client.load_comic_info(comic.id)
-            with Timer("detail", f"load_thumbnails {comic.id}"):
-                thumbs = client.load_thumbnails(comic.id)
+            cached = get_eh_gallery_cache(comic.id)
+            if cached is not None:
+                details = cached.details
+                thumbs = cached.thumbnails
+                log_debug("detail", f"gallery cache used {comic.id}")
+            else:
+                with Timer("detail", f"load_comic_info {comic.id}"):
+                    details = client.load_comic_info(comic.id)
+                with Timer("detail", f"load_thumbnails {comic.id}"):
+                    thumbs = client.load_thumbnails(comic.id)
+                put_eh_gallery_cache(comic.id, details, thumbs)
             state["details"] = details
             state["thumbs"] = thumbs
 
@@ -238,9 +248,22 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             ]
 
             def resolve_full_image(item: ImageViewerItem, idx: int) -> str:
+                if idx in resolved_image_urls:
+                    log_debug("detail", f"resolve full image cache hit {comic.id} index={idx}")
+                    return resolved_image_urls[idx]
                 client = browser_session.get_eh_client(require_login=False)
                 with Timer("detail", f"resolve full image {comic.id} index={idx}"):
-                    result = client.get_image_url(comic.id, idx)
+                    resolve_thumbs = state["thumbs"] or thumbs
+                    key = image_key_state.get("key")
+                    if key is None:
+                        key = client.get_key(resolve_thumbs.urls[0])
+                        image_key_state["key"] = key
+                    gid, _token = client.parse_url(comic.id)
+                    if key.mpvkey:
+                        result = client._get_image_mpv(gid, key, idx)
+                    else:
+                        result = client._get_image_showkey(gid, key, idx, resolve_thumbs, comic.id)
+                    resolved_image_urls[idx] = result.url
                 return result.url
 
             def make_thumb(idx: int, thumb: str) -> ft.Control:

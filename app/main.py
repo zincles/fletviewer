@@ -13,6 +13,7 @@ if sys.platform.startswith("linux") and "--web" not in sys.argv and "--server" n
 
 import flet as ft
 
+from app.browser_session import browser_session
 from app.debug_log import log_debug
 from app.local_gallery_manager import local_gallery_manager
 from app.storage import should_use_linux_builtin_title_bar
@@ -105,11 +106,32 @@ def main(page: ft.Page):
     page.title = "FletViewer"
     if page.web:
         os.environ["FLETVIEWER_WEB"] = "1"
+    browser_session.set_login_enabled(browser_session.login_enabled(), verify=True)
     local_gallery_manager.initialize()
     use_builtin_title_bar = _use_builtin_title_bar(page) and _enable_builtin_title_bar(page)
 
-    content = ft.Container(expand=True, padding=40)
+    content_switcher = ft.AnimatedSwitcher(
+        content=ft.Container(expand=True),
+        duration=180,
+        reverse_duration=120,
+        switch_in_curve=ft.AnimationCurve.EASE_OUT,
+        switch_out_curve=ft.AnimationCurve.EASE_IN,
+        transition=ft.AnimatedSwitcherTransition.FADE,
+        expand=True,
+    )
+    content = ft.Container(content=content_switcher, expand=True, padding=40)
     view_cache: dict[str, ft.Control] = {}
+    content_generation = {"value": 0}
+    current_content: dict[str, ft.Control | None] = {"value": None}
+
+    def set_content(control: ft.Control):
+        current_content["value"] = control
+        content_generation["value"] += 1
+        content_switcher.content = ft.Container(
+            content=control,
+            key=f"content:{content_generation['value']}",
+            expand=True,
+        )
 
     def invalidate_views(keys: list[str] | None = None, reason: str = ""):
         targets = keys or list(view_cache.keys())
@@ -121,34 +143,38 @@ def main(page: ft.Page):
     page.fletviewer_invalidate_views = invalidate_views
 
     def open_gallery_detail(comic):
-        previous_content = content.content
+        previous_content = current_content["value"]
         log_debug("nav", f"open gallery detail {comic.id}")
 
         def go_back():
             log_debug("nav", f"close gallery detail {comic.id}")
-            content.content = previous_content
+            if previous_content is not None:
+                set_content(previous_content)
             page.update()
 
-        content.content = gallery_detail_view(page, comic, go_back)
+        set_content(gallery_detail_view(page, comic, go_back))
         page.update()
 
     page.fletviewer_open_gallery_detail = open_gallery_detail
 
     def open_image_viewer(items, initial_index=0, resolve_image_url=None):
-        previous_content = content.content
+        previous_content = current_content["value"]
         log_debug("nav", f"open image viewer index={initial_index} count={len(items)}")
 
         def go_back():
             log_debug("nav", "close image viewer")
-            content.content = previous_content
+            if previous_content is not None:
+                set_content(previous_content)
             page.update()
 
-        content.content = image_viewer_view(
-            page,
-            items,
-            initial_index,
-            go_back,
-            resolve_image_url=resolve_image_url,
+        set_content(
+            image_viewer_view(
+                page,
+                items,
+                initial_index,
+                go_back,
+                resolve_image_url=resolve_image_url,
+            )
         )
         page.update()
 
@@ -161,7 +187,7 @@ def main(page: ft.Page):
             view_cache["search"] = search_view(page)
         else:
             log_debug("nav", "reuse view search")
-        content.content = view_cache["search"]
+        set_content(view_cache["search"])
         page.update()
 
     def render(idx):
@@ -183,7 +209,7 @@ def main(page: ft.Page):
                 )
             else:
                 log_debug("nav", f"reuse placeholder {label}")
-            content.content = view_cache[cache_key]
+            set_content(view_cache[cache_key])
         else:
             label = PAGES[idx][0]
             if cache_key not in view_cache:
@@ -191,7 +217,7 @@ def main(page: ft.Page):
                 view_cache[cache_key] = view_fn(page)
             else:
                 log_debug("nav", f"reuse view {label}")
-            content.content = view_cache[cache_key]
+            set_content(view_cache[cache_key])
         page.update()
 
     def on_nav_change(e):

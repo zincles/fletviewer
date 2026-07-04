@@ -18,6 +18,8 @@ from urllib.parse import urlencode, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from app.debug_log import log_debug
+
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
@@ -631,6 +633,7 @@ class EHentaiClient:
         if prev_url and not prev_url.startswith("http"):
             prev_url = self.base_url + prev_url
 
+        log_debug("EH解析", f"画廊列表解析完成 url={url} is_logged={self.is_logged} count={len(galleries)} prev={bool(prev_url)} next={bool(next_url)}")
         return SearchResult(comics=galleries, next_url=next_url, prev_url=prev_url)
 
     # -----------------------------------------------------------------------

@@ -1,14 +1,34 @@
+import os
 import time
 import traceback
 
 
+_QUIET_AREAS = {"image", "async_image"}
+
+
+def _enabled(area: str) -> bool:
+    if os.environ.get("FLETVIEWER_DEBUG_ALL") == "1":
+        return True
+    enabled = {
+        item.strip()
+        for item in os.environ.get("FLETVIEWER_DEBUG_AREAS", "").split(",")
+        if item.strip()
+    }
+    if enabled:
+        return area in enabled
+    return area not in _QUIET_AREAS
+
+
 def log_debug(area: str, message: str) -> None:
+    if not _enabled(area):
+        return
     now = time.strftime("%H:%M:%S")
     print(f"[{now}][{area}] {message}", flush=True)
 
 
 def log_exception(area: str, message: str) -> None:
-    log_debug(area, message)
+    now = time.strftime("%H:%M:%S")
+    print(f"[{now}][{area}] {message}", flush=True)
     traceback.print_exc()
 
 

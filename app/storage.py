@@ -11,9 +11,11 @@ DOWNLOADING_DIR = DOWNLOADS_DIR / "Downloading"
 EH_ARCHIVE_DIR = DOWNLOADS_DIR / "EHArchieve"
 DOWNLOADS_DATA_DIR = ROOT_DIR / "Data" / "Downloads"
 DOWNLOAD_TASKS_INDEX_PATH = DOWNLOADS_DATA_DIR / "tasks.json"
+GALLERY_CACHE_DIR = ROOT_DIR / "Data" / "GalleryCache"
 
 EH_CONFIG_KEYS = ("ipb_member_id", "ipb_pass_hash", "igneous", "star")
 APP_CONFIG_DEFAULTS = {
+    "enable_login": True,
     "load_images": True,
     "render_gallery_cards": True,
     "image_viewer_mode": "paged",
@@ -33,6 +35,11 @@ def ensure_download_dirs():
     DOWNLOADING_DIR.mkdir(parents=True, exist_ok=True)
     EH_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     DOWNLOADS_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_gallery_cache_dirs():
+    ensure_dirs()
+    GALLERY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_eh_config() -> dict:

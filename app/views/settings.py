@@ -1,5 +1,6 @@
 import flet as ft
 
+from app.browser_session import browser_session
 from app.storage import (
     APP_CONFIG_PATH,
     EH_CONFIG_PATH,
@@ -44,6 +45,12 @@ def create_view(page: ft.Page) -> ft.Control:
     status = ft.Text("", size=14)
     display_status = ft.Text("", size=14)
     linux_window_status = ft.Text("", size=14)
+    login_status = ft.Text(browser_session.login_status_text(), size=14, color=ft.Colors.ON_SURFACE_VARIANT)
+    login_status_lamp = ft.Container(width=10, height=10, border_radius=999)
+    enable_login_switch = ft.Switch(
+        label="启用自动登录",
+        value=bool(app_cfg.get("enable_login", True)),
+    )
     load_images_switch = ft.Switch(
         label="是否加载图像",
         value=bool(app_cfg.get("load_images", True)),
@@ -71,34 +78,68 @@ def create_view(page: ft.Page) -> ft.Control:
         value=bool(app_cfg.get("linux_prefer_wayland_window_backend", False)),
     )
 
+    def current_app_config() -> dict:
+        return {
+            "enable_login": enable_login_switch.value,
+            "load_images": load_images_switch.value,
+            "render_gallery_cards": render_cards_switch.value,
+            "image_viewer_mode": viewer_mode_dropdown.value or "paged",
+            "linux_builtin_title_bar": linux_title_bar_switch.value,
+            "linux_prefer_wayland_window_backend": linux_wayland_backend_switch.value,
+        }
+
+    def apply_login_mode(reason: str) -> None:
+        save_app_config(current_app_config())
+        browser_session.set_login_enabled(bool(enable_login_switch.value))
+        login_status.value = browser_session.login_status_text()
+        update_login_status_lamp()
+        _invalidate_gallery_views(page, reason)
+
+    def update_login_status_lamp() -> None:
+        level = browser_session.login_status_level()
+        if level == "ok":
+            login_status_lamp.bgcolor = ft.Colors.GREEN
+            login_status_lamp.tooltip = "已验证登录"
+        elif level == "pending":
+            login_status_lamp.bgcolor = ft.Colors.AMBER
+            login_status_lamp.tooltip = "Cookie 已载入，尚未验证"
+        elif level == "warning":
+            login_status_lamp.bgcolor = ft.Colors.ORANGE
+            login_status_lamp.tooltip = "登录配置不完整或未载入"
+        else:
+            login_status_lamp.bgcolor = ft.Colors.GREY
+            login_status_lamp.tooltip = "游客模式"
+
+    def on_login_toggle(e):
+        apply_login_mode("login_mode_toggled")
+        status.value = "登录模式已切换"
+        status.color = ft.Colors.PRIMARY
+        page.update()
+
+    enable_login_switch.on_change = on_login_toggle
+    update_login_status_lamp()
+
     def on_save(e):
         data = {key: fields[key].value.strip() for key, *_ in COOKIE_FIELDS}
-        if not data["ipb_member_id"] or not data["ipb_pass_hash"]:
+        if enable_login_switch.value and (not data["ipb_member_id"] or not data["ipb_pass_hash"]):
             status.value = "ipb_member_id 和 ipb_pass_hash 为必填项"
             status.color = ft.Colors.ERROR
             page.update()
             return
         save_eh_config(data)
-        _invalidate_gallery_views(page, "eh_config_saved")
+        apply_login_mode("eh_config_saved")
         status.value = f"已保存到 {EH_CONFIG_PATH}"
         status.color = ft.Colors.PRIMARY
         page.update()
 
     def on_save_app(e):
-        save_app_config(
-            {
-                "load_images": load_images_switch.value,
-                "render_gallery_cards": render_cards_switch.value,
-                "image_viewer_mode": viewer_mode_dropdown.value or "paged",
-                "linux_builtin_title_bar": linux_title_bar_switch.value,
-                "linux_prefer_wayland_window_backend": linux_wayland_backend_switch.value,
-            }
-        )
+        save_app_config(current_app_config())
         _invalidate_gallery_views(page, "app_debug_config_saved")
         message = f"已保存到 {APP_CONFIG_PATH}。Linux 窗口设置重启后生效。"
         for target in (display_status, linux_window_status):
             target.value = message
             target.color = ft.Colors.PRIMARY
+        apply_login_mode("login_mode_changed")
         page.update()
 
     account_page = ft.Container(
@@ -106,7 +147,9 @@ def create_view(page: ft.Page) -> ft.Control:
         content=ft.Column(
             controls=[
                 ft.Text("E-Hentai 凭据", size=20, weight=ft.FontWeight.W_500),
-                ft.Text("Cookie 凭据，用于登录和访问收藏/订阅等功能", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+                    ft.Text("Cookie 凭据，用于自动登录和访问收藏/订阅等功能。关闭自动登录后，公开页面会以游客状态访问。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+                    enable_login_switch,
+                    ft.Row([login_status_lamp, login_status], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 *fields.values(),
                 ft.Row(
                     [

@@ -147,16 +147,18 @@ def create_view(
             try:
                 url = resolve_item_url(item, state["index"])
                 log_debug("viewer", f"load image index={state['index']} url={url}")
-                result = image_fetcher.fetch(url)
+                with Timer("viewer", f"fetch image index={state['index']}"):
+                    result = image_fetcher.fetch(url)
                 if generation != state["paged_generation"] or state["mode"] != "paged":
                     return
                 state["current_url"] = url
                 state["current_path"] = result.path
-                image_box.content = ft.Image(
-                    src=image_src_for_page(page, result.data, result.mime),
-                    fit=ft.BoxFit.CONTAIN,
-                    expand=True,
-                )
+                with Timer("viewer", f"build image control index={state['index']}"):
+                    image_box.content = ft.Image(
+                        src=image_src_for_page(page, result.data, result.mime),
+                        fit=ft.BoxFit.CONTAIN,
+                        expand=True,
+                    )
                 status.value = f"{pos}  {len(result.data)} bytes  {'cache' if result.from_cache else 'network'}"
                 log_debug("viewer", f"image loaded index={state['index']} bytes={len(result.data)}")
             except Exception as ex:
