@@ -5,6 +5,7 @@ import flet as ft
 from app.controls.async_image import async_image
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
+from app.grid_layout import runs_count_for_width
 from app.storage import load_eh_config
 from app.ui_update import request_update
 from lib.provider.ehgrabber import EHentaiClient, Comic, SearchResult
@@ -81,7 +82,7 @@ def create_gallery_cards_view(
     def factory(page: ft.Page) -> ft.Control:
         grid = ft.GridView(
             expand=True,
-            runs_count=5,
+            runs_count=runs_count_for_width(page.width, min_columns=2, max_columns=10),
             spacing=10,
             run_spacing=10,
             child_aspect_ratio=0.72,
@@ -94,6 +95,16 @@ def create_gallery_cards_view(
         page_label = ft.Text("第 1 页", size=14)
 
         state = {"page_num": 1, "prev_url": None, "next_url": None, "current_url": None}
+
+        def update_grid_columns(e=None):
+            new_count = runs_count_for_width(page.width, min_columns=2, max_columns=10)
+            if grid.runs_count != new_count:
+                grid.runs_count = new_count
+                page.update()
+
+        add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
+        if callable(add_resize_handler):
+            add_resize_handler(update_grid_columns)
 
         def load(page_url=None):
             log_debug("画廊列表", f"{title} 开始加载 page_url={page_url}")

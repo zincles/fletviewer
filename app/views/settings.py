@@ -5,6 +5,7 @@ from app.storage import (
     APP_CONFIG_PATH,
     EH_CONFIG_PATH,
     get_image_viewer_mode,
+    get_image_grid_target_width,
     load_app_config,
     load_eh_config,
     save_app_config,
@@ -18,7 +19,7 @@ COOKIE_FIELDS = [
     ("star", "star", "star（可选）", False),
 ]
 
-GALLERY_VIEW_CACHE_KEYS = ["page:0", "page:1", "page:2", "page:3", "page:4", "search"]
+GALLERY_VIEW_CACHE_KEYS = ["page:0", "page:1", "page:2", "page:3", "page:4", "page:5", "search"]
 
 
 def _invalidate_gallery_views(page: ft.Page, reason: str) -> None:
@@ -69,6 +70,12 @@ def create_view(page: ft.Page) -> ft.Control:
         width=260,
         dense=True,
     )
+    image_grid_width_field = ft.TextField(
+        label="图片网格参考宽度",
+        value=str(get_image_grid_target_width()),
+        width=220,
+        dense=True,
+    )
     linux_title_bar_switch = ft.Switch(
         label="在Linux端启用内置标题栏",
         value=bool(app_cfg.get("linux_builtin_title_bar", False)),
@@ -79,11 +86,18 @@ def create_view(page: ft.Page) -> ft.Control:
     )
 
     def current_app_config() -> dict:
+        try:
+            grid_width = int(image_grid_width_field.value or "220")
+        except ValueError:
+            grid_width = 220
+        grid_width = max(140, min(420, grid_width))
+        image_grid_width_field.value = str(grid_width)
         return {
             "enable_login": enable_login_switch.value,
             "load_images": load_images_switch.value,
             "render_gallery_cards": render_cards_switch.value,
             "image_viewer_mode": viewer_mode_dropdown.value or "paged",
+            "image_grid_target_width": grid_width,
             "linux_builtin_title_bar": linux_title_bar_switch.value,
             "linux_prefer_wayland_window_backend": linux_wayland_backend_switch.value,
         }
@@ -174,10 +188,11 @@ def create_view(page: ft.Page) -> ft.Control:
                     size=14,
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 ),
-                load_images_switch,
-                render_cards_switch,
-                viewer_mode_dropdown,
-                ft.Row(
+                    load_images_switch,
+                    render_cards_switch,
+                    viewer_mode_dropdown,
+                    ft.Row([image_grid_width_field, ft.Text("px", color=ft.Colors.ON_SURFACE_VARIANT)], spacing=8),
+                    ft.Row(
                     [
                         ft.Button("保存应用设置", on_click=on_save_app),
                         display_status,

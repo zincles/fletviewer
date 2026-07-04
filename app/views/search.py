@@ -5,6 +5,7 @@ import flet as ft
 
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
+from app.grid_layout import runs_count_for_width
 from app.storage import should_render_gallery_cards
 from app.ui_update import request_update
 from app.views.gallery_cards import make_gallery_card
@@ -39,7 +40,7 @@ def create_view(page: ft.Page) -> ft.Control:
     render_cards = should_render_gallery_cards()
     grid = ft.GridView(
         expand=True,
-        runs_count=5,
+        runs_count=runs_count_for_width(page.width, min_columns=2, max_columns=10),
         spacing=10,
         run_spacing=10,
         child_aspect_ratio=0.65,
@@ -47,6 +48,16 @@ def create_view(page: ft.Page) -> ft.Control:
     )
     output = ft.Text("输入关键词后搜索", size=14, selectable=True)
     state = {"keyword": "", "page_num": 1, "prev_url": None, "next_url": None}
+
+    def update_grid_columns(e=None):
+        new_count = runs_count_for_width(page.width, min_columns=2, max_columns=10)
+        if grid.runs_count != new_count:
+            grid.runs_count = new_count
+            page.update()
+
+    add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
+    if callable(add_resize_handler):
+        add_resize_handler(update_grid_columns)
 
     def set_loading(text: str):
         btn.disabled = True

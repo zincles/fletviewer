@@ -19,6 +19,7 @@ APP_CONFIG_DEFAULTS = {
     "load_images": True,
     "render_gallery_cards": True,
     "image_viewer_mode": "paged",
+    "image_grid_target_width": 220,
     "linux_builtin_title_bar": False,
     "linux_prefer_wayland_window_backend": False,
 }
@@ -83,6 +84,14 @@ def should_render_gallery_cards() -> bool:
 def get_image_viewer_mode() -> str:
     mode = str(load_app_config().get("image_viewer_mode", "paged"))
     return mode if mode in IMAGE_VIEWER_MODES else "paged"
+
+
+def get_image_grid_target_width() -> int:
+    try:
+        value = int(load_app_config().get("image_grid_target_width", 220))
+    except (TypeError, ValueError):
+        value = 220
+    return max(140, min(420, value))
 
 
 def should_use_linux_builtin_title_bar() -> bool:

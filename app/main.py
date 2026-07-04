@@ -108,7 +108,6 @@ def main(page: ft.Page):
     page.title = "FletViewer"
     if page.web:
         os.environ["FLETVIEWER_WEB"] = "1"
-    browser_session.set_login_enabled(browser_session.login_enabled(), verify=True)
     local_gallery_manager.initialize()
     use_builtin_title_bar = _use_builtin_title_bar(page) and _enable_builtin_title_bar(page)
 
@@ -125,6 +124,28 @@ def main(page: ft.Page):
     view_cache: dict[str, ft.Control] = {}
     content_generation = {"value": 0}
     current_content: dict[str, ft.Control | None] = {"value": None}
+    resize_handlers = []
+
+    def add_resize_handler(handler):
+        if handler not in resize_handlers:
+            resize_handlers.append(handler)
+
+        def remove_handler():
+            if handler in resize_handlers:
+                resize_handlers.remove(handler)
+
+        return remove_handler
+
+    def on_page_resized(e):
+        log_debug("nav", f"resize width={page.width} height={page.height} handlers={len(resize_handlers)}")
+        for handler in list(resize_handlers):
+            try:
+                handler(e)
+            except Exception as ex:
+                log_debug("nav", f"resize handler failed: {ex}")
+
+    page.fletviewer_add_resize_handler = add_resize_handler
+    page.on_resize = on_page_resized
 
     def set_content(control: ft.Control):
         current_content["value"] = control
@@ -266,7 +287,28 @@ def main(page: ft.Page):
     else:
         page.add(body)
 
-    render(0)
+    set_content(
+        ft.Column(
+            [
+                ft.ProgressRing(width=48, height=48),
+                ft.Text("正在初始化网络会话...", color=ft.Colors.ON_SURFACE_VARIANT),
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            expand=True,
+        )
+    )
+    page.update()
+
+    def initialize_and_render_home():
+        try:
+            browser_session.set_login_enabled(browser_session.login_enabled(), verify=True)
+        except Exception as ex:
+            log_debug("nav", f"初始化网络会话失败: {ex}")
+        finally:
+            render(0)
+
+    page.run_thread(initialize_and_render_home)
 
 
 # Flet build 的入口要求顶层即调用 ft.run，不能包在 if __name__ == "__main__": 内。

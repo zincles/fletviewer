@@ -9,6 +9,7 @@ from app.controls.async_image import async_image
 from app.debug_log import Timer, log_debug, log_exception
 from app.download_manager import download_manager, now_iso
 from app.gallery_cache import get_eh_gallery_cache, put_eh_gallery_cache
+from app.grid_layout import runs_count_for_width
 from app.storage import should_render_gallery_cards
 from app.ui_update import request_update
 from lib.provider.ehgrabber import Comic, Comment, ThumbnailItem
@@ -101,11 +102,21 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
     tags_wrap = ft.Row(wrap=True, spacing=8, run_spacing=8)
     thumbs_grid = ft.GridView(
         height=360,
-        runs_count=8,
+        runs_count=runs_count_for_width(page.width, min_columns=3, max_columns=12),
         spacing=8,
         run_spacing=8,
         child_aspect_ratio=0.72,
     )
+
+    def update_thumb_grid_columns(e=None):
+        new_count = runs_count_for_width(page.width, min_columns=3, max_columns=12)
+        if thumbs_grid.runs_count != new_count:
+            thumbs_grid.runs_count = new_count
+            page.update()
+
+    add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
+    if callable(add_resize_handler):
+        add_resize_handler(update_thumb_grid_columns)
     raw_json = ft.Text("{}", size=12, selectable=True)
     comments_column = ft.Column(spacing=8)
     load_more_thumbs_button = ft.Button("加载更多缩略图", visible=False)

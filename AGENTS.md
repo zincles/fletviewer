@@ -162,6 +162,8 @@ page.show_dialog(dialog)
 page.pop_dialog()
 ```
 
+当前 Flet 版本中 `ft.TextField` 不接受 `suffix_text=`；会报 `TextField.__init__() got an unexpected keyword argument 'suffix_text'`。需要单位后缀时，在外层用 `ft.Row([field, ft.Text("px")])` 组合。
+
 
 ### 当前图像与缓存架构：
 

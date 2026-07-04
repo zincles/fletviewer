@@ -5,6 +5,7 @@ from pathlib import Path
 import flet as ft
 
 from app.controls.async_image import image_placeholder, image_src_for_page
+from app.grid_layout import runs_count_for_width
 from app.local_gallery_manager import LocalGallery, local_gallery_manager
 from app.storage import should_render_gallery_cards
 from app.views.local_zip_viewer import create_view as local_zip_viewer
@@ -109,12 +110,22 @@ def create_view(page: ft.Page) -> ft.Control:
     content = ft.Container(expand=True)
     grid = ft.GridView(
         expand=True,
-        runs_count=5,
+        runs_count=runs_count_for_width(page.width, min_columns=2, max_columns=9),
         spacing=10,
         run_spacing=10,
         child_aspect_ratio=0.62,
         padding=10,
     )
+
+    def update_grid_columns(e=None):
+        new_count = runs_count_for_width(page.width, min_columns=2, max_columns=9)
+        if grid.runs_count != new_count:
+            grid.runs_count = new_count
+            page.update()
+
+    add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
+    if callable(add_resize_handler):
+        add_resize_handler(update_grid_columns)
 
     def show_list(update: bool = True):
         galleries = local_gallery_manager.scan_local_galleries(force=True)

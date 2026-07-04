@@ -4,6 +4,8 @@ import traceback
 
 
 _QUIET_AREAS = {"image", "async_image"}
+_CACHE_KEYWORDS = ("cache", "缓存", "gallery_cache", "命中", "cache read", "cache write")
+_WEB_KEYWORDS = ("GET", "POST", "HEAD", "抓取", "请求", "浏览器会话", "EH解析", "network fetched")
 
 
 def _enabled(area: str) -> bool:
@@ -23,12 +25,21 @@ def log_debug(area: str, message: str) -> None:
     if not _enabled(area):
         return
     now = time.strftime("%H:%M:%S")
-    print(f"[{now}][{area}] {message}", flush=True)
+    print(f"[{now}][{_prefix(area, message)}{area}] {message}", flush=True)
+
+
+def _prefix(area: str, message: str) -> str:
+    text = f"{area} {message}"
+    if any(keyword in text for keyword in _CACHE_KEYWORDS):
+        return "💾 "
+    if any(keyword in text for keyword in _WEB_KEYWORDS):
+        return "🌐 "
+    return ""
 
 
 def log_exception(area: str, message: str) -> None:
     now = time.strftime("%H:%M:%S")
-    print(f"[{now}][{area}] {message}", flush=True)
+    print(f"[{now}][{_prefix(area, message)}{area}] {message}", flush=True)
     traceback.print_exc()
 
 
