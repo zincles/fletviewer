@@ -117,6 +117,19 @@ Remove-Item -LiteralPath "$env:USERPROFILE\.flet" -Recurse -Force
 **注意**：不要在工具调用中尝试以 Web 模式启动 Flet（`python app/main.py --web`），会导致进程阻塞、工具卡死。Web 模式的启动和测试由用户手动进行。
 
 
+### Flet API 兼容性备注：
+
+当前 Flet 版本中不要使用 `ft.alignment.center`。该属性在本项目环境会报错：`module 'flet.controls.alignment' has no attribute 'center'`。
+
+需要居中对齐时，使用显式坐标写法：
+
+```
+alignment=ft.Alignment(0, 0)
+```
+
+项目中已有类似写法，例如 `ft.Alignment(-1, 1)`。
+
+
 ### Android 构建环境（未就绪，注意事项）：
 
 Flet 0.85.3 配套 Flutter 3.41.7。**不要用 scoop/winget 装 Flutter**：
@@ -161,4 +174,3 @@ start ms-settings:developers
 **APK 产物**：`flet build apk` 成功后产物在 `<项目根>\build\apk\app-release.apk`。默认用 debug key 签名，能本地安装测试但不能上架 Play Store。要上架需在 `pyproject.toml` 配 `[tool.flet.android.signing]` 的 keystore。
 
 **入口点要求**：Flet 的 `flet build` 在 app path 根目录找 `main.py`，`[tool.flet.app].module` 字段只接受文件名（stem），不接受子路径。我们的入口在 `app/main.py`，所以根目录有一个 thin shim `main.py` 用 `runpy.run_path` 转发到 `app/main.py`。改入口逻辑时改 `app/main.py`，根 `main.py` shim 不动。
-

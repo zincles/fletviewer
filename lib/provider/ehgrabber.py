@@ -146,9 +146,9 @@ class KeyResult:
 class EHentaiClient:
     """E-Hentai / ExHentai 客户端"""
 
-    def __init__(self, domain: str = EH_DOMAIN_EH) -> None:
+    def __init__(self, domain: str = EH_DOMAIN_EH, session: Optional[requests.Session] = None) -> None:
         self.domain = domain
-        self._session = requests.Session()
+        self._session = session or requests.Session()
         self._session.headers.update({
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -199,6 +199,7 @@ class EHentaiClient:
         ipb_pass_hash: str,
         igneous: str = "",
         star: str = "",
+        verify: bool = True,
     ) -> bool:
         """用 cookie 值登录，返回是否成功"""
         values = [ipb_member_id, ipb_pass_hash, igneous, star]
@@ -210,6 +211,9 @@ class EHentaiClient:
             for i, name in enumerate(("ipb_member_id", "ipb_pass_hash", "igneous", "star")):
                 if values[i]:
                     self._session.cookies.set(name, values[i], domain=dom)
+
+        if not verify:
+            return True
 
         # 验证登录：访问 favorites.php，检查是否真的登录
         resp = self._session.get(

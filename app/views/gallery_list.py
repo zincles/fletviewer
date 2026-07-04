@@ -4,8 +4,9 @@ import threading
 
 import flet as ft
 
+from app.browser_session import browser_session
+from app.debug_log import Timer, log_debug, log_exception
 from app.storage import load_eh_config
-from lib.provider.ehgrabber import EHentaiClient
 
 
 def _comic_to_dict(c):
@@ -32,17 +33,21 @@ def _make_loader(call_fn, needs_login=False):
 
         def worker():
             try:
+                log_debug("gallery_list", f"load start needs_login={needs_login}")
                 cfg = load_eh_config()
-                client = EHentaiClient(domain="e-hentai.org")
                 if needs_login:
                     if not cfg.get("ipb_member_id") or not cfg.get("ipb_pass_hash"):
+                        log_debug("gallery_list", "missing credentials")
                         output.value = "请先在账户页填写凭据"
                         return
-                    client.login_with_cookies(**cfg)
-                result = call_fn(client)
+                client = browser_session.get_eh_client(require_login=needs_login)
+                with Timer("gallery_list", "call_fn"):
+                    result = call_fn(client)
+                log_debug("gallery_list", f"result count={len(result.comics)} next={result.next_url}")
                 output.value = _result_to_json(result)
             except Exception as ex:
                 output.value = f"错误: {ex}"
+                log_exception("gallery_list", f"load failed: {ex}")
             finally:
                 btn.disabled = False
                 page.update()

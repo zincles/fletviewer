@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import flet as ft
 
-from app.image_proxy import _handle_thumb, start_cache_server
+from app.debug_log import log_debug
 from app.views.home import create_view as home_view
 from app.views.subscriptions import create_view as subscriptions_view
 from app.views.popular import create_view as popular_view
@@ -33,27 +33,45 @@ def main(page: ft.Page):
         os.environ["FLETVIEWER_WEB"] = "1"
 
     content = ft.Container(expand=True, padding=40)
+    view_cache: dict[str, ft.Control] = {}
 
     def render_search():
         rail.selected_index = None
-        content.content = search_view(page)
+        if "search" not in view_cache:
+            log_debug("nav", "create view search")
+            view_cache["search"] = search_view(page)
+        else:
+            log_debug("nav", "reuse view search")
+        content.content = view_cache["search"]
         page.update()
 
     def render(idx):
         view_fn = PAGES[idx][2]
+        cache_key = f"page:{idx}"
         if view_fn is None:
             label = PAGES[idx][0]
-            content.content = ft.Column(
-                controls=[
-                    ft.Text(label, size=32, weight=ft.FontWeight.BOLD),
-                    ft.Text("（待实现）", size=16, color=ft.Colors.ON_SURFACE_VARIANT),
-                ],
-                alignment=ft.MainAxisAlignment.CENTER,
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                expand=True,
-            )
+            if cache_key not in view_cache:
+                log_debug("nav", f"create placeholder {label}")
+                view_cache[cache_key] = ft.Column(
+                    controls=[
+                        ft.Text(label, size=32, weight=ft.FontWeight.BOLD),
+                        ft.Text("（待实现）", size=16, color=ft.Colors.ON_SURFACE_VARIANT),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    expand=True,
+                )
+            else:
+                log_debug("nav", f"reuse placeholder {label}")
+            content.content = view_cache[cache_key]
         else:
-            content.content = view_fn(page)
+            label = PAGES[idx][0]
+            if cache_key not in view_cache:
+                log_debug("nav", f"create view {label}")
+                view_cache[cache_key] = view_fn(page)
+            else:
+                log_debug("nav", f"reuse view {label}")
+            content.content = view_cache[cache_key]
         page.update()
 
     def on_nav_change(e):
@@ -97,16 +115,10 @@ web_mode = "--web" in sys.argv or "--server" in sys.argv
 if web_mode:
     import uvicorn
     import flet_web.fastapi as flet_fastapi
-    from fastapi import Response
 
     os.environ["FLETVIEWER_WEB"] = "1"
 
     app = flet_fastapi.FastAPI()
-
-    @app.get("/thumb")
-    async def thumb(url: str):
-        data, ct = _handle_thumb(url)
-        return Response(content=data, media_type=ct)
 
     app.mount(
         "/",
@@ -121,5 +133,4 @@ if web_mode:
     )
     uvicorn.run(app, host="0.0.0.0", port=8765)
 else:
-    start_cache_server()
     ft.run(main)

@@ -1,10 +1,10 @@
-from app.views.gallery_list import create_view as make_view
+from app.views.gallery_cards import create_gallery_cards_view
 
 
 def create_view(page):
-    return make_view(
+    return create_gallery_cards_view(
         title="热门",
         subtitle="热门画廊",
-        call_fn=lambda c: c.get_popular(),
+        load_fn=lambda client, page_url: client.get_popular(page_url=page_url),
         needs_login=False,
     )(page)

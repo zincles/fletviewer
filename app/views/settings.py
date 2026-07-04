@@ -1,6 +1,13 @@
 import flet as ft
 
-from app.storage import load_eh_config, save_eh_config, EH_CONFIG_PATH
+from app.storage import (
+    APP_CONFIG_PATH,
+    EH_CONFIG_PATH,
+    load_app_config,
+    load_eh_config,
+    save_app_config,
+    save_eh_config,
+)
 
 COOKIE_FIELDS = [
     ("ipb_member_id", "ipb_member_id", "EH 会员 ID", True),
@@ -12,6 +19,7 @@ COOKIE_FIELDS = [
 
 def create_view(page: ft.Page) -> ft.Control:
     cfg = load_eh_config()
+    app_cfg = load_app_config()
 
     fields = {}
     for key, _name, label, required in COOKIE_FIELDS:
@@ -25,6 +33,11 @@ def create_view(page: ft.Page) -> ft.Control:
         )
 
     status = ft.Text("", size=14)
+    app_status = ft.Text("", size=14)
+    load_images_switch = ft.Switch(
+        label="是否加载图像",
+        value=bool(app_cfg.get("load_images", True)),
+    )
 
     def on_save(e):
         data = {key: fields[key].value.strip() for key, *_ in COOKIE_FIELDS}
@@ -38,6 +51,12 @@ def create_view(page: ft.Page) -> ft.Control:
         status.color = ft.Colors.PRIMARY
         page.update()
 
+    def on_save_app(e):
+        save_app_config({"load_images": load_images_switch.value})
+        app_status.value = f"已保存到 {APP_CONFIG_PATH}"
+        app_status.color = ft.Colors.PRIMARY
+        page.update()
+
     return ft.Column(
         controls=[
             ft.Text("设置", size=32, weight=ft.FontWeight.BOLD),
@@ -49,6 +68,22 @@ def create_view(page: ft.Page) -> ft.Control:
                 [
                     ft.Button("保存凭据", on_click=on_save),
                     status,
+                ],
+                spacing=16,
+            ),
+
+            ft.Divider(),
+            ft.Text("调试", size=20, weight=ft.FontWeight.W_500),
+            ft.Text(
+                "关闭后，界面不会读取缓存图片，也不会向远端请求新图像资源。",
+                size=14,
+                color=ft.Colors.ON_SURFACE_VARIANT,
+            ),
+            load_images_switch,
+            ft.Row(
+                [
+                    ft.Button("保存调试设置", on_click=on_save_app),
+                    app_status,
                 ],
                 spacing=16,
             ),

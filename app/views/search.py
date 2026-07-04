@@ -4,8 +4,8 @@ import threading
 
 import flet as ft
 
-from app.storage import load_eh_config
-from lib.provider.ehgrabber import EHentaiClient
+from app.browser_session import browser_session
+from app.debug_log import Timer, log_debug, log_exception
 
 
 def _comic_to_dict(c):
@@ -43,14 +43,15 @@ def create_view(page: ft.Page) -> ft.Control:
 
         def worker():
             try:
-                cfg = load_eh_config()
-                client = EHentaiClient(domain="e-hentai.org")
-                if cfg.get("ipb_member_id") and cfg.get("ipb_pass_hash"):
-                    client.login_with_cookies(**cfg)
-                result = client.search(keyword=kw)
+                log_debug("search", f"search start keyword={kw}")
+                client = browser_session.get_eh_client(require_login=False)
+                with Timer("search", f"search keyword={kw}"):
+                    result = client.search(keyword=kw)
+                log_debug("search", f"search result count={len(result.comics)} next={result.next_url}")
                 output.value = _result_to_json(result)
             except Exception as ex:
                 output.value = f"错误: {ex}"
+                log_exception("search", f"search failed keyword={kw}: {ex}")
             finally:
                 btn.disabled = False
                 page.update()

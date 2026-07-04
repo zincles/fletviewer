@@ -1,10 +1,10 @@
-from app.views.gallery_list import create_view as make_view
+from app.views.gallery_cards import create_gallery_cards_view
 
 
 def create_view(page):
-    return make_view(
+    return create_gallery_cards_view(
         title="订阅",
         subtitle="关注的标签画廊（需登录）",
-        call_fn=lambda c: c.get_watched(),
+        load_fn=lambda client, page_url: client.get_watched(page_url=page_url),
         needs_login=True,
     )(page)
