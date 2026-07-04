@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import threading
+from io import BytesIO
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import parse_qs
+
+from PIL import Image
 
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug
@@ -75,6 +79,10 @@ class ImageFetcherService:
             log_debug("image", f"stale index repaired url={url} filename={cached_filename}")
             repair_stale_entry(url)
 
+        sprite_crop = self._parse_sprite_crop(url)
+        if sprite_crop is not None:
+            return self._fetch_sprite_crop(url, *sprite_crop)
+
         log_debug("image", f"cache miss url={url}")
         response = browser_session.get(url, headers={"Referer": "https://e-hentai.org/"}, timeout=20)
         response.raise_for_status()
@@ -94,6 +102,73 @@ class ImageFetcherService:
         put_cached_filename(url, filename)
         log_debug("image", f"network fetched url={url} bytes={len(response.content)} mime={mime} path={path}")
         return ImageFetchResult(url=url, path=path, data=response.content, mime=mime, from_cache=False)
+
+    def _fetch_sprite_crop(
+        self,
+        url: str,
+        base_url: str,
+        left: int,
+        top: int,
+        right: int,
+        bottom: int,
+    ) -> ImageFetchResult:
+        log_debug("image", f"sprite crop url={url} base={base_url} box={left},{top},{right},{bottom}")
+        base_result = self._fetch_impl(base_url)
+        with Timer("image", f"sprite crop {base_url}"):
+            with Image.open(BytesIO(base_result.data)) as image:
+                cropped = image.crop((left, top, right, bottom))
+                output = BytesIO()
+                fmt = image.format or "WEBP"
+                cropped.save(output, format=fmt)
+                data = output.getvalue()
+
+        mime = base_result.mime if base_result.mime.startswith("image/") else "image/webp"
+        filename = filename_for_url(url, mime=mime)
+        path = cached_path_for_url(url, mime=mime)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with Timer("image", f"cache write {path}"):
+            tmp_path.write_bytes(data)
+            tmp_path.replace(path)
+
+        old_filename = get_cached_filename(url)
+        if old_filename and old_filename != filename:
+            drop_cached_filename(url)
+        put_cached_filename(url, filename)
+        log_debug("image", f"sprite cropped url={url} bytes={len(data)} mime={mime} path={path}")
+        return ImageFetchResult(url=url, path=path, data=data, mime=mime, from_cache=False)
+
+    @staticmethod
+    def _parse_sprite_crop(url: str) -> tuple[str, int, int, int, int] | None:
+        if "@" not in url:
+            return None
+        base_url, crop_spec = url.rsplit("@", 1)
+        if not base_url or not crop_spec:
+            return None
+        params = parse_qs(crop_spec, keep_blank_values=False)
+        x_values = params.get("x")
+        y_values = params.get("y")
+        if not x_values or not y_values:
+            return None
+
+        def parse_range(value: str) -> tuple[int, int] | None:
+            parts = value.split("-", 1)
+            if len(parts) != 2:
+                return None
+            try:
+                start = int(parts[0])
+                end = int(parts[1])
+            except ValueError:
+                return None
+            if start < 0 or end <= start:
+                return None
+            return start, end
+
+        x_range = parse_range(x_values[0])
+        y_range = parse_range(y_values[0])
+        if x_range is None or y_range is None:
+            return None
+        return base_url, x_range[0], y_range[0], x_range[1], y_range[1]
 
     @staticmethod
     def _guess_mime(path: Path) -> str:

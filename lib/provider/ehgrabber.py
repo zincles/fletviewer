@@ -115,10 +115,33 @@ class SearchResult:
 
 
 @dataclass
+class ThumbnailItem:
+    """画廊页内的单张缩略图信息"""
+    url: str
+    page_url: str
+    width: int = 0
+    height: int = 0
+    aspect_ratio: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.aspect_ratio and self.width and self.height:
+            self.aspect_ratio = self.width / self.height
+
+
+@dataclass
+class ParsedThumbnail:
+    """从页面 HTML 解析出的缩略图片段，尚未绑定 page_url。"""
+    url: str
+    width: int = 0
+    height: int = 0
+
+
+@dataclass
 class ThumbnailsResult:
     """缩略图页结果"""
     thumbnails: list[str] = field(default_factory=list)
     urls: list[str] = field(default_factory=list)
+    items: list[ThumbnailItem] = field(default_factory=list)
     next_page: Optional[str] = None
 
 
@@ -813,28 +836,28 @@ class EHentaiClient:
         resp = self._request(url, cookies={"nw": "1"}, timeout=30)
         soup = BeautifulSoup(resp.text, "lxml")
 
-        images: list[str] = []
+        parsed_thumbs: list[ParsedThumbnail] = []
 
         # gdtm (sprite thumbnails)
         for div in soup.select("div.gdtm > div"):
-            img_url = self._parse_sprite_url(div)
-            if img_url:
-                images.append(img_url)
+            thumb = self._parse_sprite_thumbnail(div)
+            if thumb:
+                parsed_thumbs.append(thumb)
 
         # gdtl (direct images)
         for img in soup.select("div.gdtl > a > img"):
-            src = img.get("src", "")
-            if src:
-                images.append(src)
+            thumb = self._parse_direct_thumbnail(img)
+            if thumb:
+                parsed_thumbs.append(thumb)
 
         # fallback: gt100 / gt200
-        if not images:
+        if not parsed_thumbs:
             for div in soup.select("div.gt100 > a > div, div.gt200 > a > div"):
                 children = div.find_all(recursive=False)
                 target = children[0] if children else div
-                img_url = self._parse_sprite_url(target)
-                if img_url:
-                    images.append(img_url)
+                thumb = self._parse_sprite_thumbnail(target)
+                if thumb:
+                    parsed_thumbs.append(thumb)
 
         # 页码
         urls: list[str] = []
@@ -859,15 +882,57 @@ class EHentaiClient:
         current += 1
         next_page = str(current) if current <= max_page_num else None
 
+        items = [
+            ThumbnailItem(
+                url=thumb.url,
+                page_url=page_url,
+                width=thumb.width,
+                height=thumb.height,
+            )
+            for thumb, page_url in zip(parsed_thumbs, urls)
+        ]
+
         return ThumbnailsResult(
-            thumbnails=images,
+            thumbnails=[thumb.url for thumb in parsed_thumbs],
             urls=urls,
+            items=items,
             next_page=next_page,
         )
 
     @staticmethod
-    def _parse_sprite_url(element: Any) -> Optional[str]:
-        """从 sprite div 解析图片 URL（带 crop range 参数）"""
+    def _parse_int(value: Any) -> int:
+        if value is None:
+            return 0
+        m = re.search(r"\d+", str(value))
+        return int(m.group(0)) if m else 0
+
+    @classmethod
+    def _parse_size_from_style(cls, style: str) -> tuple[int, int]:
+        width_m = re.search(r"width:\s*(\d+)px", style)
+        height_m = re.search(r"height:\s*(\d+)px", style)
+        width = int(width_m.group(1)) if width_m else 0
+        height = int(height_m.group(1)) if height_m else 0
+        return width, height
+
+    @classmethod
+    def _parse_direct_thumbnail(cls, element: Any) -> Optional[ParsedThumbnail]:
+        """从直接 img 节点解析缩略图 URL 和显示尺寸。"""
+        src = element.get("src", "")
+        if not src:
+            return None
+
+        width = cls._parse_int(element.get("width"))
+        height = cls._parse_int(element.get("height"))
+        if not width or not height:
+            style_width, style_height = cls._parse_size_from_style(element.get("style", ""))
+            width = width or style_width
+            height = height or style_height
+
+        return ParsedThumbnail(url=src, width=width, height=height)
+
+    @classmethod
+    def _parse_sprite_thumbnail(cls, element: Any) -> Optional[ParsedThumbnail]:
+        """从 sprite div 解析图片 URL（带 crop range 参数）和显示尺寸。"""
         style = element.get("style", "")
         if not style or "url(" not in style:
             return None
@@ -878,11 +943,7 @@ class EHentaiClient:
             return None
         base = m.group(1)
 
-        # 提取 width / height
-        width_m = re.search(r"width:\s*(\d+)px", style)
-        height_m = re.search(r"height:\s*(\d+)px", style)
-        width = int(width_m.group(1)) if width_m else 0
-        height = int(height_m.group(1)) if height_m else 0
+        width, height = cls._parse_size_from_style(style)
 
         # 提取 position:  "url(...) -Npx" 形式
         pos_m = re.search(r"url\([^)]+\)\s*-(\d+)px", style)
@@ -896,7 +957,7 @@ class EHentaiClient:
         if range_str:
             base += f"@{range_str}"
 
-        return base
+        return ParsedThumbnail(url=base, width=width, height=height)
 
     # -----------------------------------------------------------------------
     # 图片密钥 (showkey / mpvkey)

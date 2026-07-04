@@ -10,7 +10,10 @@ APP_CONFIG_PATH = CONFIG_DIR / "AppConfig.json"
 EH_CONFIG_KEYS = ("ipb_member_id", "ipb_pass_hash", "igneous", "star")
 APP_CONFIG_DEFAULTS = {
     "load_images": True,
+    "render_gallery_cards": True,
+    "image_viewer_mode": "paged",
 }
+IMAGE_VIEWER_MODES = {"paged", "vertical"}
 
 
 def ensure_dirs():
@@ -49,3 +52,12 @@ def save_app_config(cfg: dict) -> None:
 
 def should_load_images() -> bool:
     return bool(load_app_config().get("load_images", True))
+
+
+def should_render_gallery_cards() -> bool:
+    return bool(load_app_config().get("render_gallery_cards", True))
+
+
+def get_image_viewer_mode() -> str:
+    mode = str(load_app_config().get("image_viewer_mode", "paged"))
+    return mode if mode in IMAGE_VIEWER_MODES else "paged"

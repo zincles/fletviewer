@@ -6,18 +6,20 @@ import flet as ft
 
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
+from app.storage import should_render_gallery_cards
+from app.views.gallery_cards import make_gallery_card
 
 
-def _comic_to_dict(c):
-    return dataclasses.asdict(c)
+def _comic_to_dict(comic):
+    return dataclasses.asdict(comic)
 
 
-def _result_to_json(result):
-    comics = [_comic_to_dict(c) for c in result.comics]
+def _result_to_json(result) -> str:
     data = {
-        "count": len(comics),
+        "count": len(result.comics),
+        "prev_url": result.prev_url,
         "next_url": result.next_url,
-        "comics": comics,
+        "comics": [_comic_to_dict(comic) for comic in result.comics],
     }
     return json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -28,50 +30,117 @@ def create_view(page: ft.Page) -> ft.Control:
         hint_text="例如: blue archive",
         width=500,
         autofocus=True,
-        on_submit=lambda e: do_search(),
     )
-    btn = ft.Button("搜索", icon=ft.Icons.SEARCH, on_click=lambda e: do_search())
+    btn = ft.Button("搜索", icon=ft.Icons.SEARCH)
+    prev_btn = ft.Button("上一页", icon=ft.Icons.ARROW_BACK, disabled=True)
+    next_btn = ft.Button("下一页", icon=ft.Icons.ARROW_FORWARD, disabled=True)
+    page_label = ft.Text("第 1 页", size=14)
+    status = ft.Text("输入关键词后搜索", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
+    render_cards = should_render_gallery_cards()
+    grid = ft.GridView(
+        expand=True,
+        runs_count=5,
+        spacing=10,
+        run_spacing=10,
+        child_aspect_ratio=0.65,
+        padding=10,
+    )
     output = ft.Text("输入关键词后搜索", size=14, selectable=True)
+    state = {"keyword": "", "page_num": 1, "prev_url": None, "next_url": None}
 
-    def do_search():
-        kw = query.value.strip()
-        if not kw:
-            return
+    def set_loading(text: str):
         btn.disabled = True
-        output.value = "搜索中..."
+        prev_btn.disabled = True
+        next_btn.disabled = True
+        status.value = text
+        if render_cards:
+            grid.controls.clear()
+        else:
+            output.value = text
         page.update()
+
+    def render_result(result):
+        state["prev_url"] = result.prev_url
+        state["next_url"] = result.next_url
+        prev_btn.disabled = result.prev_url is None
+        next_btn.disabled = result.next_url is None
+        status.value = f"共 {len(result.comics)} 个画廊"
+        if render_cards:
+            grid.controls = [make_gallery_card(page, comic) for comic in result.comics]
+        else:
+            output.value = _result_to_json(result)
+
+    def load(keyword: str | None = None, page_url: str | None = None):
+        kw = (keyword if keyword is not None else state["keyword"]).strip()
+        if not kw and not page_url:
+            return
+        if keyword is not None:
+            state["keyword"] = kw
+            state["page_num"] = 1
+            page_label.value = "第 1 页"
+
+        set_loading("搜索中...")
 
         def worker():
             try:
-                log_debug("search", f"search start keyword={kw}")
+                log_debug("search", f"search start keyword={kw} page_url={page_url}")
                 client = browser_session.get_eh_client(require_login=False)
-                with Timer("search", f"search keyword={kw}"):
-                    result = client.search(keyword=kw)
-                log_debug("search", f"search result count={len(result.comics)} next={result.next_url}")
-                output.value = _result_to_json(result)
+                with Timer("search", f"search keyword={kw} page_url={page_url}"):
+                    result = client.search(page_url=page_url) if page_url else client.search(keyword=kw)
+                log_debug(
+                    "search",
+                    f"search result count={len(result.comics)} prev={result.prev_url} next={result.next_url}",
+                )
+                render_result(result)
             except Exception as ex:
+                status.value = f"错误: {ex}"
                 output.value = f"错误: {ex}"
-                log_exception("search", f"search failed keyword={kw}: {ex}")
+                log_exception("search", f"search failed keyword={kw} page_url={page_url}: {ex}")
             finally:
                 btn.disabled = False
                 page.update()
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def on_search(e=None):
+        load(keyword=query.value)
+
+    def on_prev(e):
+        if state["prev_url"]:
+            state["page_num"] -= 1
+            page_label.value = f"第 {state['page_num']} 页"
+            load(page_url=state["prev_url"])
+
+    def on_next(e):
+        if state["next_url"]:
+            state["page_num"] += 1
+            page_label.value = f"第 {state['page_num']} 页"
+            load(page_url=state["next_url"])
+
+    query.on_submit = on_search
+    btn.on_click = on_search
+    prev_btn.on_click = on_prev
+    next_btn.on_click = on_next
+
+    result_content = grid if render_cards else ft.Container(
+        content=ft.Column([output], scroll=ft.ScrollMode.AUTO),
+        expand=True,
+        border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+        border_radius=8,
+        padding=16,
+    )
+
+    subtitle = "E-Hentai 画廊搜索" if render_cards else "E-Hentai 画廊搜索（JSON 调试模式）"
     return ft.Column(
         controls=[
             ft.Text("搜索", size=32, weight=ft.FontWeight.BOLD),
-            ft.Text("E-Hentai 画廊搜索", size=16, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text(subtitle, size=16, color=ft.Colors.ON_SURFACE_VARIANT),
             ft.Divider(),
-            ft.Row([query, btn], spacing=12),
-            ft.Container(
-                content=ft.Column([output], scroll=ft.ScrollMode.AUTO),
-                expand=True,
-                border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-                border_radius=8,
-                padding=16,
-            ),
+            ft.Row([query, btn, status], spacing=12),
+            result_content,
+            ft.Divider(),
+            ft.Row([prev_btn, page_label, next_btn], alignment=ft.MainAxisAlignment.CENTER, spacing=20),
         ],
-        spacing=16,
+        spacing=12,
         expand=True,
     )

@@ -12,6 +12,8 @@ from app.views.subscriptions import create_view as subscriptions_view
 from app.views.popular import create_view as popular_view
 from app.views.leaderboard import create_view as leaderboard_view
 from app.views.favorites import create_view as favorites_view
+from app.views.gallery_detail import create_view as gallery_detail_view
+from app.views.image_viewer import create_view as image_viewer_view
 from app.views.search import create_view as search_view
 from app.views.settings import create_view as settings_view
 
@@ -34,6 +36,49 @@ def main(page: ft.Page):
 
     content = ft.Container(expand=True, padding=40)
     view_cache: dict[str, ft.Control] = {}
+
+    def invalidate_views(keys: list[str] | None = None, reason: str = ""):
+        targets = keys or list(view_cache.keys())
+        for key in targets:
+            if key in view_cache:
+                view_cache.pop(key, None)
+                log_debug("nav", f"invalidate {key} reason={reason}")
+
+    page.fletviewer_invalidate_views = invalidate_views
+
+    def open_gallery_detail(comic):
+        previous_content = content.content
+        log_debug("nav", f"open gallery detail {comic.id}")
+
+        def go_back():
+            log_debug("nav", f"close gallery detail {comic.id}")
+            content.content = previous_content
+            page.update()
+
+        content.content = gallery_detail_view(page, comic, go_back)
+        page.update()
+
+    page.fletviewer_open_gallery_detail = open_gallery_detail
+
+    def open_image_viewer(items, initial_index=0, resolve_image_url=None):
+        previous_content = content.content
+        log_debug("nav", f"open image viewer index={initial_index} count={len(items)}")
+
+        def go_back():
+            log_debug("nav", "close image viewer")
+            content.content = previous_content
+            page.update()
+
+        content.content = image_viewer_view(
+            page,
+            items,
+            initial_index,
+            go_back,
+            resolve_image_url=resolve_image_url,
+        )
+        page.update()
+
+    page.fletviewer_open_image_viewer = open_image_viewer
 
     def render_search():
         rail.selected_index = None

@@ -3,6 +3,7 @@ import flet as ft
 from app.storage import (
     APP_CONFIG_PATH,
     EH_CONFIG_PATH,
+    get_image_viewer_mode,
     load_app_config,
     load_eh_config,
     save_app_config,
@@ -15,6 +16,14 @@ COOKIE_FIELDS = [
     ("igneous", "igneous", "igneous（exhentai 可选）", False),
     ("star", "star", "star（可选）", False),
 ]
+
+GALLERY_VIEW_CACHE_KEYS = ["page:0", "page:1", "page:2", "page:3", "page:4", "search"]
+
+
+def _invalidate_gallery_views(page: ft.Page, reason: str) -> None:
+    invalidate = getattr(page, "fletviewer_invalidate_views", None)
+    if callable(invalidate):
+        invalidate(GALLERY_VIEW_CACHE_KEYS, reason=reason)
 
 
 def create_view(page: ft.Page) -> ft.Control:
@@ -38,6 +47,20 @@ def create_view(page: ft.Page) -> ft.Control:
         label="是否加载图像",
         value=bool(app_cfg.get("load_images", True)),
     )
+    render_cards_switch = ft.Switch(
+        label="是否使用卡片渲染画廊列表",
+        value=bool(app_cfg.get("render_gallery_cards", True)),
+    )
+    viewer_mode_dropdown = ft.Dropdown(
+        label="默认图像查看器",
+        value=get_image_viewer_mode(),
+        options=[
+            ft.DropdownOption(key="paged", text="单页左右切换"),
+            ft.DropdownOption(key="vertical", text="垂直连续浏览"),
+        ],
+        width=260,
+        dense=True,
+    )
 
     def on_save(e):
         data = {key: fields[key].value.strip() for key, *_ in COOKIE_FIELDS}
@@ -47,12 +70,20 @@ def create_view(page: ft.Page) -> ft.Control:
             page.update()
             return
         save_eh_config(data)
+        _invalidate_gallery_views(page, "eh_config_saved")
         status.value = f"已保存到 {EH_CONFIG_PATH}"
         status.color = ft.Colors.PRIMARY
         page.update()
 
     def on_save_app(e):
-        save_app_config({"load_images": load_images_switch.value})
+        save_app_config(
+            {
+                "load_images": load_images_switch.value,
+                "render_gallery_cards": render_cards_switch.value,
+                "image_viewer_mode": viewer_mode_dropdown.value or "paged",
+            }
+        )
+        _invalidate_gallery_views(page, "app_debug_config_saved")
         app_status.value = f"已保存到 {APP_CONFIG_PATH}"
         app_status.color = ft.Colors.PRIMARY
         page.update()
@@ -75,11 +106,13 @@ def create_view(page: ft.Page) -> ft.Control:
             ft.Divider(),
             ft.Text("调试", size=20, weight=ft.FontWeight.W_500),
             ft.Text(
-                "关闭后，界面不会读取缓存图片，也不会向远端请求新图像资源。",
+                "关闭图像加载后，界面不会读取缓存图片，也不会向远端请求新图像资源。关闭卡片渲染后，画廊列表会回到 JSON 调试输出。",
                 size=14,
                 color=ft.Colors.ON_SURFACE_VARIANT,
             ),
             load_images_switch,
+            render_cards_switch,
+            viewer_mode_dropdown,
             ft.Row(
                 [
                     ft.Button("保存调试设置", on_click=on_save_app),

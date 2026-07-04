@@ -129,6 +129,93 @@ alignment=ft.Alignment(0, 0)
 
 项目中已有类似写法，例如 `ft.Alignment(-1, 1)`。
 
+`ft.Image` 在当前 Flet 版本中必须提供有效 `src`。不要用 `ft.Image(src=None)` 或先创建空 Image 再异步填充；会报 `Image must have "src" specified`。需要占位时使用 `app.controls.async_image.image_placeholder()`，即 `Container + Icon`，等拿到真实 bytes 后再创建/替换为 `ft.Image(src=bytes, ...)`。
+
+占位图策略：无图模式、图片加载中、图片查看器切换中，统一使用 `Container + Icon`。不要用 1x1 base64 空图当占位；它仍会走图片解码管线，且不如普通控件稳定。
+
+图片不要直接把 bytes 塞给 `ft.Image(src=...)`。桌面端 bytes 可显示，但 Flet Web/Flutter Web 下可能出现图片已加载但透明不显示。统一使用 `app.controls.async_image.image_src_for_page(page, data, mime)`，当前所有端都返回 `data:<mime>;base64,...`，让桌面和 Web 走同一条显示路径。raw bytes 路径开销更低，代码里保留注释，后续如果确实需要优化桌面内存/CPU 再恢复。
+
+
+### 当前图像与缓存架构：
+
+不要再启动本地 HTTP 图片代理，也不要恢复 `/thumb?url=...` 这类接口。当前图像展示主路径是：
+
+```
+UI -> async_image/image_viewer -> ImageFetcherService -> JSON index -> HatH-style disk cache -> bytes -> ft.Image
+```
+
+缓存系统是 provider-agnostic 的，不要绑定 EH：
+- `app/image_cache.py` 维护 `FletViewer/Data/ImageCache/index.json`
+- JSON index 结构为 `url -> filename`，value 只存文件名，不存完整路径
+- 文件路径由缓存层按 HatH 风格拼接：`Data/ImageCache/files/<hash[0:2]>/<hash[2:4]>/<filename>`
+- filename 当前为 `sha256(normalized_url) + ext`
+- 如果 index 指向的文件不存在，按需调用 stale repair 删除脏映射，然后重新拉取
+
+EH sprite 缩略图会使用形如 `https://...webp@x=1800-2000&y=0-282` 的本地 crop URL。`@x/y` 后缀不是 HatH 服务器支持的真实 URL，不能直接发给远端。`app/image_fetcher.py` 负责识别这类 URL：先拉取 `@` 前的原始 sprite，再用 Pillow 本地裁剪，并把裁剪结果按完整 crop URL 缓存。
+
+图片加载开关位于设置页：`是否加载图像`。关闭后，`async_image()` 和图像查看器都不应读取缓存、不应请求远端图片，只显示占位控件。这个开关只控制图片资源，不控制列表页 HTML/JSON 请求。
+
+
+### 浏览器会话与网络请求：
+
+EH 相关请求应尽量复用 `app/browser_session.py` 中的 `browser_session` 单例，模拟一个长期浏览器状态：统一 `requests.Session`、统一 cookie jar、统一 UA/Accept/Accept-Language、复用连接。
+
+不要在页面里随意新建 `EHentaiClient()`。需要 EH client 时使用：
+
+```
+client = browser_session.get_eh_client(require_login=False)
+client = browser_session.get_eh_client(require_login=True)
+```
+
+登录必需页面使用 `require_login=True`，公开页面用 `False`。登录验证有 TTL 缓存，避免每次切换页面都访问 favorites.php 验证。保存 EH 凭据后需要让相关页面缓存失效。
+
+图片 fetch 也应走 `browser_session.get(...)`，不要手动拼 Cookie header。这样图片请求和页面请求共享同一个浏览器状态。
+
+
+### 页面缓存与设置变更：
+
+`app/main.py` 对导航页做了 view cache，避免从“热门”切回“主页”时重新请求和重新构建列表。切换页面时应复用已有控件树，刷新由页面自己的“刷新”按钮触发。
+
+保存设置后，如果影响已有页面渲染，必须调用 `page.fletviewer_invalidate_views(...)` 清理相关缓存。当前设置页保存 EH 凭据、保存调试设置时会清理：主页、订阅、热门、排行榜、收藏、搜索。
+
+设置页的 `是否使用卡片渲染画廊列表` 控制画廊列表是卡片网格还是 JSON 调试输出。该设置在 view 创建时读取；如果页面已缓存，需要保存设置后失效并重建页面才会生效。
+
+
+### 画廊、详情与图片查看器：
+
+画廊列表统一入口为 `app/views/gallery_debug.py:create_gallery_view(...)`：
+- 卡片模式下委托 `gallery_cards.create_gallery_cards_view(...)`
+- JSON 调试模式下输出原始字典
+- 主页、热门、排行榜、收藏、订阅都应走这个入口
+- 搜索页也应遵循同一个卡片/JSON 设置，并且卡片可点击进入详情
+
+卡片点击进入 `app/views/gallery_detail.py`。详情页当前展示封面、标题、tag、第一页缩略图，以及 `details + thumbnails` JSON。画廊内部详细情况暂时优先保留 JSON，便于调试。
+
+缩略图点击进入通用图像查看器 `app/views/image_viewer.py`。图像查看器不应绑定 EH：
+- 通用输入是 `ImageViewerItem(url, title, detail)` 列表
+- 对 EH 这类需要从 page URL 解析原图 URL 的 provider，通过 `resolve_image_url(item, index)` 注入解析函数
+- 对 Booru 这类已有直接图片 URL 的 provider，直接传 item.url 即可
+- 查看器提供左右切换、下载按钮、详情按钮、单页/垂直模式切换按钮
+- 下载当前复制缓存文件到 `FletViewer/Downloads/`
+- 详情按钮当前展示 URL、cache path、metadata，后续可追加 Booru tags 等图像元数据
+
+图像查看器有两种模式：
+- `paged`：单张图左右切换，适合精确查看
+- `vertical`：垂直连续浏览，图片水平宽度一致，高度按比例自适应
+
+默认模式由设置页的 `默认图像查看器` 控制，写入 `AppConfig.json` 的 `image_viewer_mode`，合法值为 `paged` / `vertical`。查看器内部也可以临时切换模式。
+
+垂直模式当前是有限窗口实现，不应一次性把整本画廊的真实图片都创建成 `ft.Image`。它使用 `ImageViewerItem.detail` 中的 `thumbnail_width`、`thumbnail_height`、`thumbnail_aspect_ratio` 估算占位高度，只加载滚动可见区域附近的图片；窗口外恢复为 `Container + Icon` 占位以释放 UI 对 bytes 的引用。后续如果增加真实图片尺寸 metadata，应优先用于垂直占位高度。
+
+EH provider 的 `ThumbnailsResult` 仍保留旧字段 `thumbnails` / `urls`，同时新增 `items: list[ThumbnailItem]`。新代码优先使用 `items`，因为其中包含 `url`、`page_url`、`width`、`height`、`aspect_ratio`。
+
+
+### 调试日志：
+
+主要异步 worker 捕获异常时应使用 `app.debug_log.log_exception(...)`，不要只吞异常或只显示 UI 文本。终端需要打印 traceback。
+
+耗时较长或网络相关路径使用 `Timer(...)` 和 `log_debug(...)`。当前已覆盖：浏览器会话请求、登录验证、画廊列表加载、搜索、图片 fetch、async image、详情页、图像查看器。
+
 
 ### Android 构建环境（未就绪，注意事项）：
 

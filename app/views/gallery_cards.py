@@ -11,7 +11,7 @@ from lib.provider.ehgrabber import EHentaiClient, Comic, SearchResult
 
 
 def make_gallery_card(page: ft.Page, comic: Comic) -> ft.Control:
-    return ft.Card(
+    card = ft.Card(
         content=ft.Container(
             content=ft.Stack(
                 controls=[
@@ -62,6 +62,14 @@ def make_gallery_card(page: ft.Page, comic: Comic) -> ft.Control:
             height=220,
         ),
     )
+    open_detail = getattr(page, "fletviewer_open_gallery_detail", None)
+    if callable(open_detail):
+        return ft.GestureDetector(
+            content=card,
+            mouse_cursor=ft.MouseCursor.CLICK,
+            on_tap=lambda e: open_detail(comic),
+        )
+    return card
 
 
 def create_gallery_cards_view(
