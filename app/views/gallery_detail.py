@@ -49,13 +49,24 @@ def _make_tag_controls(tags: dict[str, list[str]]) -> list[ft.Control]:
     return controls
 
 
-def _make_comment_card(comment: Comment) -> ft.Control:
+def _comment_value(comment: Comment | dict, key: str, default=None):
+    """兼容缓存反序列化后的 dict 评论和 provider 返回的 Comment 对象。"""
+    if isinstance(comment, dict):
+        return comment.get(key, default)
+    return getattr(comment, key, default)
+
+
+def _make_comment_card(comment: Comment | dict) -> ft.Control:
     """创建画廊评论卡片。"""
+    user_name = _comment_value(comment, "user_name") or "Unknown"
+    comment_time = _comment_value(comment, "time") or ""
+    score = _comment_value(comment, "score")
+    content = _comment_value(comment, "content") or ""
     meta = ft.Row(
         [
-            ft.Text(comment.user_name or "Unknown", size=13, weight=ft.FontWeight.BOLD),
-            ft.Text(comment.time or "", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
-            ft.Text(f"score: {comment.score}", size=12, color=ft.Colors.ON_SURFACE_VARIANT) if comment.score is not None else ft.Container(),
+            ft.Text(user_name, size=13, weight=ft.FontWeight.BOLD),
+            ft.Text(comment_time, size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text(f"score: {score}", size=12, color=ft.Colors.ON_SURFACE_VARIANT) if score is not None else ft.Container(),
         ],
         spacing=10,
         wrap=True,
@@ -64,7 +75,7 @@ def _make_comment_card(comment: Comment) -> ft.Control:
         content=ft.Column(
             [
                 meta,
-                ft.Text(comment.content or "", size=13, selectable=True),
+                ft.Text(content, size=13, selectable=True),
             ],
             spacing=6,
         ),
@@ -78,13 +89,27 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
     """创建在线画廊详情页，展示 metadata、评论、缩略图和 Archive 下载入口。"""
     state = {"details": None, "thumbs": None}
     show_raw_json = not should_render_gallery_cards()
-    title = ft.Text(comic.title or "加载中...", size=28, weight=ft.FontWeight.BOLD, selectable=True)
-    subtitle = ft.Text(comic.id, size=13, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True)
+    title = ft.Text(
+        comic.title or "加载中...",
+        size=28,
+        weight=ft.FontWeight.BOLD,
+        max_lines=3,
+        overflow=ft.TextOverflow.ELLIPSIS,
+        selectable=True,
+    )
+    subtitle = ft.Text(
+        comic.id,
+        size=13,
+        color=ft.Colors.ON_SURFACE_VARIANT,
+        max_lines=2,
+        overflow=ft.TextOverflow.ELLIPSIS,
+        selectable=True,
+    )
     status = ft.Text("加载中...", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
     download_status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
     cover_box = ft.Container(
-        content=async_image(page, comic.cover, width=260, height=360, fit=ft.BoxFit.COVER, cache_width=520),
-        width=260,
+        content=async_image(page, comic.cover, width=float("inf"), height=360, fit=ft.BoxFit.COVER, cache_width=520),
+        expand=4,
         height=360,
         border_radius=8,
         clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
@@ -104,30 +129,32 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             status,
         ],
         spacing=8,
-        expand=True,
+        alignment=ft.MainAxisAlignment.START,
+        horizontal_alignment=ft.CrossAxisAlignment.START,
+        expand=6,
     )
     tags_wrap = ft.Row(wrap=True, spacing=8, run_spacing=8)
-    thumbs_grid = ft.GridView(
-        runs_count=runs_count_for_width(page.width, min_columns=3, max_columns=12),
-        spacing=THUMBNAIL_GRID_SPACING,
-        run_spacing=THUMBNAIL_GRID_SPACING,
-        child_aspect_ratio=0.72,
-    )
+    thumb_columns = {"value": runs_count_for_width(page.width, min_columns=3, max_columns=12)}
+    thumb_controls: list[ft.Control] = []
+    thumbs_grid = ft.Column(spacing=THUMBNAIL_GRID_SPACING)
 
-    def update_thumb_grid_height():
-        count = len(thumbs_grid.controls)
-        if count <= 0:
-            thumbs_grid.height = THUMBNAIL_TILE_HEIGHT
-            return
-        columns = max(1, int(thumbs_grid.runs_count or 1))
-        rows = (count + columns - 1) // columns
-        thumbs_grid.height = rows * THUMBNAIL_TILE_HEIGHT + max(0, rows - 1) * THUMBNAIL_GRID_SPACING
+    def rebuild_thumb_grid():
+        """用普通 Row/Column 铺缩略图，避免详情页里出现独立滚动条。"""
+        columns = max(1, int(thumb_columns["value"] or 1))
+        rows: list[ft.Control] = []
+        for start in range(0, len(thumb_controls), columns):
+            chunk = thumb_controls[start:start + columns]
+            cells = [ft.Container(content=control, expand=1) for control in chunk]
+            if len(cells) < columns:
+                cells.extend(ft.Container(expand=1) for _ in range(columns - len(cells)))
+            rows.append(ft.Row(cells, spacing=THUMBNAIL_GRID_SPACING, height=THUMBNAIL_TILE_HEIGHT))
+        thumbs_grid.controls = rows
 
     def update_thumb_grid_columns(e=None):
         new_count = runs_count_for_width(page.width, min_columns=3, max_columns=12)
-        if thumbs_grid.runs_count != new_count:
-            thumbs_grid.runs_count = new_count
-            update_thumb_grid_height()
+        if thumb_columns["value"] != new_count:
+            thumb_columns["value"] = new_count
+            rebuild_thumb_grid()
             page.update()
 
     add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
@@ -135,10 +162,38 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         add_resize_handler(update_thumb_grid_columns)
     raw_json = ft.Text("{}", size=12, selectable=True)
     comments_column = ft.Column(spacing=8)
+    show_more_comments_button = ft.Button("显示更多评论", visible=False)
     load_more_thumbs_button = ft.Button("加载更多缩略图", visible=False)
     thumb_state = {"items": [], "loaded": 0, "make_thumb": None}
     resolved_image_urls: dict[int, str] = {}
     image_key_state = {"key": None}
+    root_view = ft.Column(spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
+    detail_controls: list[ft.Control] = []
+
+    def show_detail_view(update: bool = True):
+        """回到画廊详情主体内容。"""
+        root_view.controls = detail_controls
+        if update:
+            page.update()
+
+    def show_all_comments(e=None):
+        """在当前详情页内展示完整评论列表。"""
+        details = state.get("details")
+        comments = list(getattr(details, "comments", []) or [])
+        root_view.controls = [
+            ft.Row(
+                [
+                    ft.Button("返回画廊详情", icon=ft.Icons.ARROW_BACK, on_click=lambda ev: show_detail_view()),
+                    ft.Text(f"全部评论（{len(comments)}）", size=22, weight=ft.FontWeight.BOLD),
+                ],
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            *( [_make_comment_card(comment) for comment in comments] or [ft.Text("暂无评论", size=14, color=ft.Colors.ON_SURFACE_VARIANT)] ),
+        ]
+        page.update()
+
+    show_more_comments_button.on_click = show_all_comments
 
     def render_thumb_batch():
         viewer_items = thumb_state["items"]
@@ -149,12 +204,12 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             return
         for idx in range(start, end):
             item = viewer_items[idx]
-            thumbs_grid.controls.append(make_thumb_fn(idx, item.detail["thumbnail_url"]))
+            thumb_controls.append(make_thumb_fn(idx, item.detail["thumbnail_url"]))
         thumb_state["loaded"] = end
         load_more_thumbs_button.visible = end < len(viewer_items)
         if viewer_items:
             load_more_thumbs_button.text = f"加载更多缩略图（{end}/{len(viewer_items)}）"
-        update_thumb_grid_height()
+        rebuild_thumb_grid()
 
     def load_more_thumbs(e):
         render_thumb_batch()
@@ -259,6 +314,15 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
 
         page.run_thread(archive_worker)
 
+    set_header_actions = getattr(page, "fletviewer_set_header_actions", None)
+    if callable(set_header_actions):
+        set_header_actions(
+            [
+                ft.Button("返回", icon=ft.Icons.ARROW_BACK, on_click=lambda e: on_back()),
+                ft.Button("下载 Archive", icon=ft.Icons.DOWNLOAD, on_click=load_archives),
+            ]
+        )
+
     def worker():
         try:
             log_debug("detail", f"load start {comic.id}")
@@ -280,13 +344,16 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             title.value = details.title or comic.title
             subtitle.value = details.sub_title or details.url or comic.id
             if details.cover:
-                cover_box.content = async_image(page, details.cover, width=260, height=360, fit=ft.BoxFit.COVER, cache_width=520)
+                cover_box.content = async_image(page, details.cover, width=float("inf"), height=360, fit=ft.BoxFit.COVER, cache_width=520)
 
             tags_wrap.controls = _make_tag_controls(details.tags)
+            comments = list(details.comments or [])
             comments_column.controls = [
                 _make_comment_card(comment)
-                for comment in details.comments
+                for comment in comments[:2]
             ] or [ft.Text("暂无评论", size=14, color=ft.Colors.ON_SURFACE_VARIANT)]
+            show_more_comments_button.visible = len(comments) > 2
+            show_more_comments_button.text = f"显示更多评论（{len(comments)} 条）"
             thumb_items = thumbs.items or [
                 ThumbnailItem(url=thumb, page_url=page_url)
                 for page_url, thumb in zip(thumbs.urls, thumbs.thumbnails)
@@ -342,6 +409,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
                     )
                 return box
 
+            thumb_controls.clear()
             thumbs_grid.controls = []
             thumb_state["items"] = viewer_items
             thumb_state["loaded"] = 0
@@ -365,14 +433,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
 
     page.run_thread(worker)
 
-    controls = [
-            ft.Row(
-                [
-                    ft.Button("返回", icon=ft.Icons.ARROW_BACK, on_click=lambda e: on_back()),
-                    ft.Button("下载 Archive", icon=ft.Icons.DOWNLOAD, on_click=load_archives),
-                ],
-                spacing=12,
-            ),
+    detail_controls = [
             download_status,
             ft.Divider(),
             ft.Row([cover_box, meta], spacing=24, vertical_alignment=ft.CrossAxisAlignment.START),
@@ -380,13 +441,14 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             tags_wrap,
             ft.Text("评论", size=18, weight=ft.FontWeight.BOLD),
             comments_column,
+            show_more_comments_button,
             ft.Text("缩略图", size=18, weight=ft.FontWeight.BOLD),
             thumbs_grid,
             load_more_thumbs_button,
     ]
 
     if show_raw_json:
-        controls.extend(
+        detail_controls.extend(
             [
                 ft.Text("原始详情 JSON", size=18, weight=ft.FontWeight.BOLD),
                 ft.Container(
@@ -399,9 +461,5 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             ]
         )
 
-    return ft.Column(
-        controls=controls,
-        spacing=12,
-        scroll=ft.ScrollMode.AUTO,
-        expand=True,
-    )
+    show_detail_view(update=False)
+    return root_view

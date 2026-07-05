@@ -73,6 +73,8 @@ def create_view(
         "current_path": None,
         "paged_generation": 0,
         "vertical_generation": 0,
+        "overlay_generation": 0,
+        "last_overlay_activity": 0.0,
     }
     if state["mode"] not in ("paged", "vertical"):
         state["mode"] = "paged"
@@ -86,6 +88,30 @@ def create_view(
     download_btn = ft.IconButton(icon=ft.Icons.DOWNLOAD, tooltip="下载当前图片")
     detail_btn = ft.IconButton(icon=ft.Icons.INFO_OUTLINE, tooltip="详情")
     mode_btn = ft.IconButton(icon=ft.Icons.VIEW_STREAM, tooltip="切换为垂直连续浏览")
+    back_overlay_btn = ft.IconButton(icon=ft.Icons.ARROW_BACK, tooltip="返回")
+    page_counter = ft.Text("", size=14, weight=ft.FontWeight.W_600, color=ft.Colors.WHITE)
+    for button in (prev_btn, next_btn, download_btn, detail_btn, mode_btn, back_overlay_btn):
+        button.icon_color = ft.Colors.WHITE
+    status.color = ft.Colors.WHITE
+    top_overlay_container = ft.Container(
+        content=ft.Stack(
+            controls=[
+                ft.Container(content=page_counter, left=0, right=0, top=0, bottom=0, alignment=ft.Alignment(0, 0), ignore_interactions=True),
+                ft.Container(content=back_overlay_btn, left=0, top=0, bottom=0, alignment=ft.Alignment(-1, 0)),
+                ft.Container(content=ft.Row([mode_btn, detail_btn, download_btn], spacing=4), right=0, top=0, bottom=0, alignment=ft.Alignment(1, 0)),
+            ],
+            expand=True,
+        ),
+        top=12,
+        left=12,
+        right=12,
+        height=48,
+        padding=ft.Padding(4, 2, 4, 2),
+        border_radius=999,
+        bgcolor=ft.Colors.with_opacity(0.48, ft.Colors.BLACK),
+        animate_opacity=180,
+        animate_offset=180,
+    )
 
     estimated_heights = [_estimated_height(item) for item in items]
     vertical_cards: list[ft.Container] = []
@@ -119,11 +145,37 @@ def create_view(
             mode_btn.icon = ft.Icons.VIEW_CAROUSEL
             mode_btn.tooltip = "切换为单页左右切换"
 
+    def schedule_overlay_hide():
+        state["overlay_generation"] += 1
+        generation = state["overlay_generation"]
+
+        def worker():
+            time.sleep(3)
+            if generation != state["overlay_generation"]:
+                return
+            top_overlay_container.opacity = 0
+            top_overlay_container.offset = (0, -1.4)
+            top_overlay_container.ignore_interactions = True
+            request_update(page)
+
+        page.run_thread(worker)
+
+    def show_overlay(force: bool = False):
+        now = time.monotonic()
+        if not force and now - float(state.get("last_overlay_activity") or 0) < 0.2:
+            return
+        state["last_overlay_activity"] = now
+        top_overlay_container.opacity = 1
+        top_overlay_container.offset = (0, 0)
+        top_overlay_container.ignore_interactions = False
+        schedule_overlay_hide()
+
     def load_current():
         state["paged_generation"] += 1
         generation = state["paged_generation"]
         if not items:
             title.value = "没有图片"
+            page_counter.value = "0/0"
             status.value = "空列表"
             update_nav()
             page.update()
@@ -131,6 +183,7 @@ def create_view(
 
         item = current_item()
         pos = f"{state['index'] + 1}/{len(items)}"
+        page_counter.value = pos
         title.value = item.title or pos
         if not should_load_images():
             status.value = "图像加载已关闭"
@@ -175,6 +228,7 @@ def create_view(
         page.run_thread(worker)
 
     def move(delta: int):
+        show_overlay()
         next_index = state["index"] + delta
         if 0 <= next_index < len(items):
             state["index"] = next_index
@@ -184,6 +238,7 @@ def create_view(
                 render_vertical(scroll_to_index=next_index)
 
     def download_current(e):
+        show_overlay()
         path = state.get("current_path")
         if not path:
             status.value = "当前图片尚未加载完成"
@@ -201,6 +256,7 @@ def create_view(
         page.update()
 
     def show_detail(e):
+        show_overlay()
         item = current_item() if items else ImageViewerItem(url="")
         detail_text = ft.Text(
             f"url: {state.get('current_url') or item.url}\ncache_path: {state.get('current_path')}\nmetadata: {item.detail}",
@@ -247,6 +303,7 @@ def create_view(
             else:
                 break
         state["index"] = max(0, min(best, len(items) - 1))
+        page_counter.value = f"{state['index'] + 1}/{len(items)}"
         item = current_item()
         title.value = item.title or f"{state['index'] + 1}/{len(items)}"
         state["current_url"] = vertical_urls.get(state["index"], item.url)
@@ -339,17 +396,42 @@ def create_view(
         page.update()
 
     def on_vertical_scroll(e):
+        show_overlay()
         update_vertical_window(float(e.pixels or 0), float(e.viewport_dimension or 700))
+
+    def interactive_overlay_stack(controls: list[ft.Control]) -> ft.Control:
+        """包装阅读器 Stack，捕获 PC 鼠标移动来保持顶部栏显示。"""
+        return ft.Container(
+            content=ft.Stack(controls=controls, expand=True),
+            on_hover=lambda e: show_overlay(),
+            expand=True,
+        )
 
     def render_paged():
         state["mode"] = "paged"
         state["vertical_generation"] += 1
         update_mode_button()
-        body.content = ft.Row(
-            [prev_btn, image_box, next_btn],
-            expand=True,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        )
+        show_overlay(force=True)
+        body.content = interactive_overlay_stack([
+                image_box,
+                ft.Container(
+                    content=prev_btn,
+                    width=72,
+                    left=12,
+                    top=0,
+                    bottom=0,
+                    alignment=ft.Alignment(0, 0),
+                ),
+                ft.Container(
+                    content=next_btn,
+                    width=72,
+                    right=12,
+                    top=0,
+                    bottom=0,
+                    alignment=ft.Alignment(0, 0),
+                ),
+                top_overlay_container,
+        ])
         load_current()
 
     def render_vertical(scroll_to_index: int | None = None):
@@ -357,16 +439,25 @@ def create_view(
         state["paged_generation"] += 1
         state["vertical_generation"] += 1
         update_mode_button()
+        show_overlay(force=True)
         if not items:
             title.value = "没有图片"
+            page_counter.value = "0/0"
             status.value = "空列表"
-            body.content = ft.Container(content=image_placeholder(), expand=True, alignment=ft.Alignment(0, 0))
+            body.content = interactive_overlay_stack([
+                    ft.Container(content=image_placeholder(), expand=True, alignment=ft.Alignment(0, 0)),
+                    top_overlay_container,
+            ])
             page.update()
             return
         if not should_load_images():
             title.value = current_item().title or f"{state['index'] + 1}/{len(items)}"
+            page_counter.value = f"{state['index'] + 1}/{len(items)}"
             status.value = "图像加载已关闭"
-            body.content = ft.Container(content=image_placeholder(), expand=True, alignment=ft.Alignment(0, 0))
+            body.content = interactive_overlay_stack([
+                    ft.Container(content=image_placeholder(), expand=True, alignment=ft.Alignment(0, 0)),
+                    top_overlay_container,
+            ])
             page.update()
             return
 
@@ -388,12 +479,16 @@ def create_view(
             cache_extent=VERTICAL_SCROLL_BUFFER,
             on_scroll=on_vertical_scroll,
         )
-        body.content = list_view
+        body.content = interactive_overlay_stack([
+                list_view,
+                top_overlay_container,
+        ])
         update_nav()
         page.update()
 
         target = state["index"] if scroll_to_index is None else max(0, min(scroll_to_index, len(items) - 1))
         state["index"] = target
+        page_counter.value = f"{target + 1}/{len(items)}"
         title.value = current_item().title or f"{target + 1}/{len(items)}"
         update_vertical_window(float(offsets[target] if offsets else 0), 900)
 
@@ -407,6 +502,7 @@ def create_view(
         page.run_thread(scroll_worker)
 
     def toggle_mode(e):
+        show_overlay()
         if state["mode"] == "paged":
             render_vertical(scroll_to_index=state["index"])
         else:
@@ -414,6 +510,7 @@ def create_view(
 
     prev_btn.on_click = lambda e: move(-1)
     next_btn.on_click = lambda e: move(1)
+    back_overlay_btn.on_click = lambda e: (show_overlay(), on_back())
     download_btn.on_click = download_current
     detail_btn.on_click = show_detail
     mode_btn.on_click = toggle_mode
@@ -423,19 +520,4 @@ def create_view(
     else:
         render_paged()
 
-    return ft.Column(
-        controls=[
-            ft.Row(
-                [
-                    ft.Button("返回", icon=ft.Icons.ARROW_BACK, on_click=lambda e: on_back()),
-                    title,
-                    ft.Row([mode_btn, detail_btn, download_btn], spacing=4),
-                ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            ),
-            status,
-            body,
-        ],
-        spacing=8,
-        expand=True,
-    )
+    return body

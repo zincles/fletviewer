@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "FletViewer Desktop",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "env": {
+        "GDK_BACKEND": "x11",
+        "GTK_CSD": "0"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

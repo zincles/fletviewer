@@ -100,12 +100,12 @@ def create_gallery_cards_view(
             spacing=10,
             run_spacing=10,
             child_aspect_ratio=0.72,
-            padding=10,
+            padding=ft.Padding(10, 10, 10, 86),
         )
         status_text = ft.Text("加载中...", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
         refresh_btn = ft.Button("刷新", icon=ft.Icons.REFRESH)
-        prev_btn = ft.Button("上一页", icon=ft.Icons.ARROW_BACK, disabled=True)
-        next_btn = ft.Button("下一页", icon=ft.Icons.ARROW_FORWARD, disabled=True)
+        prev_btn = ft.IconButton(ft.Icons.ARROW_BACK, tooltip="上一页", disabled=True)
+        next_btn = ft.IconButton(ft.Icons.ARROW_FORWARD, tooltip="下一页", disabled=True)
         page_label = ft.Text("第 1 页", size=14)
 
         state = {"page_num": 1, "prev_url": None, "next_url": None, "current_url": None}
@@ -184,17 +184,36 @@ def create_gallery_cards_view(
 
         load()
 
-        return ft.Column(
+        pagination_dock = ft.Container(
+            content=ft.Row(
+                [prev_btn, page_label, next_btn],
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=4,
+                tight=True,
+            ),
+            padding=ft.Padding(4, 4, 4, 4),
+            bgcolor=ft.Colors.with_opacity(0.78, ft.Colors.SURFACE_CONTAINER_HIGH),
+            border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            border_radius=999,
+            shadow=ft.BoxShadow(
+                blur_radius=18,
+                spread_radius=0,
+                color=ft.Colors.with_opacity(0.24, ft.Colors.BLACK),
+                offset=ft.Offset(0, 6),
+            ),
+        )
+
+        return ft.Stack(
             controls=[
                 grid,
-                ft.Divider(),
-                ft.Row(
-                    [prev_btn, page_label, next_btn],
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=20,
+                ft.Container(
+                    content=pagination_dock,
+                    left=0,
+                    right=0,
+                    bottom=12,
+                    alignment=ft.Alignment(0, 1),
                 ),
             ],
-            spacing=12,
             expand=True,
         )
 

@@ -10,7 +10,7 @@ from app.storage import should_load_images
 from app.ui_update import request_update
 
 
-_IMAGE_LOAD_SEMAPHORE = threading.BoundedSemaphore(6)
+_IMAGE_LOAD_SEMAPHORE = threading.BoundedSemaphore(12)
 
 
 def image_src_for_page(page: ft.Page, data: bytes, mime: str) -> bytes | str:

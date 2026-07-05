@@ -2,7 +2,7 @@ import time
 
 import flet as ft
 
-from app.debug_log import log_debug
+from app.debug_log import format_duration_ms, log_debug
 from app.download_manager import DownloadTask, download_manager
 
 
@@ -52,9 +52,9 @@ def create_view(page: ft.Page) -> ft.Control:
         updated_at = time.perf_counter()
         log_debug(
             "下载页",
-            f"刷新任务 count={len(tasks)} list={(listed_at - started_at) * 1000:.0f}ms "
-            f"build={(built_at - listed_at) * 1000:.0f}ms update={(updated_at - built_at) * 1000:.0f}ms "
-            f"total={(updated_at - started_at) * 1000:.0f}ms",
+            f"刷新任务 count={len(tasks)} list={format_duration_ms((listed_at - started_at) * 1000)} "
+            f"build={format_duration_ms((built_at - listed_at) * 1000)} update={format_duration_ms((updated_at - built_at) * 1000)} "
+            f"total={format_duration_ms((updated_at - started_at) * 1000)}",
         )
 
     def _task_card(task: DownloadTask, refresh_fn) -> ft.Control:

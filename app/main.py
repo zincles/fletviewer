@@ -15,7 +15,7 @@ if sys.platform.startswith("linux") and "--web" not in sys.argv and "--server" n
 import flet as ft
 
 from app.browser_session import browser_session
-from app.debug_log import log_debug
+from app.debug_log import format_duration_ms, log_debug
 from app.local_gallery_manager import local_gallery_manager
 from app.storage import get_desktop_layout_mode, should_use_linux_builtin_title_bar
 from app.views.downloads import create_view as downloads_view
@@ -142,10 +142,11 @@ def main(page: ft.Page):
         transition=ft.AnimatedSwitcherTransition.FADE,
         expand=True,
     )
-    content = ft.Container(content=content_switcher, expand=True, padding=ft.Padding(8, 8, 8, 8))
+    content = ft.Container(content=content_switcher, expand=True, padding=ft.Padding(8, 72, 8, 8))
     view_cache: dict[str, ft.Control] = {}
     content_generation = {"value": 0}
     current_content: dict[str, ft.Control | None] = {"value": None}
+    shell_host: dict[str, ft.Container | None] = {"value": None}
     resize_handlers = []
     layout_state = {"desktop": _should_use_desktop_layout(page)}
     rail_state = {"extended": False}
@@ -198,6 +199,38 @@ def main(page: ft.Page):
             expand=True,
         )
 
+    def animated_scale_container(control: ft.Control) -> ft.Container:
+        """创建二级页面放大淡入容器。"""
+        return ft.Container(
+            content=control,
+            expand=True,
+            opacity=0,
+            scale=0.96,
+            animate_opacity=180,
+            animate_scale=180,
+            alignment=ft.Alignment(0, 0),
+        )
+
+    def play_enter_animation(container: ft.Container):
+        def worker():
+            time.sleep(0.02)
+            container.opacity = 1
+            container.scale = 1
+            page.update()
+
+        page.run_thread(worker)
+
+    def play_exit_animation(container: ft.Container, after):
+        container.opacity = 0
+        container.scale = 0.96
+        page.update()
+
+        def worker():
+            time.sleep(0.18)
+            after()
+
+        page.run_thread(worker)
+
     def invalidate_views(keys: list[str] | None = None, reason: str = ""):
         targets = keys or list(view_cache.keys())
         for key in targets:
@@ -210,44 +243,67 @@ def main(page: ft.Page):
     def open_gallery_detail(comic):
         previous_content = current_content["value"]
         previous_header = (header_title.value, header_subtitle.value)
+        previous_actions = list(header_actions.controls)
         log_debug("nav", f"open gallery detail {comic.id}")
         set_header("画廊详情", comic.title or comic.id)
+        detail_container = animated_scale_container(ft.Container(expand=True))
 
         def go_back():
             log_debug("nav", f"close gallery detail {comic.id}")
-            if previous_content is not None:
-                set_content(previous_content)
-            set_header(*previous_header)
-            page.update()
+            def restore():
+                if previous_content is not None:
+                    set_content(previous_content)
+                set_header(*previous_header)
+                header_actions.controls = previous_actions
+                page.update()
 
-        set_content(gallery_detail_view(page, comic, go_back))
+            play_exit_animation(detail_container, restore)
+
+        detail_container.content = gallery_detail_view(page, comic, go_back)
+        set_content(detail_container)
         page.update()
+        play_enter_animation(detail_container)
 
     page.fletviewer_open_gallery_detail = open_gallery_detail
 
     def open_image_viewer(items, initial_index=0, resolve_image_url=None):
-        previous_content = current_content["value"]
         previous_header = (header_title.value, header_subtitle.value)
+        previous_actions = list(header_actions.controls)
         log_debug("nav", f"open image viewer index={initial_index} count={len(items)}")
         set_header("图片查看器", f"{initial_index + 1}/{len(items)}")
+        viewer_container: ft.Container | None = None
 
         def go_back():
             log_debug("nav", "close image viewer")
-            if previous_content is not None:
-                set_content(previous_content)
-            set_header(*previous_header)
-            page.update()
+            def restore():
+                host = shell_host.get("value")
+                if host is not None:
+                    host.content = body
+                set_header(*previous_header)
+                header_actions.controls = previous_actions
+                page.update()
 
-        set_content(
+            if viewer_container is not None:
+                play_exit_animation(viewer_container, restore)
+            else:
+                restore()
+
+        viewer_container = animated_scale_container(
             image_viewer_view(
                 page,
                 items,
                 initial_index,
                 go_back,
                 resolve_image_url=resolve_image_url,
-            )
+            ),
         )
+        host = shell_host.get("value")
+        if host is not None:
+            host.content = viewer_container
+        else:
+            set_content(viewer_container)
         page.update()
+        play_enter_animation(viewer_container)
 
     page.fletviewer_open_image_viewer = open_image_viewer
 
@@ -264,9 +320,12 @@ def main(page: ft.Page):
             log_debug("nav", "reuse view search")
         set_content(view_cache["search"])
         page.update()
-        log_debug("nav", f"切换视图 搜索 用时={(time.perf_counter() - started_at) * 1000:.0f}ms")
+        log_debug("nav", f"切换视图 搜索 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
 
     def render(idx):
+        if idx is None or idx < 0 or idx >= len(PAGES):
+            log_debug("nav", f"忽略无效导航索引 idx={idx}")
+            return
         started_at = time.perf_counter()
         rail.selected_index = idx
         label, subtitle, _icon, view_fn = PAGES[idx]
@@ -297,7 +356,7 @@ def main(page: ft.Page):
                 log_debug("nav", f"reuse view {label}")
             set_content(view_cache[cache_key])
         page.update()
-        log_debug("nav", f"切换视图 {label} 用时={(time.perf_counter() - started_at) * 1000:.0f}ms cache_key={cache_key}")
+        log_debug("nav", f"切换视图 {label} 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)} cache_key={cache_key}")
 
     def on_nav_change(e):
         render(e.control.selected_index)
@@ -327,16 +386,13 @@ def main(page: ft.Page):
         page.run_task(worker)
 
     def toggle_primary_nav(e=None):
-        if layout_state["desktop"]:
-            rail_state["extended"] = not rail_state["extended"]
-            rail.extended = rail_state["extended"]
-            rail.min_extended_width = 190
-            page.update()
-        else:
-            open_left_drawer(e)
+        open_left_drawer(e)
 
     def on_drawer_change(e):
         idx = e.control.selected_index
+        if idx is None:
+            log_debug("nav", "忽略 Drawer 空导航索引")
+            return
         close_left_drawer()
         render(idx)
 
@@ -354,7 +410,7 @@ def main(page: ft.Page):
                 ],
             ],
             selected_index=1,
-            on_change=lambda e: render_search() if e.control.selected_index == 0 else (close_left_drawer(), render(e.control.selected_index - 1)),
+            on_change=lambda e: None if e.control.selected_index is None else render_search() if e.control.selected_index == 0 else (close_left_drawer(), render(e.control.selected_index - 1)),
         )
 
     def create_right_drawer() -> ft.NavigationDrawer:
@@ -409,77 +465,92 @@ def main(page: ft.Page):
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
         visible=True,
+        left=12,
+        right=12,
+        top=12,
         padding=ft.Padding(8, 6, 8, 6),
-        border=ft.border.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
+        bgcolor=ft.Colors.with_opacity(0.82, ft.Colors.SURFACE_CONTAINER_HIGH),
+        border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+        border_radius=999,
+        shadow=ft.BoxShadow(
+            blur_radius=20,
+            spread_radius=0,
+            color=ft.Colors.with_opacity(0.22, ft.Colors.BLACK),
+            offset=ft.Offset(0, 6),
+        ),
     )
 
-    body = ft.Column(
-        [
-            top_bar,
+    def update_top_bar_width(e=None):
+        width = float(page.width or 0)
+        if width >= 900:
+            bar_width = min(width * 0.7, 1120)
+            top_bar.width = bar_width
+            top_bar.left = max(12, (width - bar_width) / 2)
+            top_bar.right = None
+            top_bar.align = None
+        else:
+            top_bar.width = None
+            top_bar.left = 12
+            top_bar.right = 12
+            top_bar.align = None
+
+    body = ft.Stack(
+        controls=[
             ft.Row(
                 [
-                    rail,
-                    ft.VerticalDivider(width=1, visible=layout_state["desktop"]),
                     content,
                 ],
                 expand=True,
             ),
+            top_bar,
         ],
         expand=True,
     )
-    rail.visible = layout_state["desktop"]
+    rail.visible = False
+    update_top_bar_width()
 
     def update_layout_mode(e=None):
         use_desktop = _should_use_desktop_layout(page)
         if layout_state["desktop"] == use_desktop:
+            update_top_bar_width(e)
             return
         layout_state["desktop"] = use_desktop
-        rail.visible = use_desktop
+        rail.visible = False
         if not use_desktop:
             rail.extended = False
+        update_top_bar_width(e)
         page.update()
 
     add_resize_handler(update_layout_mode)
+
+    app_body_host = ft.Container(content=body, expand=True)
+    shell_host["value"] = app_body_host
 
     if use_builtin_title_bar:
         root = ft.Column(
             [
                 _create_title_bar(page),
-                body,
+                app_body_host,
             ],
             spacing=0,
             expand=True,
         )
     else:
-        root = body
+        root = app_body_host
 
     if _should_use_safe_area(page):
         root = ft.SafeArea(content=root, expand=True)
 
     page.add(root)
+    render(0)
 
-    set_content(
-        ft.Column(
-            [
-                ft.ProgressRing(width=48, height=48),
-                ft.Text("正在初始化网络会话...", color=ft.Colors.ON_SURFACE_VARIANT),
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            expand=True,
-        )
-    )
-    page.update()
-
-    def initialize_and_render_home():
+    def initialize_browser_session():
         try:
             browser_session.set_login_enabled(browser_session.login_enabled(), verify=True)
         except Exception as ex:
             log_debug("nav", f"初始化网络会话失败: {ex}")
-        finally:
-            render(0)
 
-    page.run_thread(initialize_and_render_home)
+    page.run_thread(initialize_browser_session)
 
 
 # Flet build 的入口要求顶层即调用 ft.run，不能包在 if __name__ == "__main__": 内。

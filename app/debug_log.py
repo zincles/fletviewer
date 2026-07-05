@@ -42,10 +42,18 @@ def _format_bytes_binary(value: int) -> str:
     return f"{int(value or 0)} B"
 
 
+def format_duration_ms(value: float) -> str:
+    """格式化毫秒耗时；超过 1 秒时使用秒并保留两位小数。"""
+    elapsed = float(value or 0)
+    if elapsed >= 1000:
+        return f"{elapsed / 1000:.2f}s"
+    return f"{elapsed:.0f}ms"
+
+
 def log_image_served(source: str, elapsed_ms: float, url: str, bytes_count: int) -> None:
     """输出单行图片任务摘要。"""
     now = time.strftime("%H:%M:%S")
-    print(f"[{now}][async_image][{source}][{elapsed_ms:.0f}ms][{_format_bytes_binary(bytes_count)}] {url}", flush=True)
+    print(f"[{now}][async_image][{source}][{format_duration_ms(elapsed_ms)}][{_format_bytes_binary(bytes_count)}] {url}", flush=True)
 
 
 def _prefix(area: str, message: str) -> str:
@@ -75,14 +83,13 @@ class Timer:
         self.started_at = 0.0
 
     def __enter__(self):
-        """开始计时并输出 START 日志。"""
+        """开始计时。"""
         self.started_at = time.perf_counter()
-        log_debug(self.area, f"START {self.message}")
         return self
 
     def __exit__(self, exc_type, exc, tb):
         """结束计时并输出 END/ERROR 日志。"""
         elapsed_ms = (time.perf_counter() - self.started_at) * 1000
-        status = "ERROR" if exc_type else "END"
-        log_debug(self.area, f"{status} {self.message} ({elapsed_ms:.0f} ms)")
+        status = "ERROR " if exc_type else ""
+        log_debug(self.area, f"{status}{self.message} 用时={format_duration_ms(elapsed_ms)}")
         return False
