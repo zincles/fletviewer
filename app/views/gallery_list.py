@@ -79,9 +79,6 @@ def create_view(title, subtitle, call_fn, needs_login=False):
 
         return ft.Column(
             controls=[
-                ft.Text(title, size=32, weight=ft.FontWeight.BOLD),
-                ft.Text(subtitle, size=16, color=ft.Colors.ON_SURFACE_VARIANT),
-                ft.Divider(),
                 btn,
                 ft.Container(
                     content=ft.Column([output], scroll=ft.ScrollMode.AUTO),

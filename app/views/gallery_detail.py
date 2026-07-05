@@ -370,7 +370,6 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
                 [
                     ft.Button("返回", icon=ft.Icons.ARROW_BACK, on_click=lambda e: on_back()),
                     ft.Button("下载 Archive", icon=ft.Icons.DOWNLOAD, on_click=load_archives),
-                    ft.Text("画廊详情", size=18, weight=ft.FontWeight.W_500),
                 ],
                 spacing=12,
             ),

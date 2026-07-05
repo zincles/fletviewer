@@ -109,6 +109,9 @@ def create_gallery_cards_view(
         page_label = ft.Text("第 1 页", size=14)
 
         state = {"page_num": 1, "prev_url": None, "next_url": None, "current_url": None}
+        set_header_actions = getattr(page, "fletviewer_set_header_actions", None)
+        if callable(set_header_actions):
+            set_header_actions([status_text, refresh_btn])
 
         def update_grid_columns(e=None):
             new_count = runs_count_for_width(page.width, min_columns=2, max_columns=10)
@@ -183,20 +186,6 @@ def create_gallery_cards_view(
 
         return ft.Column(
             controls=[
-                ft.Row(
-                    [
-                        ft.Column(
-                            [
-                                ft.Text(title, size=32, weight=ft.FontWeight.BOLD),
-                                ft.Text(subtitle, size=16, color=ft.Colors.ON_SURFACE_VARIANT),
-                            ],
-                            spacing=2,
-                        ),
-                        ft.Row([status_text, refresh_btn], spacing=12),
-                    ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                ),
-                ft.Divider(),
                 grid,
                 ft.Divider(),
                 ft.Row(

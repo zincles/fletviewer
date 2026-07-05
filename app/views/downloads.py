@@ -1,5 +1,8 @@
+import time
+
 import flet as ft
 
+from app.debug_log import log_debug
 from app.download_manager import DownloadTask, download_manager
 
 
@@ -32,18 +35,27 @@ def _status_text(task: DownloadTask) -> str:
 
 def create_view(page: ft.Page) -> ft.Control:
     """创建下载任务列表页。"""
-    title = ft.Text("下载", size=32, weight=ft.FontWeight.BOLD)
     status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
     tasks_column = ft.Column(spacing=10)
 
     def refresh(*, update: bool = True):
+        started_at = time.perf_counter()
         tasks = download_manager.list_tasks()
+        listed_at = time.perf_counter()
         tasks_column.controls = [_task_card(task, refresh) for task in tasks]
+        built_at = time.perf_counter()
         if not tasks:
             tasks_column.controls = [ft.Text("暂无下载任务", color=ft.Colors.ON_SURFACE_VARIANT)]
         status.value = f"共 {len(tasks)} 个任务"
         if update:
             page.update()
+        updated_at = time.perf_counter()
+        log_debug(
+            "下载页",
+            f"刷新任务 count={len(tasks)} list={(listed_at - started_at) * 1000:.0f}ms "
+            f"build={(built_at - listed_at) * 1000:.0f}ms update={(updated_at - built_at) * 1000:.0f}ms "
+            f"total={(updated_at - started_at) * 1000:.0f}ms",
+        )
 
     def _task_card(task: DownloadTask, refresh_fn) -> ft.Control:
         gallery = task.tag_data.get("gallery_details", {})
@@ -89,7 +101,7 @@ def create_view(page: ft.Page) -> ft.Control:
     refresh_button = ft.Button("刷新", icon=ft.Icons.REFRESH, on_click=lambda e: refresh())
     root = ft.Column(
         controls=[
-            ft.Row([title, refresh_button], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row([refresh_button], alignment=ft.MainAxisAlignment.END),
             status,
             ft.Divider(),
             tasks_column,

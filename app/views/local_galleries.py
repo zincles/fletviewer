@@ -113,7 +113,6 @@ def _gallery_card(page: ft.Page, gallery: LocalGallery, open_detail) -> ft.Contr
 def create_view(page: ft.Page) -> ft.Control:
     """创建本地画廊页面，展示已下载 EH Archive 并可进入 ZIP 阅读器。"""
     show_raw_json = not should_render_gallery_cards()
-    title = ft.Text("本地画廊", size=32, weight=ft.FontWeight.BOLD)
     status = ft.Text("", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
     content = ft.Container(expand=True)
     grid = ft.GridView(
@@ -219,7 +218,7 @@ def create_view(page: ft.Page) -> ft.Control:
     refresh_btn = ft.Button("刷新", icon=ft.Icons.REFRESH, on_click=lambda e: show_list())
     root = ft.Column(
         [
-            ft.Row([title, refresh_btn], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row([refresh_btn], alignment=ft.MainAxisAlignment.END),
             status,
             ft.Divider(),
             content,

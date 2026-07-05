@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -16,7 +17,7 @@ import flet as ft
 from app.browser_session import browser_session
 from app.debug_log import log_debug
 from app.local_gallery_manager import local_gallery_manager
-from app.storage import should_use_linux_builtin_title_bar
+from app.storage import get_desktop_layout_mode, should_use_linux_builtin_title_bar
 from app.views.downloads import create_view as downloads_view
 from app.views.home import create_view as home_view
 from app.views.subscriptions import create_view as subscriptions_view
@@ -30,15 +31,15 @@ from app.views.search import create_view as search_view
 from app.views.settings import create_view as settings_view
 
 PAGES = [
-    ("主页", ft.Icons.HOME, home_view),
-    ("订阅", ft.Icons.SUBSCRIPTIONS, subscriptions_view),
-    ("热门", ft.Icons.LOCAL_FIRE_DEPARTMENT, popular_view),
-    ("排行榜", ft.Icons.LEADERBOARD, leaderboard_view),
-    ("收藏", ft.Icons.BOOKMARK, favorites_view),
-    ("本地画廊", ft.Icons.FOLDER, local_galleries_view),
-    ("历史", ft.Icons.HISTORY, None),
-    ("下载", ft.Icons.DOWNLOAD, downloads_view),
-    ("设置", ft.Icons.SETTINGS, settings_view),
+    ("主页", "最新画廊", ft.Icons.HOME, home_view),
+    ("订阅", "关注的标签画廊（需登录）", ft.Icons.SUBSCRIPTIONS, subscriptions_view),
+    ("热门", "近期热门画廊", ft.Icons.LOCAL_FIRE_DEPARTMENT, popular_view),
+    ("排行榜", "EH 排行榜", ft.Icons.LEADERBOARD, leaderboard_view),
+    ("收藏", "收藏夹画廊（需登录）", ft.Icons.BOOKMARK, favorites_view),
+    ("本地画廊", "已下载 Archive", ft.Icons.FOLDER, local_galleries_view),
+    ("历史", "浏览历史", ft.Icons.HISTORY, None),
+    ("下载", "下载任务", ft.Icons.DOWNLOAD, downloads_view),
+    ("设置", "应用设置", ft.Icons.SETTINGS, settings_view),
 ]
 
 
@@ -108,6 +109,22 @@ def _create_title_bar(page: ft.Page) -> ft.Control:
     )
 
 
+def _should_use_desktop_layout(page: ft.Page) -> bool:
+    """根据设置和当前窗口宽度判断是否使用桌面 NavigationRail 布局。"""
+    mode = get_desktop_layout_mode()
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    return not page.web and float(page.width or 1280) >= 900
+
+
+def _should_use_safe_area(page: ft.Page) -> bool:
+    """判断是否应包裹 SafeArea 以适配移动端状态栏和异形屏。"""
+    platform = str(getattr(page, "platform", "") or "").lower()
+    return page.web or "android" in platform or "ios" in platform
+
+
 def main(page: ft.Page):
     """Flet 应用主入口，负责全局导航、页面缓存和二级页面切换。"""
     page.title = "FletViewer"
@@ -125,11 +142,31 @@ def main(page: ft.Page):
         transition=ft.AnimatedSwitcherTransition.FADE,
         expand=True,
     )
-    content = ft.Container(content=content_switcher, expand=True, padding=40)
+    content = ft.Container(content=content_switcher, expand=True, padding=ft.Padding(8, 8, 8, 8))
     view_cache: dict[str, ft.Control] = {}
     content_generation = {"value": 0}
     current_content: dict[str, ft.Control | None] = {"value": None}
     resize_handlers = []
+    layout_state = {"desktop": _should_use_desktop_layout(page)}
+    rail_state = {"extended": False}
+    header_title = ft.Text("FletViewer", size=18, weight=ft.FontWeight.W_600, overflow=ft.TextOverflow.ELLIPSIS)
+    header_subtitle = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT, overflow=ft.TextOverflow.ELLIPSIS)
+    header_actions = ft.Row(spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    header_action_cache: dict[str, list[ft.Control]] = {}
+    active_cache_key = {"value": ""}
+
+    def set_header(title: str, subtitle: str = "") -> None:
+        header_title.value = title
+        header_subtitle.value = subtitle
+
+    def set_header_actions(controls: list[ft.Control] | None = None) -> None:
+        actions = list(controls or [])
+        header_actions.controls = actions
+        key = active_cache_key.get("value")
+        if key:
+            header_action_cache[key] = actions
+
+    page.fletviewer_set_header_actions = set_header_actions
 
     def add_resize_handler(handler):
         if handler not in resize_handlers:
@@ -172,12 +209,15 @@ def main(page: ft.Page):
 
     def open_gallery_detail(comic):
         previous_content = current_content["value"]
+        previous_header = (header_title.value, header_subtitle.value)
         log_debug("nav", f"open gallery detail {comic.id}")
+        set_header("画廊详情", comic.title or comic.id)
 
         def go_back():
             log_debug("nav", f"close gallery detail {comic.id}")
             if previous_content is not None:
                 set_content(previous_content)
+            set_header(*previous_header)
             page.update()
 
         set_content(gallery_detail_view(page, comic, go_back))
@@ -187,12 +227,15 @@ def main(page: ft.Page):
 
     def open_image_viewer(items, initial_index=0, resolve_image_url=None):
         previous_content = current_content["value"]
+        previous_header = (header_title.value, header_subtitle.value)
         log_debug("nav", f"open image viewer index={initial_index} count={len(items)}")
+        set_header("图片查看器", f"{initial_index + 1}/{len(items)}")
 
         def go_back():
             log_debug("nav", "close image viewer")
             if previous_content is not None:
                 set_content(previous_content)
+            set_header(*previous_header)
             page.update()
 
         set_content(
@@ -209,7 +252,11 @@ def main(page: ft.Page):
     page.fletviewer_open_image_viewer = open_image_viewer
 
     def render_search():
+        active_cache_key["value"] = "search"
+        started_at = time.perf_counter()
         rail.selected_index = None
+        set_header("搜索", "E-Hentai 画廊搜索")
+        set_header_actions(header_action_cache.get("search", []))
         if "search" not in view_cache:
             log_debug("nav", "create view search")
             view_cache["search"] = search_view(page)
@@ -217,13 +264,17 @@ def main(page: ft.Page):
             log_debug("nav", "reuse view search")
         set_content(view_cache["search"])
         page.update()
+        log_debug("nav", f"切换视图 搜索 用时={(time.perf_counter() - started_at) * 1000:.0f}ms")
 
     def render(idx):
+        started_at = time.perf_counter()
         rail.selected_index = idx
-        view_fn = PAGES[idx][2]
+        label, subtitle, _icon, view_fn = PAGES[idx]
+        set_header(label, subtitle)
         cache_key = f"page:{idx}"
+        active_cache_key["value"] = cache_key
+        set_header_actions(header_action_cache.get(cache_key, []))
         if view_fn is None:
-            label = PAGES[idx][0]
             if cache_key not in view_cache:
                 log_debug("nav", f"create placeholder {label}")
                 view_cache[cache_key] = ft.Column(
@@ -239,7 +290,6 @@ def main(page: ft.Page):
                 log_debug("nav", f"reuse placeholder {label}")
             set_content(view_cache[cache_key])
         else:
-            label = PAGES[idx][0]
             if cache_key not in view_cache:
                 log_debug("nav", f"create view {label}")
                 view_cache[cache_key] = view_fn(page)
@@ -247,12 +297,90 @@ def main(page: ft.Page):
                 log_debug("nav", f"reuse view {label}")
             set_content(view_cache[cache_key])
         page.update()
+        log_debug("nav", f"切换视图 {label} 用时={(time.perf_counter() - started_at) * 1000:.0f}ms cache_key={cache_key}")
 
     def on_nav_change(e):
         render(e.control.selected_index)
 
+    def close_left_drawer():
+        async def worker():
+            await page.close_drawer()
+
+        page.run_task(worker)
+
+    def close_right_drawer():
+        async def worker():
+            await page.close_end_drawer()
+
+        page.run_task(worker)
+
+    def open_left_drawer(e=None):
+        async def worker():
+            await page.show_drawer()
+
+        page.run_task(worker)
+
+    def open_right_drawer(e=None):
+        async def worker():
+            await page.show_end_drawer()
+
+        page.run_task(worker)
+
+    def toggle_primary_nav(e=None):
+        if layout_state["desktop"]:
+            rail_state["extended"] = not rail_state["extended"]
+            rail.extended = rail_state["extended"]
+            rail.min_extended_width = 190
+            page.update()
+        else:
+            open_left_drawer(e)
+
+    def on_drawer_change(e):
+        idx = e.control.selected_index
+        close_left_drawer()
+        render(idx)
+
+    def create_left_drawer() -> ft.NavigationDrawer:
+        return ft.NavigationDrawer(
+            controls=[
+                ft.Container(
+                    content=ft.Text("FletViewer", size=20, weight=ft.FontWeight.BOLD),
+                    padding=ft.Padding(16, 18, 16, 10),
+                ),
+                ft.NavigationDrawerDestination(label="搜索", icon=ft.Icons.SEARCH),
+                *[
+                    ft.NavigationDrawerDestination(label=label, icon=icon, selected_icon=icon)
+                    for label, _subtitle, icon, _ in PAGES
+                ],
+            ],
+            selected_index=1,
+            on_change=lambda e: render_search() if e.control.selected_index == 0 else (close_left_drawer(), render(e.control.selected_index - 1)),
+        )
+
+    def create_right_drawer() -> ft.NavigationDrawer:
+        return ft.NavigationDrawer(
+            controls=[
+                ft.Container(
+                    content=ft.Text("平台", size=20, weight=ft.FontWeight.BOLD),
+                    padding=ft.Padding(16, 18, 16, 10),
+                ),
+                ft.NavigationDrawerDestination(label="E-Hentai", icon=ft.Icons.PUBLIC),
+                ft.NavigationDrawerDestination(label="ExHentai（未实现）", icon=ft.Icons.LOCK_OUTLINE),
+                ft.NavigationDrawerDestination(label="Booru（未实现）", icon=ft.Icons.IMAGE_SEARCH),
+                ft.NavigationDrawerDestination(label="Pixiv（未实现）", icon=ft.Icons.BRUSH),
+            ],
+            selected_index=0,
+            on_change=lambda e: close_right_drawer(),
+        )
+
+    page.drawer = create_left_drawer()
+    page.end_drawer = create_right_drawer()
+
     rail = ft.NavigationRail(
         selected_index=0,
+        extended=rail_state["extended"],
+        min_width=72,
+        min_extended_width=190,
         leading=ft.IconButton(
             icon=ft.Icons.SEARCH,
             tooltip="搜索",
@@ -264,33 +392,71 @@ def main(page: ft.Page):
                 selected_icon=icon,
                 label=label,
             )
-            for label, icon, _ in PAGES
+            for label, _subtitle, icon, _ in PAGES
         ],
         on_change=on_nav_change,
     )
 
-    body = ft.Row(
+    top_bar = ft.Container(
+        content=ft.Row(
+            [
+                ft.IconButton(ft.Icons.MENU, tooltip="导航", on_click=toggle_primary_nav),
+                ft.Column([header_title, header_subtitle], spacing=0, expand=True),
+                header_actions,
+                ft.IconButton(ft.Icons.TUNE, tooltip="平台", on_click=open_right_drawer),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        visible=True,
+        padding=ft.Padding(8, 6, 8, 6),
+        border=ft.border.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
+    )
+
+    body = ft.Column(
         [
-            rail,
-            ft.VerticalDivider(width=1),
-            content,
+            top_bar,
+            ft.Row(
+                [
+                    rail,
+                    ft.VerticalDivider(width=1, visible=layout_state["desktop"]),
+                    content,
+                ],
+                expand=True,
+            ),
         ],
         expand=True,
     )
+    rail.visible = layout_state["desktop"]
+
+    def update_layout_mode(e=None):
+        use_desktop = _should_use_desktop_layout(page)
+        if layout_state["desktop"] == use_desktop:
+            return
+        layout_state["desktop"] = use_desktop
+        rail.visible = use_desktop
+        if not use_desktop:
+            rail.extended = False
+        page.update()
+
+    add_resize_handler(update_layout_mode)
 
     if use_builtin_title_bar:
-        page.add(
-            ft.Column(
+        root = ft.Column(
             [
-                    _create_title_bar(page),
-                    body,
+                _create_title_bar(page),
+                body,
             ],
-                spacing=0,
+            spacing=0,
             expand=True,
-            )
         )
     else:
-        page.add(body)
+        root = body
+
+    if _should_use_safe_area(page):
+        root = ft.SafeArea(content=root, expand=True)
+
+    page.add(root)
 
     set_content(
         ft.Column(

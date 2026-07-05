@@ -144,12 +144,8 @@ def create_view(page: ft.Page) -> ft.Control:
         padding=16,
     )
 
-    subtitle = "E-Hentai 画廊搜索" if render_cards else "E-Hentai 画廊搜索（JSON 调试模式）"
     return ft.Column(
         controls=[
-            ft.Text("搜索", size=32, weight=ft.FontWeight.BOLD),
-            ft.Text(subtitle, size=16, color=ft.Colors.ON_SURFACE_VARIANT),
-            ft.Divider(),
             ft.Row([query, btn, status], spacing=12),
             result_content,
             ft.Divider(),

@@ -43,6 +43,9 @@ def create_gallery_debug_view(
         next_btn = ft.Button("下一页", icon=ft.Icons.ARROW_FORWARD, disabled=True)
         page_label = ft.Text("第 1 页", size=14)
         state = {"page_num": 1, "prev_url": None, "next_url": None, "current_url": None}
+        set_header_actions = getattr(page, "fletviewer_set_header_actions", None)
+        if callable(set_header_actions):
+            set_header_actions([refresh_btn])
 
         def load(page_url=None):
             log_debug("gallery_debug", f"{title} load requested page_url={page_url}")
@@ -96,9 +99,6 @@ def create_gallery_debug_view(
 
         return ft.Column(
             controls=[
-                ft.Text(title, size=32, weight=ft.FontWeight.BOLD),
-                ft.Text(f"{subtitle}（JSON 调试模式）", size=16, color=ft.Colors.ON_SURFACE_VARIANT),
-                ft.Divider(),
                 ft.Row([refresh_btn, prev_btn, page_label, next_btn], spacing=12),
                 ft.Container(
                     content=ft.Column([output], scroll=ft.ScrollMode.AUTO),

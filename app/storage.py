@@ -20,10 +20,12 @@ APP_CONFIG_DEFAULTS = {
     "render_gallery_cards": True,
     "image_viewer_mode": "paged",
     "image_grid_target_width": 220,
+    "desktop_layout_mode": "auto",
     "linux_builtin_title_bar": False,
     "linux_prefer_wayland_window_backend": False,
 }
 IMAGE_VIEWER_MODES = {"paged", "vertical"}
+DESKTOP_LAYOUT_MODES = {"auto", "on", "off"}
 
 
 def ensure_dirs():
@@ -103,6 +105,12 @@ def get_image_grid_target_width() -> int:
     except (TypeError, ValueError):
         value = 220
     return max(140, min(420, value))
+
+
+def get_desktop_layout_mode() -> str:
+    """读取桌面端布局模式：auto/on/off。"""
+    mode = str(load_app_config().get("desktop_layout_mode", "auto"))
+    return mode if mode in DESKTOP_LAYOUT_MODES else "auto"
 
 
 def should_use_linux_builtin_title_bar() -> bool:
