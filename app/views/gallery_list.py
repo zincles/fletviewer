@@ -10,10 +10,12 @@ from app.ui_update import request_update
 
 
 def _comic_to_dict(c):
+    """把 Comic dataclass 转为字典。"""
     return dataclasses.asdict(c)
 
 
 def _result_to_json(result):
+    """把 SearchResult 格式化为 JSON 调试文本。"""
     comics = [_comic_to_dict(c) for c in result.comics]
     data = {
         "count": len(comics),
@@ -67,6 +69,7 @@ def create_view(title, subtitle, call_fn, needs_login=False):
         needs_login: 是否需要登录
     """
     def factory(page: ft.Page) -> ft.Control:
+        """创建通用 JSON 列表页面实例。"""
         output = ft.Text("加载中...", size=14, selectable=True)
         btn = ft.Button("刷新", icon=ft.Icons.REFRESH)
         loader = _make_loader(call_fn, needs_login)

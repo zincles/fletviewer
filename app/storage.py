@@ -27,10 +27,12 @@ IMAGE_VIEWER_MODES = {"paged", "vertical"}
 
 
 def ensure_dirs():
+    """确保基础配置目录存在。"""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_download_dirs():
+    """确保下载系统需要的目录存在。"""
     ensure_dirs()
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
     DOWNLOADING_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,11 +41,13 @@ def ensure_download_dirs():
 
 
 def ensure_gallery_cache_dirs():
+    """确保画廊详情缓存目录存在。"""
     ensure_dirs()
     GALLERY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_eh_config() -> dict:
+    """读取 EH Cookie 凭据配置；不存在时返回空字段。"""
     ensure_dirs()
     if EH_CONFIG_PATH.exists():
         with open(EH_CONFIG_PATH, encoding="utf-8") as f:
@@ -52,12 +56,14 @@ def load_eh_config() -> dict:
 
 
 def save_eh_config(cfg: dict) -> None:
+    """保存 EH Cookie 凭据配置。"""
     ensure_dirs()
     with open(EH_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=4, ensure_ascii=False)
 
 
 def load_app_config() -> dict:
+    """读取应用配置，并与默认值合并以兼容新增配置项。"""
     ensure_dirs()
     if APP_CONFIG_PATH.exists():
         with open(APP_CONFIG_PATH, encoding="utf-8") as f:
@@ -67,6 +73,7 @@ def load_app_config() -> dict:
 
 
 def save_app_config(cfg: dict) -> None:
+    """保存应用配置；会补齐默认字段。"""
     ensure_dirs()
     data = {**APP_CONFIG_DEFAULTS, **cfg}
     with open(APP_CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -74,19 +81,23 @@ def save_app_config(cfg: dict) -> None:
 
 
 def should_load_images() -> bool:
+    """返回当前是否允许加载图片资源。"""
     return bool(load_app_config().get("load_images", True))
 
 
 def should_render_gallery_cards() -> bool:
+    """返回画廊列表是否使用卡片模式；False 时使用 JSON 调试模式。"""
     return bool(load_app_config().get("render_gallery_cards", True))
 
 
 def get_image_viewer_mode() -> str:
+    """读取默认图像查看器模式，并对非法值回退到 paged。"""
     mode = str(load_app_config().get("image_viewer_mode", "paged"))
     return mode if mode in IMAGE_VIEWER_MODES else "paged"
 
 
 def get_image_grid_target_width() -> int:
+    """读取图片网格参考宽度，并限制在合理范围内。"""
     try:
         value = int(load_app_config().get("image_grid_target_width", 220))
     except (TypeError, ValueError):
@@ -95,8 +106,10 @@ def get_image_grid_target_width() -> int:
 
 
 def should_use_linux_builtin_title_bar() -> bool:
+    """返回 Linux 桌面端是否使用应用内标题栏。"""
     return bool(load_app_config().get("linux_builtin_title_bar", False))
 
 
 def should_prefer_linux_wayland_window_backend() -> bool:
+    """返回 Linux 桌面端是否优先使用 Wayland 后端。"""
     return bool(load_app_config().get("linux_prefer_wayland_window_backend", False))

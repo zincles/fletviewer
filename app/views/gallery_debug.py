@@ -12,10 +12,12 @@ from lib.provider.ehgrabber import EHentaiClient, SearchResult
 
 
 def _comic_to_dict(comic):
+    """把 Comic dataclass 转为字典。"""
     return dataclasses.asdict(comic)
 
 
 def _result_to_json(result: SearchResult) -> str:
+    """把画廊列表结果格式化为 JSON 调试文本。"""
     data = {
         "count": len(result.comics),
         "prev_url": result.prev_url,
@@ -32,7 +34,9 @@ def create_gallery_debug_view(
     load_fn: Callable[[EHentaiClient, str | None], SearchResult],
     needs_login: bool = False,
 ) -> Callable[[ft.Page], ft.Control]:
+    """创建 JSON 调试版画廊列表页面工厂。"""
     def factory(page: ft.Page) -> ft.Control:
+        """创建具体 JSON 调试页面实例。"""
         output = ft.Text("加载中...", size=14, selectable=True)
         refresh_btn = ft.Button("刷新", icon=ft.Icons.REFRESH)
         prev_btn = ft.Button("上一页", icon=ft.Icons.ARROW_BACK, disabled=True)
@@ -118,6 +122,7 @@ def create_gallery_view(
     load_fn: Callable[[EHentaiClient, str | None], SearchResult],
     needs_login: bool = False,
 ) -> Callable[[ft.Page], ft.Control]:
+    """根据设置选择卡片模式或 JSON 调试模式的画廊列表页面。"""
     from app.storage import should_render_gallery_cards
     from app.views.gallery_cards import create_gallery_cards_view
 

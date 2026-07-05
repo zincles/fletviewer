@@ -12,12 +12,14 @@ from app.views.local_zip_viewer import create_view as local_zip_viewer
 
 
 def _gallery_title(gallery: LocalGallery) -> str:
+    """从 metadata 中取本地画廊标题，缺失时回退到目录名。"""
     metadata = gallery.metadata
     title = metadata.get("gallery", {}).get("title")
     return title or gallery.dir_path.name
 
 
 def _archive_path(gallery: LocalGallery) -> Path | None:
+    """返回本地画廊 ZIP 路径；文件不存在时返回 None。"""
     archive = gallery.metadata.get("files", {}).get("archive")
     if not archive:
         return None
@@ -26,6 +28,7 @@ def _archive_path(gallery: LocalGallery) -> Path | None:
 
 
 def _mime_for_path(path: Path) -> str:
+    """根据本地封面路径推断 MIME。"""
     return {
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
@@ -36,6 +39,7 @@ def _mime_for_path(path: Path) -> str:
 
 
 def _cover_control(page: ft.Page, gallery: LocalGallery) -> ft.Control:
+    """创建本地画廊封面控件；Web/桌面统一使用 data URI。"""
     cover = gallery.metadata.get("files", {}).get("cover")
     if cover:
         path = gallery.dir_path / cover
@@ -53,6 +57,7 @@ def _cover_control(page: ft.Page, gallery: LocalGallery) -> ft.Control:
 
 
 def _format_bytes(value: int) -> str:
+    """格式化字节数。"""
     size = float(value or 0)
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if size < 1024 or unit == "TB":
@@ -62,6 +67,7 @@ def _format_bytes(value: int) -> str:
 
 
 def _zip_summary(path: Path | None) -> str:
+    """读取 ZIP 摘要信息，包括大小和图片数量。"""
     if path is None:
         return "ZIP 文件不存在"
     try:
@@ -77,6 +83,7 @@ def _zip_summary(path: Path | None) -> str:
 
 
 def _gallery_card(page: ft.Page, gallery: LocalGallery, open_detail) -> ft.Control:
+    """创建本地画廊列表卡片。"""
     metadata = gallery.metadata
     source = metadata.get("source", {})
     archive = metadata.get("archive", {})
@@ -104,6 +111,7 @@ def _gallery_card(page: ft.Page, gallery: LocalGallery, open_detail) -> ft.Contr
 
 
 def create_view(page: ft.Page) -> ft.Control:
+    """创建本地画廊页面，展示已下载 EH Archive 并可进入 ZIP 阅读器。"""
     show_raw_json = not should_render_gallery_cards()
     title = ft.Text("本地画廊", size=32, weight=ft.FontWeight.BOLD)
     status = ft.Text("", size=14, color=ft.Colors.ON_SURFACE_VARIANT)

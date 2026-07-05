@@ -12,6 +12,7 @@ from lib.provider.ehgrabber import EHentaiClient, Comic, SearchResult
 
 
 def make_gallery_card(page: ft.Page, comic: Comic) -> ft.Control:
+    """创建在线画廊卡片，包含封面、标题、页数徽章和基础信息。"""
     card = ft.Card(
         content=ft.Container(
             content=ft.Stack(
@@ -24,6 +25,17 @@ def make_gallery_card(page: ft.Page, comic: Comic) -> ft.Control:
                         height=float("inf"),
                         cache_width=360,
                         cache_height=360,
+                    ),
+                    ft.Container(
+                        content=ft.Text(str(comic.max_page or "?"), size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_PRIMARY),
+                        width=34,
+                        height=34,
+                        bgcolor=ft.Colors.PRIMARY,
+                        border_radius=999,
+                        alignment=ft.Alignment(0, 0),
+                        top=8,
+                        right=8,
+                        tooltip="页数",
                     ),
                     ft.Container(
                         content=ft.Column(
@@ -79,7 +91,9 @@ def create_gallery_cards_view(
     load_fn: Callable[[EHentaiClient, str | None], SearchResult],
     needs_login: bool = False,
 ) -> Callable[[ft.Page], ft.Control]:
+    """创建可复用的在线画廊卡片列表页面工厂。"""
     def factory(page: ft.Page) -> ft.Control:
+        """创建具体页面实例，并注册自适应列数 resize handler。"""
         grid = ft.GridView(
             expand=True,
             runs_count=runs_count_for_width(page.width, min_columns=2, max_columns=10),

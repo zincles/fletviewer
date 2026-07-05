@@ -16,6 +16,8 @@ from app.ui_update import request_update
 
 @dataclass(slots=True)
 class ImageViewerItem:
+    """通用阅读器条目；url 可以是直接图片 URL，也可以是待解析的页面 URL。"""
+
     url: str
     title: str = ""
     detail: dict[str, Any] = field(default_factory=dict)
@@ -30,6 +32,7 @@ VERTICAL_SCROLL_BUFFER = 1200
 
 
 def _download_path(source_path: Path, title: str) -> Path:
+    """根据图片标题生成 Downloads 下不冲突的保存路径。"""
     downloads_dir = ROOT_DIR / "Downloads"
     downloads_dir.mkdir(parents=True, exist_ok=True)
     safe_title = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in title).strip("_")
@@ -43,6 +46,7 @@ def _download_path(source_path: Path, title: str) -> Path:
 
 
 def _estimated_height(item: ImageViewerItem) -> int:
+    """根据缩略图比例估算垂直模式占位高度。"""
     ratio = item.detail.get("thumbnail_aspect_ratio") or 0
     if not ratio:
         width = item.detail.get("thumbnail_width") or 0
@@ -60,6 +64,7 @@ def create_view(
     *,
     resolve_image_url: ResolveImageUrl | None = None,
 ) -> ft.Control:
+    """创建通用图片阅读器，支持单页和有限窗口垂直浏览。"""
     index = max(0, min(initial_index, len(items) - 1)) if items else 0
     state = {
         "index": index,

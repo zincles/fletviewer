@@ -305,6 +305,7 @@ class EHentaiClient:
         language: Optional[str] = None,
         page_url: Optional[str] = None,
     ) -> SearchResult:
+        """搜索 EH 画廊；提供 page_url 时直接解析翻页 URL。"""
         """
         搜索画廊。
 
@@ -340,6 +341,7 @@ class EHentaiClient:
         return self._get_galleries(url)
 
     def _get_galleries(self, url: str, is_leaderboard: bool = False) -> SearchResult:
+        """解析 EH 画廊列表页，兼容 Compact/Thumbnail/Extended/Minimal 多种显示模式。"""
         """
         解析画廊列表页面。
 
@@ -1014,6 +1016,7 @@ class EHentaiClient:
         page_index: int,
         nl: Optional[str] = None,
     ) -> ImageLoadResult:
+        """解析指定页的真实图片 URL；会根据 showkey/mpvkey 走不同 API。"""
         """
         获取单张图片的实际下载 URL。
 
@@ -1194,6 +1197,7 @@ class EHentaiClient:
         return archives
 
     def get_archive_download_url(self, comic_url: str, archive_id: str) -> str:
+        """获取 EH Archive 的最终下载 URL；H@H 选项不返回本地可下载 URL。"""
         """
         获取归档下载的真实 URL。
 

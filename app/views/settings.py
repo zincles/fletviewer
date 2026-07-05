@@ -1,6 +1,8 @@
 import flet as ft
 
 from app.browser_session import browser_session
+from app.gallery_cache import clear_gallery_cache
+from app.image_cache import clear_image_cache
 from app.storage import (
     APP_CONFIG_PATH,
     EH_CONFIG_PATH,
@@ -23,12 +25,14 @@ GALLERY_VIEW_CACHE_KEYS = ["page:0", "page:1", "page:2", "page:3", "page:4", "pa
 
 
 def _invalidate_gallery_views(page: ft.Page, reason: str) -> None:
+    """让受设置影响的页面缓存失效。"""
     invalidate = getattr(page, "fletviewer_invalidate_views", None)
     if callable(invalidate):
         invalidate(GALLERY_VIEW_CACHE_KEYS, reason=reason)
 
 
 def create_view(page: ft.Page) -> ft.Control:
+    """创建设置页，包含账户、显示、Linux 窗口和存储选项卡。"""
     cfg = load_eh_config()
     app_cfg = load_app_config()
 
@@ -156,6 +160,20 @@ def create_view(page: ft.Page) -> ft.Control:
         apply_login_mode("login_mode_changed")
         page.update()
 
+    def on_clear_image_cache(e):
+        clear_image_cache()
+        _invalidate_gallery_views(page, "image_cache_cleared")
+        display_status.value = "已清除所有图像缓存"
+        display_status.color = ft.Colors.PRIMARY
+        page.update()
+
+    def on_clear_gallery_cache(e):
+        clear_gallery_cache()
+        _invalidate_gallery_views(page, "gallery_cache_cleared")
+        display_status.value = "已清除所有画廊缓存"
+        display_status.color = ft.Colors.PRIMARY
+        page.update()
+
     account_page = ft.Container(
         padding=ft.Padding(0, 16, 0, 0),
         content=ft.Column(
@@ -193,13 +211,23 @@ def create_view(page: ft.Page) -> ft.Control:
                     viewer_mode_dropdown,
                     ft.Row([image_grid_width_field, ft.Text("px", color=ft.Colors.ON_SURFACE_VARIANT)], spacing=8),
                     ft.Row(
-                    [
-                        ft.Button("保存应用设置", on_click=on_save_app),
-                        display_status,
-                    ],
-                    spacing=16,
-                ),
-            ],
+                        [
+                            ft.Button("保存应用设置", on_click=on_save_app),
+                            display_status,
+                        ],
+                        spacing=16,
+                    ),
+                    ft.Divider(),
+                    ft.Text("调试操作", size=16, weight=ft.FontWeight.W_500),
+                    ft.Row(
+                        [
+                            ft.Button("清除所有图像缓存", icon=ft.Icons.DELETE_SWEEP, on_click=on_clear_image_cache),
+                            ft.Button("清除所有画廊缓存", icon=ft.Icons.DELETE_OUTLINE, on_click=on_clear_gallery_cache),
+                        ],
+                        spacing=12,
+                        wrap=True,
+                    ),
+                ],
             spacing=16,
             scroll=ft.ScrollMode.AUTO,
         ),

@@ -2,6 +2,7 @@ from app.views.gallery_debug import create_gallery_view
 
 
 def create_view(page):
+    """创建排行榜画廊视图。"""
     return create_gallery_view(
         title="排行榜",
         subtitle="排行榜 — 昨日",

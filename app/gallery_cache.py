@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,6 +18,8 @@ GALLERY_CACHE_TTL = timedelta(days=1)
 
 @dataclass(slots=True)
 class GalleryCacheEntry:
+    """一次画廊详情缓存命中的返回结构。"""
+
     details: ComicDetails
     thumbnails: ThumbnailsResult
     path: Path
@@ -24,14 +27,17 @@ class GalleryCacheEntry:
 
 
 def _now() -> datetime:
+    """返回带本地时区信息的当前时间。"""
     return datetime.now(timezone.utc).astimezone()
 
 
 def _iso(dt: datetime) -> str:
+    """把时间格式化为秒级 ISO 字符串。"""
     return dt.isoformat(timespec="seconds")
 
 
 def _parse_iso(value: str) -> datetime | None:
+    """解析 ISO 时间；空值或非法值返回 None。"""
     if not value:
         return None
     try:
@@ -41,11 +47,13 @@ def _parse_iso(value: str) -> datetime | None:
 
 
 def _eh_cache_path(comic_url: str) -> Path:
+    """根据 EH 画廊 URL 计算本地详情缓存文件路径。"""
     gid, token = EHentaiClient.parse_url(comic_url)
     return GALLERY_CACHE_DIR / "ehentai" / f"{gid}_{token}.json"
 
 
 def get_eh_gallery_cache(comic_url: str) -> GalleryCacheEntry | None:
+    """读取 EH 画廊详情缓存；不存在、过期或损坏时返回 None。"""
     ensure_gallery_cache_dirs()
     path = _eh_cache_path(comic_url)
     if not path.exists():
@@ -75,6 +83,7 @@ def get_eh_gallery_cache(comic_url: str) -> GalleryCacheEntry | None:
 
 
 def put_eh_gallery_cache(comic_url: str, details: ComicDetails, thumbnails: ThumbnailsResult) -> Path:
+    """写入 EH 画廊详情缓存，默认有效期为 1 天。"""
     ensure_gallery_cache_dirs()
     path = _eh_cache_path(comic_url)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,3 +109,9 @@ def put_eh_gallery_cache(comic_url: str, details: ComicDetails, thumbnails: Thum
     tmp_path.replace(path)
     log_debug("gallery_cache", f"written {comic_url} path={path}")
     return path
+
+
+def clear_gallery_cache() -> None:
+    """清空所有画廊详情缓存。"""
+    shutil.rmtree(GALLERY_CACHE_DIR, ignore_errors=True)
+    ensure_gallery_cache_dirs()

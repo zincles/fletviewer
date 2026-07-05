@@ -13,10 +13,12 @@ _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
 
 def _natural_key(value: str) -> list[int | str]:
+    """把文件名拆成自然排序 key，避免 10.jpg 排在 2.jpg 前。"""
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", value)]
 
 
 def _is_image_member(name: str) -> bool:
+    """判断 ZIP member 是否是本地阅读器可读取的图片。"""
     path = Path(name)
     if any(part.startswith(".") for part in path.parts):
         return False
@@ -26,6 +28,7 @@ def _is_image_member(name: str) -> bool:
 
 
 def _mime_for_name(name: str) -> str:
+    """根据 ZIP member 文件名推断图片 MIME。"""
     suffix = Path(name).suffix.lower()
     return {
         ".jpg": "image/jpeg",
@@ -37,6 +40,7 @@ def _mime_for_name(name: str) -> str:
 
 
 def _list_images(zip_path: Path) -> list[str]:
+    """列出 ZIP 内所有图片 member，并按自然顺序排序。"""
     with zipfile.ZipFile(zip_path) as zf:
         return sorted(
             (info.filename for info in zf.infolist() if not info.is_dir() and _is_image_member(info.filename)),
@@ -45,11 +49,13 @@ def _list_images(zip_path: Path) -> list[str]:
 
 
 def _read_member(zip_path: Path, member: str) -> bytes:
+    """按需读取 ZIP 内单个图片 member，不解压整本。"""
     with zipfile.ZipFile(zip_path) as zf:
         return zf.read(member)
 
 
 def create_view(page: ft.Page, zip_path: Path, title_text: str, on_back) -> ft.Control:
+    """创建纯本地 ZIP 单页阅读器；不联网，不走图片 fetcher。"""
     members = _list_images(zip_path) if zip_path.exists() else []
     state = {"index": 0, "generation": 0}
 

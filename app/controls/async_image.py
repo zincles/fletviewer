@@ -1,18 +1,20 @@
 import base64
 import threading
+import time
 
 import flet as ft
 
-from app.debug_log import log_debug, log_exception
+from app.debug_log import log_exception, log_image_served
 from app.image_fetcher import image_fetcher
 from app.storage import should_load_images
 from app.ui_update import request_update
 
 
-_IMAGE_LOAD_SEMAPHORE = threading.BoundedSemaphore(3)
+_IMAGE_LOAD_SEMAPHORE = threading.BoundedSemaphore(6)
 
 
 def image_src_for_page(page: ft.Page, data: bytes, mime: str) -> bytes | str:
+    """把图片 bytes 转成 data URI，统一桌面/Web 的显示路径。"""
     encoded = base64.b64encode(data).decode("ascii")
     return f"data:{mime};base64,{encoded}"
     # Desktop can render raw bytes with lower overhead, but using one data URI
@@ -21,6 +23,7 @@ def image_src_for_page(page: ft.Page, data: bytes, mime: str) -> bytes | str:
 
 
 def image_placeholder(width=None, height=None, *, loading: bool = False) -> ft.Container:
+    """创建图片占位控件；loading=True 时显示转动圆环。"""
     return ft.Container(
         width=width,
         height=height,
@@ -40,6 +43,7 @@ def async_image(
     cache_width: int | None = None,
     cache_height: int | None = None,
 ) -> ft.Control:
+    """创建异步图片控件：先显示占位，再通过 ImageFetcherService 获取图片。"""
     if not should_load_images():
         log_debug("async_image", f"disabled url={url}")
         return image_placeholder(width, height)
@@ -51,8 +55,8 @@ def async_image(
         return box
 
     def worker():
+        started_at = time.perf_counter()
         try:
-            log_debug("async_image", f"load start url={url}")
             with _IMAGE_LOAD_SEMAPHORE:
                 result = image_fetcher.fetch(url)
             box.content = ft.Image(
@@ -68,7 +72,9 @@ def async_image(
                     content=ft.Icon(ft.Icons.BROKEN_IMAGE_OUTLINED, color=ft.Colors.ON_SURFACE_VARIANT),
                 ),
             )
-            log_debug("async_image", f"load done url={url} bytes={len(result.data)} from_cache={result.from_cache}")
+            source = "缓存命中💾" if result.from_cache else "网络抓取🌐"
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+            log_image_served(source, elapsed_ms, url, len(result.data))
         except Exception as ex:
             log_exception("async_image", f"load failed url={url}: {ex}")
         finally:

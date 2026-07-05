@@ -2,6 +2,7 @@ from app.views.gallery_debug import create_gallery_view
 
 
 def create_view(page):
+    """创建首页最新画廊视图。"""
     return create_gallery_view(
         title="主页",
         subtitle="最新画廊",

@@ -17,15 +17,19 @@ from app.views.image_viewer import ImageViewerItem
 
 
 THUMBNAIL_BATCH_SIZE = 12
+THUMBNAIL_TILE_HEIGHT = 150
+THUMBNAIL_GRID_SPACING = 8
 
 
 def _to_jsonable(value):
+    """把 dataclass 转成可 JSON 序列化的字典。"""
     if dataclasses.is_dataclass(value):
         return dataclasses.asdict(value)
     return value
 
 
 def _tag_pill(text: str) -> ft.Control:
+    """创建标签胶囊控件。"""
     return ft.Container(
         content=ft.Text(text, size=12, color=ft.Colors.ON_SURFACE),
         padding=ft.Padding(8, 4, 8, 4),
@@ -35,6 +39,7 @@ def _tag_pill(text: str) -> ft.Control:
 
 
 def _make_tag_controls(tags: dict[str, list[str]]) -> list[ft.Control]:
+    """把 provider 返回的 namespace tags 渲染为一组标签控件。"""
     controls: list[ft.Control] = []
     for namespace, values in tags.items():
         if not values:
@@ -45,6 +50,7 @@ def _make_tag_controls(tags: dict[str, list[str]]) -> list[ft.Control]:
 
 
 def _make_comment_card(comment: Comment) -> ft.Control:
+    """创建画廊评论卡片。"""
     meta = ft.Row(
         [
             ft.Text(comment.user_name or "Unknown", size=13, weight=ft.FontWeight.BOLD),
@@ -69,6 +75,7 @@ def _make_comment_card(comment: Comment) -> ft.Control:
 
 
 def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
+    """创建在线画廊详情页，展示 metadata、评论、缩略图和 Archive 下载入口。"""
     state = {"details": None, "thumbs": None}
     show_raw_json = not should_render_gallery_cards()
     title = ft.Text(comic.title or "加载中...", size=28, weight=ft.FontWeight.BOLD, selectable=True)
@@ -101,17 +108,26 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
     )
     tags_wrap = ft.Row(wrap=True, spacing=8, run_spacing=8)
     thumbs_grid = ft.GridView(
-        height=360,
         runs_count=runs_count_for_width(page.width, min_columns=3, max_columns=12),
-        spacing=8,
-        run_spacing=8,
+        spacing=THUMBNAIL_GRID_SPACING,
+        run_spacing=THUMBNAIL_GRID_SPACING,
         child_aspect_ratio=0.72,
     )
+
+    def update_thumb_grid_height():
+        count = len(thumbs_grid.controls)
+        if count <= 0:
+            thumbs_grid.height = THUMBNAIL_TILE_HEIGHT
+            return
+        columns = max(1, int(thumbs_grid.runs_count or 1))
+        rows = (count + columns - 1) // columns
+        thumbs_grid.height = rows * THUMBNAIL_TILE_HEIGHT + max(0, rows - 1) * THUMBNAIL_GRID_SPACING
 
     def update_thumb_grid_columns(e=None):
         new_count = runs_count_for_width(page.width, min_columns=3, max_columns=12)
         if thumbs_grid.runs_count != new_count:
             thumbs_grid.runs_count = new_count
+            update_thumb_grid_height()
             page.update()
 
     add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
@@ -138,6 +154,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         load_more_thumbs_button.visible = end < len(viewer_items)
         if viewer_items:
             load_more_thumbs_button.text = f"加载更多缩略图（{end}/{len(viewer_items)}）"
+        update_thumb_grid_height()
 
     def load_more_thumbs(e):
         render_thumb_batch()

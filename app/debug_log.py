@@ -3,12 +3,13 @@ import time
 import traceback
 
 
-_QUIET_AREAS = {"image", "async_image"}
+_QUIET_AREAS = {"image"}
 _CACHE_KEYWORDS = ("cache", "缓存", "gallery_cache", "命中", "cache read", "cache write")
 _WEB_KEYWORDS = ("GET", "POST", "HEAD", "抓取", "请求", "浏览器会话", "EH解析", "network fetched")
 
 
 def _enabled(area: str) -> bool:
+    """判断指定日志区域是否应该输出。"""
     if os.environ.get("FLETVIEWER_DEBUG_ALL") == "1":
         return True
     enabled = {
@@ -22,13 +23,33 @@ def _enabled(area: str) -> bool:
 
 
 def log_debug(area: str, message: str) -> None:
+    """输出普通调试日志；高频图片日志默认静音。"""
     if not _enabled(area):
         return
     now = time.strftime("%H:%M:%S")
     print(f"[{now}][{_prefix(area, message)}{area}] {message}", flush=True)
 
 
+def _format_bytes_binary(value: int) -> str:
+    """把字节数格式化为 KiB/MiB 等二进制单位。"""
+    size = float(value or 0)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            if unit == "B":
+                return f"{int(size)} B"
+            return f"{size:.3f} {unit}"
+        size /= 1024
+    return f"{int(value or 0)} B"
+
+
+def log_image_served(source: str, elapsed_ms: float, url: str, bytes_count: int) -> None:
+    """输出单行图片任务摘要。"""
+    now = time.strftime("%H:%M:%S")
+    print(f"[{now}][async_image][{source}][{elapsed_ms:.0f}ms][{_format_bytes_binary(bytes_count)}] {url}", flush=True)
+
+
 def _prefix(area: str, message: str) -> str:
+    """按日志内容返回缓存/Web 前缀图标。"""
     text = f"{area} {message}"
     if any(keyword in text for keyword in _CACHE_KEYWORDS):
         return "💾 "
@@ -38,23 +59,29 @@ def _prefix(area: str, message: str) -> str:
 
 
 def log_exception(area: str, message: str) -> None:
+    """输出异常日志和 traceback；异常不受区域静音影响。"""
     now = time.strftime("%H:%M:%S")
     print(f"[{now}][{_prefix(area, message)}{area}] {message}", flush=True)
     traceback.print_exc()
 
 
 class Timer:
+    """简单耗时日志上下文管理器。"""
+
     def __init__(self, area: str, message: str):
+        """记录日志区域和计时说明。"""
         self.area = area
         self.message = message
         self.started_at = 0.0
 
     def __enter__(self):
+        """开始计时并输出 START 日志。"""
         self.started_at = time.perf_counter()
         log_debug(self.area, f"START {self.message}")
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        """结束计时并输出 END/ERROR 日志。"""
         elapsed_ms = (time.perf_counter() - self.started_at) * 1000
         status = "ERROR" if exc_type else "END"
         log_debug(self.area, f"{status} {self.message} ({elapsed_ms:.0f} ms)")

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import mimetypes
+import shutil
 import threading
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -141,3 +142,14 @@ def put_cached_filename(url: str, filename: str) -> None:
 def cached_path_for_url(url: str, mime: str | None = None) -> Path:
     filename = filename_for_url(url, mime=mime)
     return path_for_filename(filename)
+
+
+def clear_image_cache() -> None:
+    """清空所有图片缓存文件和索引。"""
+    global _INDEX_CACHE
+    with _INDEX_LOCK:
+        shutil.rmtree(IMAGE_CACHE_FILES_DIR, ignore_errors=True)
+        if IMAGE_CACHE_INDEX_PATH.exists():
+            IMAGE_CACHE_INDEX_PATH.unlink()
+        _INDEX_CACHE = {}
+        ensure_image_cache_dirs()

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import threading
+import time
 from io import BytesIO
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs
 
+import requests
 from PIL import Image
 
 from app.browser_session import browser_session
@@ -26,6 +28,8 @@ from app.image_cache import (
 
 @dataclass(slots=True)
 class ImageFetchResult:
+    """图片 fetch 的结果，包含本地缓存路径、图片 bytes 和 MIME。"""
+
     url: str
     path: Path
     data: bytes
@@ -34,13 +38,17 @@ class ImageFetchResult:
 
 
 class ImageFetcherService:
+    """Provider 无关的图片获取服务，负责磁盘缓存、去重和 EH sprite 裁剪。"""
+
     def __init__(self, max_workers: int = 6):
+        """初始化图片 fetch 线程池和 in-flight 去重表。"""
         ensure_image_cache_dirs()
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="image-fetch")
         self._lock = threading.Lock()
         self._in_flight: dict[str, Future] = {}
 
     def fetch(self, url: str) -> ImageFetchResult:
+        """获取图片；优先读缓存，未命中时请求远端并写入缓存。"""
         normalized = url.strip()
         log_debug("image", f"request {normalized}")
         with self._lock:
@@ -59,6 +67,7 @@ class ImageFetcherService:
                     self._in_flight.pop(normalized, None)
 
     def _fetch_impl(self, url: str) -> ImageFetchResult:
+        """执行单个 URL 的实际 fetch 流程。"""
         cached_path = get_cached_path(url)
         if cached_path is not None:
             with Timer("image", f"cache read {cached_path}"):
@@ -84,7 +93,7 @@ class ImageFetcherService:
             return self._fetch_sprite_crop(url, *sprite_crop)
 
         log_debug("image", f"cache miss url={url}")
-        response = browser_session.get(url, headers={"Referer": "https://e-hentai.org/"}, timeout=20)
+        response = self._get_image_response(url)
         response.raise_for_status()
         mime = response.headers.get("Content-Type", "image/jpeg").split(";", 1)[0].strip()
         filename = filename_for_url(url, mime=mime)
@@ -103,6 +112,26 @@ class ImageFetcherService:
         log_debug("image", f"network fetched url={url} bytes={len(response.content)} mime={mime} path={path}")
         return ImageFetchResult(url=url, path=path, data=response.content, mime=mime, from_cache=False)
 
+    def _get_image_response(self, url: str) -> requests.Response:
+        """拉取图片响应；对 H@H 瞬时断连做轻量重试。"""
+        headers = {
+            "Referer": "https://e-hentai.org/",
+            "Connection": "close",
+        }
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                if attempt > 1:
+                    log_debug("image", f"retry image fetch attempt={attempt} url={url}")
+                return browser_session.get(url, headers=headers, timeout=20)
+            except requests.RequestException as ex:
+                last_error = ex
+                log_debug("image", f"transient image fetch failed attempt={attempt} url={url}: {ex}")
+                if attempt < 3:
+                    time.sleep(0.5 * attempt)
+        assert last_error is not None
+        raise last_error
+
     def _fetch_sprite_crop(
         self,
         url: str,
@@ -112,6 +141,7 @@ class ImageFetcherService:
         right: int,
         bottom: int,
     ) -> ImageFetchResult:
+        """处理 EH sprite crop URL：先取原始 sprite，再本地裁剪并缓存。"""
         log_debug("image", f"sprite crop url={url} base={base_url} box={left},{top},{right},{bottom}")
         base_result = self._fetch_impl(base_url)
         with Timer("image", f"sprite crop {base_url}"):
@@ -140,6 +170,7 @@ class ImageFetcherService:
 
     @staticmethod
     def _parse_sprite_crop(url: str) -> tuple[str, int, int, int, int] | None:
+        """解析本地 crop URL 后缀，返回原始 sprite URL 和裁剪框。"""
         if "@" not in url:
             return None
         base_url, crop_spec = url.rsplit("@", 1)
@@ -172,6 +203,7 @@ class ImageFetcherService:
 
     @staticmethod
     def _guess_mime(path: Path) -> str:
+        """根据文件扩展名推断图片 MIME。"""
         suffix = path.suffix.lower()
         return {
             ".jpg": "image/jpeg",

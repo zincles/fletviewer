@@ -25,14 +25,17 @@ TASK_STATUSES = {"queued", "running", "completed", "failed", "cancelled", "consu
 
 
 def now_iso() -> str:
+    """返回当前本地时区的秒级 ISO 时间。"""
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def _rel_path(path: Path) -> str:
+    """把路径转成持久化 JSON 中使用的 POSIX 风格字符串。"""
     return path.as_posix()
 
 
 def _parse_filename_from_response(response, fallback: str) -> str:
+    """从下载响应中解析远端文件名，失败时回退到 URL path 或 fallback。"""
     cd = response.headers.get("Content-Disposition", "")
     marker = "filename="
     if marker in cd:
@@ -45,6 +48,8 @@ def _parse_filename_from_response(response, fallback: str) -> str:
 
 @dataclass
 class ResumeInfo:
+    """记录服务端断点续传能力和相关响应头。"""
+
     supported: bool = False
     etag: str = ""
     last_modified: str = ""
@@ -53,6 +58,8 @@ class ResumeInfo:
 
 @dataclass
 class DownloadTask:
+    """大型文件下载任务的持久化数据结构。"""
+
     id: str
     url: str
     filename: str
@@ -77,11 +84,13 @@ class DownloadTask:
 
     @classmethod
     def from_dict(cls, data: dict) -> "DownloadTask":
+        """从 task.json 字典恢复 DownloadTask。"""
         payload = dict(data)
         payload["resume"] = ResumeInfo(**payload.get("resume", {}))
         return cls(**payload)
 
     def to_dict(self) -> dict:
+        """转换为可 JSON 序列化的字典。"""
         return asdict(self)
 
     @property
@@ -102,7 +111,10 @@ class DownloadTask:
 
 
 class DownloadManager:
+    """管理大型文件下载任务、断点续传、状态持久化和完成回调。"""
+
     def __init__(self, max_workers: int = 1):
+        """创建下载线程池；EH Archive 默认低并发。"""
         self._lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="fletviewer-download")
         self._tasks: dict[str, DownloadTask] = {}
@@ -111,6 +123,7 @@ class DownloadManager:
         self._loaded = False
 
     def initialize(self) -> None:
+        """初始化下载目录并从磁盘恢复任务。"""
         with self._lock:
             if self._loaded:
                 return
@@ -127,6 +140,7 @@ class DownloadManager:
         tag_data: dict | None = None,
         headers: dict[str, str] | None = None,
     ) -> DownloadTask:
+        """创建下载任务并写入 task.json 与全局索引。"""
         self.initialize()
         task_id = str(uuid.uuid4())
         task_dir = DOWNLOADING_DIR / task_id
@@ -152,6 +166,7 @@ class DownloadManager:
         return task
 
     def start_task(self, task_id: str) -> None:
+        """提交指定任务到下载线程池。"""
         self.initialize()
         task = self.get_task(task_id)
         if not task:
@@ -168,6 +183,7 @@ class DownloadManager:
         self._executor.submit(self._download_impl, task_id)
 
     def cancel_task(self, task_id: str) -> None:
+        """请求取消任务；正在下载的任务会在下一个 chunk 边界停止。"""
         self.initialize()
         with self._lock:
             self._cancel_requested.add(task_id)
@@ -179,6 +195,7 @@ class DownloadManager:
                 self._save_index_locked()
 
     def retry_task(self, task_id: str) -> None:
+        """重试失败、取消或已完成但需重新下载的任务。"""
         self.initialize()
         task = self.get_task(task_id)
         if not task:
@@ -187,6 +204,7 @@ class DownloadManager:
             self.start_task(task_id)
 
     def delete_task(self, task_id: str) -> None:
+        """删除任务记录和临时目录。"""
         self.initialize()
         with self._lock:
             task = self._tasks.pop(task_id, None)
@@ -196,21 +214,25 @@ class DownloadManager:
             self._save_index_locked()
 
     def list_tasks(self) -> list[DownloadTask]:
+        """返回按创建时间倒序排列的任务列表。"""
         self.initialize()
         with self._lock:
             return sorted(self._tasks.values(), key=lambda t: t.created_at, reverse=True)
 
     def get_task(self, task_id: str) -> DownloadTask | None:
+        """按 ID 获取任务；不存在返回 None。"""
         self.initialize()
         with self._lock:
             return self._tasks.get(task_id)
 
     def add_completion_handler(self, callback: Callable[[DownloadTask], None]) -> None:
+        """注册下载完成回调；用于 LocalGalleryManager 消费归档。"""
         with self._lock:
             if callback not in self._completion_handlers:
                 self._completion_handlers.append(callback)
 
     def mark_consumed(self, task_id: str, *, consume_error: str | None = None) -> None:
+        """标记任务已被本地画廊系统消费，或记录消费失败原因。"""
         self.initialize()
         with self._lock:
             task = self._tasks.get(task_id)
@@ -226,6 +248,7 @@ class DownloadManager:
             self._save_index_locked()
 
     def _load_tasks_from_disk(self) -> None:
+        """扫描 Downloading 目录恢复历史任务状态。"""
         for task_file in DOWNLOADING_DIR.glob("*/task.json"):
             try:
                 data = json.loads(task_file.read_text(encoding="utf-8"))
@@ -244,6 +267,7 @@ class DownloadManager:
                 self._notify_completed(task)
 
     def _download_impl(self, task_id: str) -> None:
+        """执行实际下载：Range 续传、流式写盘、状态节流保存。"""
         task = self.get_task(task_id)
         if not task:
             return
@@ -336,6 +360,7 @@ class DownloadManager:
             log_exception("download", f"download failed {task_id}: {ex}")
 
     def _notify_completed(self, task: DownloadTask) -> None:
+        """通知所有完成回调；回调失败不影响下载任务完成状态。"""
         with self._lock:
             handlers = list(self._completion_handlers)
         for handler in handlers:
@@ -345,6 +370,7 @@ class DownloadManager:
                 log_exception("download", f"completion handler failed {task.id}: {ex}")
 
     def _save_task_locked(self, task: DownloadTask) -> None:
+        """写入单任务 task.json；调用方应持有锁。"""
         task.temp_dir_path.mkdir(parents=True, exist_ok=True)
         task.task_file_path.write_text(
             json.dumps(task.to_dict(), ensure_ascii=False, indent=2),
@@ -352,6 +378,7 @@ class DownloadManager:
         )
 
     def _save_index_locked(self) -> None:
+        """写入轻量全局任务索引 tasks.json；调用方应持有锁。"""
         DOWNLOAD_TASKS_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "tasks": [

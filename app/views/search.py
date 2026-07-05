@@ -12,10 +12,12 @@ from app.views.gallery_cards import make_gallery_card
 
 
 def _comic_to_dict(comic):
+    """把搜索结果中的 Comic dataclass 转为字典。"""
     return dataclasses.asdict(comic)
 
 
 def _result_to_json(result) -> str:
+    """把搜索结果格式化为 JSON 调试文本。"""
     data = {
         "count": len(result.comics),
         "prev_url": result.prev_url,
@@ -26,6 +28,7 @@ def _result_to_json(result) -> str:
 
 
 def create_view(page: ft.Page) -> ft.Control:
+    """创建搜索页，支持卡片结果和 JSON 调试输出。"""
     query = ft.TextField(
         label="搜索关键词",
         hint_text="例如: blue archive",

@@ -1,5 +1,6 @@
 import threading
 import time
+from urllib.parse import urlsplit
 
 import requests
 
@@ -12,10 +13,20 @@ _UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
 )
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif")
+
+
+def _is_image_request_url(url: str) -> bool:
+    """判断 URL 是否像图片资源请求，用于降低高频图片日志噪音。"""
+    path = urlsplit(url).path.lower()
+    return path.endswith(_IMAGE_SUFFIXES)
 
 
 class BrowserSessionService:
+    """维护全局浏览器式会话，统一 EH Cookie、UA、连接复用和登录验证。"""
+
     def __init__(self):
+        """创建 requests.Session 并设置浏览器请求头。"""
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -32,9 +43,11 @@ class BrowserSessionService:
         self.verify_ttl_seconds = 300
 
     def login_enabled(self) -> bool:
+        """返回应用配置中是否启用自动登录。"""
         return bool(load_app_config().get("enable_login", True))
 
     def login_status_text(self) -> str:
+        """返回给设置页展示的登录状态文字。"""
         if not self.login_enabled():
             return "游客模式"
         cfg = load_eh_config()
@@ -48,6 +61,7 @@ class BrowserSessionService:
         return "登录已启用，等待载入 Cookie"
 
     def login_status_level(self) -> str:
+        """返回登录状态等级，用于设置页状态灯。"""
         if not self.login_enabled():
             return "guest"
         cfg = load_eh_config()
@@ -61,6 +75,7 @@ class BrowserSessionService:
         return "warning"
 
     def set_login_enabled(self, enabled: bool, *, verify: bool = True) -> bool:
+        """切换网络单例的登录/游客模式；开启时可立即验证登录。"""
         with self._lock:
             self._verified_at = 0.0
             self._verified_ok = False
@@ -74,6 +89,7 @@ class BrowserSessionService:
         return self.configure_from_storage()
 
     def _clear_eh_cookies_locked(self) -> None:
+        """清理会话中 EH/ExHentai 相关 Cookie；调用方需持有锁。"""
         for domain in (".e-hentai.org", ".exhentai.org"):
             for key in ("ipb_member_id", "ipb_pass_hash", "igneous", "star"):
                 try:
@@ -82,6 +98,7 @@ class BrowserSessionService:
                     pass
 
     def configure_from_storage(self) -> bool:
+        """按当前登录开关从配置载入 Cookie；关闭登录时进入游客模式。"""
         if not self.login_enabled():
             with self._lock:
                 self._clear_eh_cookies_locked()
@@ -99,7 +116,6 @@ class BrowserSessionService:
 
         with self._lock:
             if signature == self._cookie_signature:
-                log_debug("浏览器会话", f"EH Cookie 已载入，无需重复配置 has_cookie={self.has_eh_cookie()}")
                 return True
 
             for domain in (".e-hentai.org", ".exhentai.org"):
@@ -113,10 +129,12 @@ class BrowserSessionService:
             return True
 
     def has_eh_cookie(self) -> bool:
+        """检查当前 Session 是否已有 EH 登录 Cookie。"""
         with self._lock:
             return any(cookie.name == "ipb_member_id" and cookie.value for cookie in self.session.cookies)
 
     def ensure_logged_in(self, *, force: bool = False) -> bool:
+        """验证当前 Cookie 是否能访问登录必需页面，并缓存验证结果。"""
         if not self.configure_from_storage():
             return False
 
@@ -135,6 +153,7 @@ class BrowserSessionService:
             return ok
 
     def get_eh_client(self, *, domain: str = EH_DOMAIN_EH, require_login: bool = False) -> EHentaiClient:
+        """创建复用全局 Session 的 EH client；必要时先验证登录。"""
         if require_login:
             if not self.ensure_logged_in():
                 raise RuntimeError("请先在账户页填写有效凭据")
@@ -144,21 +163,28 @@ class BrowserSessionService:
         return EHentaiClient(domain=domain, session=self.session)
 
     def get_session(self) -> requests.Session:
+        """返回底层 requests.Session，供需要自定义请求行为的服务使用。"""
         self.configure_from_storage()
         return self.session
 
     def get(self, url: str, **kwargs) -> requests.Response:
+        """用全局会话发起 GET 请求，并记录耗时与响应摘要。"""
         self.configure_from_storage()
+        quiet_image = _is_image_request_url(url)
         with self._lock:
-            with Timer("浏览器会话", f"GET {url}"):
+            if quiet_image:
                 resp = self.session.get(url, **kwargs)
+            else:
+                with Timer("浏览器会话", f"GET {url}"):
+                    resp = self.session.get(url, **kwargs)
             if kwargs.get("stream"):
                 log_debug("浏览器会话", f"GET 流式完成 status={resp.status_code} final_url={resp.url}")
-            else:
+            elif not quiet_image or resp.status_code >= 400:
                 log_debug("浏览器会话", f"GET 完成 status={resp.status_code} bytes={len(resp.content)} final_url={resp.url}")
             return resp
 
     def post(self, url: str, **kwargs) -> requests.Response:
+        """用全局会话发起 POST 请求，并记录耗时与响应摘要。"""
         self.configure_from_storage()
         with self._lock:
             with Timer("浏览器会话", f"POST {url}"):
@@ -167,6 +193,7 @@ class BrowserSessionService:
             return resp
 
     def head(self, url: str, **kwargs) -> requests.Response:
+        """用全局会话发起 HEAD 请求，并记录耗时与响应摘要。"""
         self.configure_from_storage()
         with self._lock:
             with Timer("浏览器会话", f"HEAD {url}"):

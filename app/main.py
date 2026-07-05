@@ -43,14 +43,17 @@ PAGES = [
 
 
 def _is_linux_desktop(page: ft.Page) -> bool:
+    """判断当前是否为 Linux 桌面端。"""
     return sys.platform.startswith("linux") and not page.web
 
 
 def _use_builtin_title_bar(page: ft.Page) -> bool:
+    """判断是否启用 Linux 内置标题栏。"""
     return _is_linux_desktop(page) and should_use_linux_builtin_title_bar()
 
 
 def _enable_builtin_title_bar(page: ft.Page) -> bool:
+    """尝试隐藏系统标题栏但保留窗口边框，成功返回 True。"""
     window = page.window
     if hasattr(window, "title_bar_hidden"):
         window.title_bar_hidden = True
@@ -62,6 +65,7 @@ def _enable_builtin_title_bar(page: ft.Page) -> bool:
 
 
 def _create_title_bar(page: ft.Page) -> ft.Control:
+    """创建 Linux 内置标题栏控件。"""
     def minimize(e):
         page.window.minimized = True
         page.update()
@@ -105,6 +109,7 @@ def _create_title_bar(page: ft.Page) -> ft.Control:
 
 
 def main(page: ft.Page):
+    """Flet 应用主入口，负责全局导航、页面缓存和二级页面切换。"""
     page.title = "FletViewer"
     if page.web:
         os.environ["FLETVIEWER_WEB"] = "1"

@@ -24,22 +24,29 @@ _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 
 @dataclass
 class LocalGallery:
+    """本地已归档画廊及其 metadata。"""
+
     dir_path: Path
     metadata: dict
 
 
 class LocalGalleryManager:
+    """消费下载完成的 EH Archive ZIP，并维护本地画廊索引。"""
+
     def __init__(self):
+        """初始化内存索引和锁。"""
         self._lock = threading.RLock()
         self._galleries: list[LocalGallery] | None = None
 
     def initialize(self) -> None:
+        """注册下载完成回调，并扫描已有本地画廊。"""
         ensure_download_dirs()
         download_manager.add_completion_handler(self.handle_download_completed)
         download_manager.initialize()
         self.scan_local_galleries()
 
     def handle_download_completed(self, task: DownloadTask) -> None:
+        """消费已完成的 EH Archive 下载任务，创建本地画廊目录。"""
         if "eh_archive" not in task.tags:
             return
         try:
@@ -76,6 +83,7 @@ class LocalGalleryManager:
             log_exception("local_gallery", f"consume failed {task.id}: {ex}")
 
     def scan_local_galleries(self, *, force: bool = False) -> list[LocalGallery]:
+        """扫描本地 EHArchieve 目录，读取所有 gallery.json。"""
         with self._lock:
             if self._galleries is not None and not force:
                 return list(self._galleries)
@@ -96,9 +104,11 @@ class LocalGalleryManager:
             return list(galleries)
 
     def list_galleries(self) -> list[LocalGallery]:
+        """返回当前本地画廊列表。"""
         return self.scan_local_galleries()
 
     def get_gallery(self, gid: str, token: str) -> LocalGallery | None:
+        """按 EH gid/token 查找本地画廊。"""
         for gallery in self.scan_local_galleries():
             source = gallery.metadata.get("source", {})
             if str(source.get("gid")) == str(gid) and str(source.get("token")) == str(token):
@@ -106,6 +116,7 @@ class LocalGalleryManager:
         return None
 
     def _eh_archive_folder_name(self, gid: str, token: str, title: str) -> str:
+        """生成跨平台安全的 EH Archive 本地目录名。"""
         safe_title = sanitize_filename(title or "Untitled", platform="windows").strip()
         if not safe_title:
             safe_title = "Untitled"
@@ -115,6 +126,7 @@ class LocalGalleryManager:
         return f"{prefix}{safe_title}"
 
     def _extract_cover_from_zip(self, zip_path: Path, output_dir: Path) -> str:
+        """从 ZIP 中提取排序后的第一张图片作为 thumb 封面。"""
         with zipfile.ZipFile(zip_path) as zf:
             names = sorted(
                 name for name in zf.namelist()
@@ -132,6 +144,7 @@ class LocalGalleryManager:
             return cover_filename
 
     def _is_image_member(self, name: str) -> bool:
+        """判断 ZIP member 是否是可用于封面的图片文件。"""
         path = Path(name)
         parts = set(path.parts)
         if "__MACOSX" in parts:
@@ -141,6 +154,7 @@ class LocalGalleryManager:
         return name.lower().endswith(_IMAGE_EXTS)
 
     def _build_gallery_metadata(self, task: DownloadTask, archive_path: Path, cover_filename: str) -> dict:
+        """根据下载任务构建本地 gallery.json 元数据。"""
         tag_data = task.tag_data
         created = now_iso()
         return {
@@ -176,6 +190,7 @@ class LocalGalleryManager:
         }
 
     def _unique_path(self, path: Path) -> Path:
+        """如果目标文件已存在，追加序号生成不冲突路径。"""
         if not path.exists():
             return path
         stem = path.stem

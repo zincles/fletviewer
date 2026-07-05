@@ -4,6 +4,7 @@ from app.download_manager import DownloadTask, download_manager
 
 
 def _format_bytes(value: int) -> str:
+    """格式化字节数。"""
     size = float(value or 0)
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if size < 1024 or unit == "TB":
@@ -13,12 +14,14 @@ def _format_bytes(value: int) -> str:
 
 
 def _progress(task: DownloadTask) -> float | None:
+    """计算任务进度条值；总大小未知时返回 None。"""
     if task.bytes_total <= 0:
         return None
     return max(0.0, min(1.0, task.bytes_done / task.bytes_total))
 
 
 def _status_text(task: DownloadTask) -> str:
+    """格式化下载任务状态和错误信息。"""
     text = task.status
     if task.error:
         text += f": {task.error}"
@@ -28,6 +31,7 @@ def _status_text(task: DownloadTask) -> str:
 
 
 def create_view(page: ft.Page) -> ft.Control:
+    """创建下载任务列表页。"""
     title = ft.Text("下载", size=32, weight=ft.FontWeight.BOLD)
     status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
     tasks_column = ft.Column(spacing=10)
