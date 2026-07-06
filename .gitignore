@@ -2,6 +2,8 @@
 eh_config.json
 *.secret
 .env
+.cache/
+tmp/.cache/
 
 # Python
 __pycache__/
