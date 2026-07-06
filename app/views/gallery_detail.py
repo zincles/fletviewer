@@ -38,6 +38,16 @@ def _tag_pill(text: str) -> ft.Control:
     )
 
 
+def _meta_pill(label: str, value: str) -> ft.Control:
+    """创建画廊详情中的短元信息胶囊。"""
+    return ft.Container(
+        content=ft.Text(f"{label}: {value}", size=12, color=ft.Colors.ON_SURFACE),
+        padding=ft.Padding(8, 4, 8, 4),
+        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
+        border_radius=999,
+    )
+
+
 def _make_tag_controls(tags: dict[str, list[str]]) -> list[ft.Control]:
     """把 provider 返回的 namespace tags 渲染为一组标签控件。"""
     controls: list[ft.Control] = []
@@ -134,6 +144,8 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         expand=6,
     )
     tags_wrap = ft.Row(wrap=True, spacing=8, run_spacing=8)
+    extra_meta_wrap = ft.Row(wrap=True, spacing=8, run_spacing=8)
+    versions_column = ft.Column(spacing=8, visible=False)
     thumb_columns = {"value": runs_count_for_width(page.width, min_columns=3, max_columns=12)}
     thumb_controls: list[ft.Control] = []
     thumbs_grid = ft.Column(spacing=THUMBNAIL_GRID_SPACING)
@@ -194,6 +206,59 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         page.update()
 
     show_more_comments_button.on_click = show_all_comments
+
+    def open_version(version):
+        """打开 newer version 指向的画廊详情。"""
+        open_detail = getattr(page, "fletviewer_open_gallery_detail", None)
+        if not callable(open_detail) or not version.url:
+            return
+        version_comic = Comic(
+            id=version.url,
+            title=version.title or version.url,
+            cover="",
+            sub_title=version.posted,
+        )
+        open_detail(version_comic)
+
+    def update_extra_meta(details):
+        """刷新详情顶部的扩展元信息。"""
+        controls: list[ft.Control] = []
+        if details.visible:
+            controls.append(_meta_pill("Visible", details.visible))
+        if details.language_detail:
+            controls.append(_meta_pill("Language", details.language_detail))
+        if details.file_size:
+            controls.append(_meta_pill("Size", details.file_size))
+        if details.favorite_count:
+            controls.append(_meta_pill("Favorited", str(details.favorite_count)))
+        if details.rating_count:
+            controls.append(_meta_pill("Ratings", str(details.rating_count)))
+        extra_meta_wrap.controls = controls
+
+    def update_versions(details):
+        """刷新版本链区域。"""
+        controls: list[ft.Control] = []
+        if details.parent:
+            parent_comic = Comic(id=details.parent, title="Parent Gallery", cover="")
+            controls.append(
+                ft.ListTile(
+                    title=ft.Text("Parent Gallery"),
+                    subtitle=ft.Text(details.parent, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    trailing=ft.Icon(ft.Icons.OPEN_IN_NEW),
+                    on_click=lambda e, c=parent_comic: getattr(page, "fletviewer_open_gallery_detail", lambda _comic: None)(c),
+                )
+            )
+        for version in details.newer_versions:
+            controls.append(
+                ft.ListTile(
+                    title=ft.Text(version.title or version.url, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                    subtitle=ft.Text(version.posted or version.url, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    trailing=ft.Icon(ft.Icons.OPEN_IN_NEW),
+                    on_click=lambda e, v=version: open_version(v),
+                )
+            )
+        versions_column.controls = controls
+        versions_column.visible = bool(controls)
 
     def render_thumb_batch():
         viewer_items = thumb_state["items"]
@@ -347,6 +412,8 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
                 cover_box.content = async_image(page, details.cover, width=float("inf"), height=360, fit=ft.BoxFit.COVER, cache_width=520)
 
             tags_wrap.controls = _make_tag_controls(details.tags)
+            update_extra_meta(details)
+            update_versions(details)
             comments = list(details.comments or [])
             comments_column.controls = [
                 _make_comment_card(comment)
@@ -437,6 +504,8 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             download_status,
             ft.Divider(),
             ft.Row([cover_box, meta], spacing=24, vertical_alignment=ft.CrossAxisAlignment.START),
+            extra_meta_wrap,
+            versions_column,
             ft.Text("标签", size=18, weight=ft.FontWeight.BOLD),
             tags_wrap,
             ft.Text("评论", size=18, weight=ft.FontWeight.BOLD),

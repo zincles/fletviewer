@@ -8,7 +8,6 @@ from app.storage import (
     EH_CONFIG_PATH,
     get_image_viewer_mode,
     get_image_grid_target_width,
-    get_desktop_layout_mode,
     load_app_config,
     load_eh_config,
     save_app_config,
@@ -91,17 +90,6 @@ def create_view(page: ft.Page) -> ft.Control:
         width=260,
         dense=True,
     )
-    desktop_layout_dropdown = ft.Dropdown(
-        label="启用桌面端模式",
-        value=get_desktop_layout_mode(),
-        options=[
-            ft.DropdownOption(key="auto", text="跟随设备"),
-            ft.DropdownOption(key="on", text="开"),
-            ft.DropdownOption(key="off", text="关"),
-        ],
-        width=220,
-        dense=True,
-    )
     image_grid_width_field = ft.TextField(
         label="图片网格参考宽度",
         value=str(get_image_grid_target_width()),
@@ -130,7 +118,6 @@ def create_view(page: ft.Page) -> ft.Control:
             "render_gallery_cards": render_cards_switch.value,
             "image_viewer_mode": viewer_mode_dropdown.value or "paged",
             "image_grid_target_width": grid_width,
-            "desktop_layout_mode": desktop_layout_dropdown.value or "auto",
             "linux_builtin_title_bar": linux_title_bar_switch.value,
             "linux_prefer_wayland_window_backend": linux_wayland_backend_switch.value,
         }
@@ -238,7 +225,6 @@ def create_view(page: ft.Page) -> ft.Control:
                     load_images_switch,
                     render_cards_switch,
                     viewer_mode_dropdown,
-                    desktop_layout_dropdown,
                     ft.Text(f"当前设备: {_platform_label(page)}", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
                     ft.Row([image_grid_width_field, ft.Text("px", color=ft.Colors.ON_SURFACE_VARIANT)], spacing=8),
                     ft.Row(

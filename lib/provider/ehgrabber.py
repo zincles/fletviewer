@@ -82,6 +82,17 @@ class Comment:
 
 
 @dataclass
+class GalleryVersion:
+    """同一画廊版本链中的其他版本。"""
+
+    url: str
+    gid: str = ""
+    token: str = ""
+    title: str = ""
+    posted: str = ""
+
+
+@dataclass
 class ComicDetails:
     """画廊详细信息"""
     id: str
@@ -98,6 +109,13 @@ class ComicDetails:
     upload_time: str = ""
     url: str = ""
     comments: list[Comment] = field(default_factory=list)
+    parent: Optional[str] = None
+    newer_versions: list[GalleryVersion] = field(default_factory=list)
+    visible: str = ""
+    language_detail: str = ""
+    file_size: str = ""
+    favorite_count: int = 0
+    rating_count: int = 0
 
 
 @dataclass
@@ -726,6 +744,8 @@ class EHentaiClient:
         # --- 上传时间 ---
         time_el = soup.select_one("div#gdd td.gdt2")
         upload_time = time_el.get_text(strip=True) if time_el else ""
+        detail_info = self._parse_detail_info_table(soup)
+        upload_time = detail_info.get("upload_time") or upload_time
 
         # --- 从 script 提取 token / apikey / apiuid ---
         token: Optional[str] = None
@@ -753,6 +773,7 @@ class EHentaiClient:
 
         # --- 评论 ---
         comments = self._parse_comments(soup)
+        newer_versions = self._parse_newer_versions(soup, resp.text)
 
         return ComicDetails(
             id=url,
@@ -769,7 +790,83 @@ class EHentaiClient:
             upload_time=upload_time,
             url=url,
             comments=comments,
+            parent=detail_info.get("parent"),
+            newer_versions=newer_versions,
+            visible=detail_info.get("visible", ""),
+            language_detail=detail_info.get("language_detail", ""),
+            file_size=detail_info.get("file_size", ""),
+            favorite_count=int(detail_info.get("favorite_count") or 0),
+            rating_count=self._parse_rating_count(soup),
         )
+
+    @staticmethod
+    def _parse_detail_info_table(soup: BeautifulSoup) -> dict[str, Any]:
+        """解析 EH 详情表中的 Parent/Visible/Size/Favorited 等字段。"""
+        result: dict[str, Any] = {}
+        for row in soup.select("div#gdd tr"):
+            cells = row.find_all("td")
+            if len(cells) < 2:
+                continue
+            key = cells[0].get_text(strip=True).rstrip(":")
+            value_cell = cells[1]
+            value = value_cell.get_text(" ", strip=True)
+            if key.startswith("Posted"):
+                result["upload_time"] = value
+            elif key.startswith("Parent"):
+                link = value_cell.select_one("a[href]")
+                result["parent"] = link.get("href", "") if link else value
+            elif key.startswith("Visible"):
+                result["visible"] = value
+            elif key.startswith("Language"):
+                result["language_detail"] = value
+            elif key.startswith("File Size"):
+                result["file_size"] = value
+            elif key.startswith("Favorited"):
+                if value == "Never":
+                    result["favorite_count"] = 0
+                elif value == "Once":
+                    result["favorite_count"] = 1
+                else:
+                    m = re.search(r"[\d,]+", value)
+                    result["favorite_count"] = int(m.group().replace(",", "")) if m else 0
+        return result
+
+    @classmethod
+    def _parse_newer_versions(cls, soup: BeautifulSoup, body: str) -> list[GalleryVersion]:
+        """解析 EH 的 newer versions 区块。"""
+        container = soup.select_one("div#gnd")
+        if not container:
+            return []
+        dates = re.findall(r", added (.+?)<br\s*/?>", body)
+        versions: list[GalleryVersion] = []
+        for index, link in enumerate(container.select("a[href]")):
+            href = link.get("href", "")
+            title = link.get_text(strip=True)
+            try:
+                gid, token = cls.parse_url(href)
+            except Exception:
+                gid, token = "", ""
+            versions.append(
+                GalleryVersion(
+                    url=href,
+                    gid=str(gid),
+                    token=token,
+                    title=title,
+                    posted=dates[index] if index < len(dates) else "",
+                )
+            )
+        return versions
+
+    @staticmethod
+    def _parse_rating_count(soup: BeautifulSoup) -> int:
+        """解析评分人数。"""
+        rating_count = soup.select_one("#rating_count")
+        if not rating_count:
+            return 0
+        try:
+            return int(rating_count.get_text(strip=True).replace(",", ""))
+        except ValueError:
+            return 0
 
     # -----------------------------------------------------------------------
     # 评论解析

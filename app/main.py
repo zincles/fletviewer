@@ -17,7 +17,7 @@ import flet as ft
 from app.browser_session import browser_session
 from app.debug_log import format_duration_ms, log_debug
 from app.local_gallery_manager import local_gallery_manager
-from app.storage import get_desktop_layout_mode, should_use_linux_builtin_title_bar
+from app.storage import should_use_linux_builtin_title_bar
 from app.views.downloads import create_view as downloads_view
 from app.views.home import create_view as home_view
 from app.views.subscriptions import create_view as subscriptions_view
@@ -109,16 +109,6 @@ def _create_title_bar(page: ft.Page) -> ft.Control:
     )
 
 
-def _should_use_desktop_layout(page: ft.Page) -> bool:
-    """根据设置和当前窗口宽度判断是否使用桌面 NavigationRail 布局。"""
-    mode = get_desktop_layout_mode()
-    if mode == "on":
-        return True
-    if mode == "off":
-        return False
-    return not page.web and float(page.width or 1280) >= 900
-
-
 def _should_use_safe_area(page: ft.Page) -> bool:
     """判断是否应包裹 SafeArea 以适配移动端状态栏和异形屏。"""
     platform = str(getattr(page, "platform", "") or "").lower()
@@ -148,8 +138,6 @@ def main(page: ft.Page):
     current_content: dict[str, ft.Control | None] = {"value": None}
     shell_host: dict[str, ft.Container | None] = {"value": None}
     resize_handlers = []
-    layout_state = {"desktop": _should_use_desktop_layout(page)}
-    rail_state = {"extended": False}
     header_title = ft.Text("FletViewer", size=18, weight=ft.FontWeight.W_600, overflow=ft.TextOverflow.ELLIPSIS)
     header_subtitle = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT, overflow=ft.TextOverflow.ELLIPSIS)
     header_actions = ft.Row(spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
@@ -190,9 +178,22 @@ def main(page: ft.Page):
     page.fletviewer_add_resize_handler = add_resize_handler
     page.on_resize = on_page_resized
 
+    def begin_content_transition():
+        """导航开始时立即让旧页面后台图片任务失效。"""
+        content_generation["value"] += 1
+        page.fletviewer_content_generation = content_generation["value"]
+
+    def detach_content_for_navigation():
+        """先卸载旧内容，避免旧页面图片控件继续阻塞新页面切换。"""
+        begin_content_transition()
+        content_switcher.content = ft.Container(key=f"content:detached:{content_generation['value']}", expand=True)
+        current_content["value"] = None
+        page.update()
+
     def set_content(control: ft.Control):
         current_content["value"] = control
         content_generation["value"] += 1
+        page.fletviewer_content_generation = content_generation["value"]
         content_switcher.content = ft.Container(
             content=control,
             key=f"content:{content_generation['value']}",
@@ -308,9 +309,9 @@ def main(page: ft.Page):
     page.fletviewer_open_image_viewer = open_image_viewer
 
     def render_search():
+        detach_content_for_navigation()
         active_cache_key["value"] = "search"
         started_at = time.perf_counter()
-        rail.selected_index = None
         set_header("搜索", "E-Hentai 画廊搜索")
         set_header_actions(header_action_cache.get("search", []))
         if "search" not in view_cache:
@@ -326,8 +327,8 @@ def main(page: ft.Page):
         if idx is None or idx < 0 or idx >= len(PAGES):
             log_debug("nav", f"忽略无效导航索引 idx={idx}")
             return
+        detach_content_for_navigation()
         started_at = time.perf_counter()
-        rail.selected_index = idx
         label, subtitle, _icon, view_fn = PAGES[idx]
         set_header(label, subtitle)
         cache_key = f"page:{idx}"
@@ -358,9 +359,6 @@ def main(page: ft.Page):
         page.update()
         log_debug("nav", f"切换视图 {label} 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)} cache_key={cache_key}")
 
-    def on_nav_change(e):
-        render(e.control.selected_index)
-
     def close_left_drawer():
         async def worker():
             await page.close_drawer()
@@ -387,14 +385,6 @@ def main(page: ft.Page):
 
     def toggle_primary_nav(e=None):
         open_left_drawer(e)
-
-    def on_drawer_change(e):
-        idx = e.control.selected_index
-        if idx is None:
-            log_debug("nav", "忽略 Drawer 空导航索引")
-            return
-        close_left_drawer()
-        render(idx)
 
     def create_left_drawer() -> ft.NavigationDrawer:
         return ft.NavigationDrawer(
@@ -431,27 +421,6 @@ def main(page: ft.Page):
 
     page.drawer = create_left_drawer()
     page.end_drawer = create_right_drawer()
-
-    rail = ft.NavigationRail(
-        selected_index=0,
-        extended=rail_state["extended"],
-        min_width=72,
-        min_extended_width=190,
-        leading=ft.IconButton(
-            icon=ft.Icons.SEARCH,
-            tooltip="搜索",
-            on_click=lambda e: render_search(),
-        ),
-        destinations=[
-            ft.NavigationRailDestination(
-                icon=icon,
-                selected_icon=icon,
-                label=label,
-            )
-            for label, _subtitle, icon, _ in PAGES
-        ],
-        on_change=on_nav_change,
-    )
 
     top_bar = ft.Container(
         content=ft.Row(
@@ -506,22 +475,8 @@ def main(page: ft.Page):
         ],
         expand=True,
     )
-    rail.visible = False
     update_top_bar_width()
-
-    def update_layout_mode(e=None):
-        use_desktop = _should_use_desktop_layout(page)
-        if layout_state["desktop"] == use_desktop:
-            update_top_bar_width(e)
-            return
-        layout_state["desktop"] = use_desktop
-        rail.visible = False
-        if not use_desktop:
-            rail.extended = False
-        update_top_bar_width(e)
-        page.update()
-
-    add_resize_handler(update_layout_mode)
+    add_resize_handler(lambda e=None: (update_top_bar_width(e), page.update()))
 
     app_body_host = ft.Container(content=body, expand=True)
     shell_host["value"] = app_body_host

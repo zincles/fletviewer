@@ -1,4 +1,7 @@
+import logging
 import os
+from pathlib import Path
+import sys
 import time
 import traceback
 
@@ -6,6 +9,41 @@ import traceback
 _QUIET_AREAS = {"image"}
 _CACHE_KEYWORDS = ("cache", "缓存", "gallery_cache", "命中", "cache read", "cache write")
 _WEB_KEYWORDS = ("GET", "POST", "HEAD", "抓取", "请求", "浏览器会话", "EH解析", "network fetched")
+DEBUG_LOG_PATH = Path("debug_log.md")
+_LOGGER = logging.getLogger("fletviewer")
+
+
+def _setup_logger() -> None:
+    """配置标准库 logging：终端和 debug_log.md 双写。"""
+    _LOGGER.setLevel(logging.DEBUG)
+    _LOGGER.handlers.clear()
+    _LOGGER.propagate = False
+    formatter = logging.Formatter("%(message)s")
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.DEBUG)
+    console_handler.setFormatter(formatter)
+    _LOGGER.addHandler(console_handler)
+
+    try:
+        file_handler = logging.FileHandler(DEBUG_LOG_PATH, mode="w", encoding="utf-8")
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        _LOGGER.addHandler(file_handler)
+        _LOGGER.info("# FletViewer Debug Log")
+        _LOGGER.info("")
+        _LOGGER.info("Started at %s", time.strftime("%Y-%m-%d %H:%M:%S"))
+        _LOGGER.info("")
+    except Exception:
+        pass
+
+
+_setup_logger()
+
+
+def _write_log_line(line: str) -> None:
+    """输出一行日志；实际双写由 logging handlers 完成。"""
+    _LOGGER.info(line)
 
 
 def _enabled(area: str) -> bool:
@@ -27,7 +65,7 @@ def log_debug(area: str, message: str) -> None:
     if not _enabled(area):
         return
     now = time.strftime("%H:%M:%S")
-    print(f"[{now}][{_prefix(area, message)}{area}] {message}", flush=True)
+    _write_log_line(f"[{now}][{_prefix(area, message)}{area}] {message}")
 
 
 def _format_bytes_binary(value: int) -> str:
@@ -53,7 +91,7 @@ def format_duration_ms(value: float) -> str:
 def log_image_served(source: str, elapsed_ms: float, url: str, bytes_count: int) -> None:
     """输出单行图片任务摘要。"""
     now = time.strftime("%H:%M:%S")
-    print(f"[{now}][async_image][{source}][{format_duration_ms(elapsed_ms)}][{_format_bytes_binary(bytes_count)}] {url}", flush=True)
+    _write_log_line(f"[{now}][async_image][{source}][{format_duration_ms(elapsed_ms)}][{_format_bytes_binary(bytes_count)}] {url}")
 
 
 def _prefix(area: str, message: str) -> str:
@@ -69,8 +107,12 @@ def _prefix(area: str, message: str) -> str:
 def log_exception(area: str, message: str) -> None:
     """输出异常日志和 traceback；异常不受区域静音影响。"""
     now = time.strftime("%H:%M:%S")
-    print(f"[{now}][{_prefix(area, message)}{area}] {message}", flush=True)
-    traceback.print_exc()
+    _write_log_line(f"[{now}][{_prefix(area, message)}{area}] {message}")
+    trace = traceback.format_exc()
+    _LOGGER.info("```text")
+    for line in trace.rstrip("\n").splitlines():
+        _LOGGER.info(line)
+    _LOGGER.info("```")
 
 
 class Timer:
