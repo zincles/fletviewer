@@ -1,5 +1,4 @@
 import base64
-import threading
 import time
 
 import flet as ft
@@ -8,9 +7,6 @@ from app.debug_log import log_exception, log_image_served
 from app.image_fetcher import image_fetcher
 from app.storage import should_load_images
 from app.ui_update import request_update
-
-
-_IMAGE_LOAD_SEMAPHORE = threading.BoundedSemaphore(12)
 
 
 def image_src_for_page(page: ft.Page, data: bytes, mime: str) -> bytes | str:
@@ -53,12 +49,20 @@ def async_image(
     if not url:
         log_debug("async_image", "empty url")
         return box
+    created_generation = getattr(page, "fletviewer_content_generation", None)
+
+    def is_stale() -> bool:
+        current_generation = getattr(page, "fletviewer_content_generation", None)
+        return created_generation is not None and current_generation != created_generation
 
     def worker():
         started_at = time.perf_counter()
         try:
-            with _IMAGE_LOAD_SEMAPHORE:
-                result = image_fetcher.fetch(url)
+            if is_stale():
+                return
+            result = image_fetcher.fetch(url)
+            if is_stale():
+                return
             box.content = ft.Image(
                 src=image_src_for_page(page, result.data, result.mime),
                 width=width,
@@ -76,9 +80,12 @@ def async_image(
             elapsed_ms = (time.perf_counter() - started_at) * 1000
             log_image_served(source, elapsed_ms, url, len(result.data))
         except Exception as ex:
+            if is_stale():
+                return
             log_exception("async_image", f"load failed url={url}: {ex}")
         finally:
-            request_update(page)
+            if not is_stale():
+                request_update(page)
 
     page.run_thread(worker)
     return box

@@ -10,10 +10,11 @@ from urllib.parse import urlsplit
 
 from app.debug_log import log_debug, log_exception
 from app.storage import GALLERY_CACHE_DIR, ensure_gallery_cache_dirs
-from lib.provider.ehgrabber import ComicDetails, ThumbnailItem, ThumbnailsResult, EHentaiClient
+from lib.provider.ehgrabber import Comment, ComicDetails, GalleryVersion, ThumbnailItem, ThumbnailsResult, EHentaiClient
 
 
 GALLERY_CACHE_TTL = timedelta(days=1)
+GALLERY_CACHE_SCHEMA_VERSION = 2
 
 
 @dataclass(slots=True)
@@ -52,6 +53,50 @@ def _eh_cache_path(comic_url: str) -> Path:
     return GALLERY_CACHE_DIR / "ehentai" / f"{gid}_{token}.json"
 
 
+def _dataclass_fields(cls) -> set[str]:
+    """返回 dataclass 字段名集合，用于忽略旧/新缓存里的未知字段。"""
+    return {field.name for field in dataclasses.fields(cls)}
+
+
+def _comment_from_dict(value) -> Comment:
+    """从 JSON 数据恢复 Comment。"""
+    if isinstance(value, Comment):
+        return value
+    data = value if isinstance(value, dict) else {}
+    fields = _dataclass_fields(Comment)
+    return Comment(**{key: data.get(key) for key in fields if key in data})
+
+
+def _gallery_version_from_dict(value) -> GalleryVersion:
+    """从 JSON 数据恢复 GalleryVersion。"""
+    if isinstance(value, GalleryVersion):
+        return value
+    data = value if isinstance(value, dict) else {}
+    fields = _dataclass_fields(GalleryVersion)
+    return GalleryVersion(**{key: data.get(key) for key in fields if key in data})
+
+
+def _comic_details_from_dict(value) -> ComicDetails:
+    """从缓存 JSON 恢复 provider 的 ComicDetails canonical model。"""
+    data = dict(value or {})
+    data["comments"] = [_comment_from_dict(item) for item in data.get("comments", [])]
+    data["newer_versions"] = [_gallery_version_from_dict(item) for item in data.get("newer_versions", [])]
+    fields = _dataclass_fields(ComicDetails)
+    return ComicDetails(**{key: data.get(key) for key in fields if key in data})
+
+
+def _thumbnails_result_from_dict(value) -> ThumbnailsResult:
+    """从缓存 JSON 恢复 ThumbnailsResult。"""
+    data = dict(value or {})
+    items = [item if isinstance(item, ThumbnailItem) else ThumbnailItem(**item) for item in data.get("items", [])]
+    return ThumbnailsResult(
+        thumbnails=list(data.get("thumbnails", [])),
+        urls=list(data.get("urls", [])),
+        items=items,
+        next_page=data.get("next_page"),
+    )
+
+
 def get_eh_gallery_cache(comic_url: str) -> GalleryCacheEntry | None:
     """读取 EH 画廊详情缓存；不存在、过期或损坏时返回 None。"""
     ensure_gallery_cache_dirs()
@@ -66,15 +111,8 @@ def get_eh_gallery_cache(comic_url: str) -> GalleryCacheEntry | None:
             log_debug("gallery_cache", f"expired {comic_url} path={path}")
             return None
 
-        details = ComicDetails(**data["details"])
-        thumbs_data = data["thumbnails"]
-        items = [ThumbnailItem(**item) for item in thumbs_data.get("items", [])]
-        thumbnails = ThumbnailsResult(
-            thumbnails=list(thumbs_data.get("thumbnails", [])),
-            urls=list(thumbs_data.get("urls", [])),
-            items=items,
-            next_page=thumbs_data.get("next_page"),
-        )
+        details = _comic_details_from_dict(data["details"])
+        thumbnails = _thumbnails_result_from_dict(data["thumbnails"])
         log_debug("gallery_cache", f"hit {comic_url} path={path}")
         return GalleryCacheEntry(details=details, thumbnails=thumbnails, path=path)
     except Exception as ex:
@@ -90,7 +128,7 @@ def put_eh_gallery_cache(comic_url: str, details: ComicDetails, thumbnails: Thum
     now = _now()
     gid, token = EHentaiClient.parse_url(comic_url)
     payload = {
-        "schema_version": 1,
+        "schema_version": GALLERY_CACHE_SCHEMA_VERSION,
         "provider": "ehentai",
         "source": {
             "gid": str(gid),
