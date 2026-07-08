@@ -19,6 +19,7 @@ from app.debug_log import format_duration_ms, log_debug
 from app.local_gallery_manager import local_gallery_manager
 from app.storage import should_use_linux_builtin_title_bar
 from app.views.downloads import create_view as downloads_view
+from app.views.debug import create_view as debug_view
 from app.views.home import create_view as home_view
 from app.views.subscriptions import create_view as subscriptions_view
 from app.views.popular import create_view as popular_view
@@ -39,6 +40,7 @@ PAGES = [
     ("本地画廊", "已下载 Archive", ft.Icons.FOLDER, local_galleries_view),
     ("历史", "浏览历史", ft.Icons.HISTORY, None),
     ("下载", "下载任务", ft.Icons.DOWNLOAD, downloads_view),
+    ("调试", "小图任务", ft.Icons.BUG_REPORT, debug_view),
     ("设置", "应用设置", ft.Icons.SETTINGS, settings_view),
 ]
 

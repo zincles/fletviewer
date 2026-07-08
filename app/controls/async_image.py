@@ -3,7 +3,7 @@ import time
 
 import flet as ft
 
-from app.debug_log import log_exception, log_image_served
+from app.debug_log import log_debug, log_exception, log_image_served
 from app.image_fetcher import image_fetcher
 from app.storage import should_load_images
 from app.ui_update import request_update
@@ -29,6 +29,15 @@ def image_placeholder(width=None, height=None, *, loading: bool = False) -> ft.C
     )
 
 
+def _format_bytes(value: int) -> str:
+    size = float(value or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{int(value)} B"
+
+
 def async_image(
     page: ft.Page,
     url: str | None,
@@ -44,12 +53,31 @@ def async_image(
         log_debug("async_image", f"disabled url={url}")
         return image_placeholder(width, height)
 
-    box = ft.Container(content=image_placeholder(width, height, loading=True), width=width, height=height)
+    progress_bar = ft.ProgressBar(width=140, value=None)
+    progress_text = ft.Text("等待中...", size=11, color=ft.Colors.ON_SURFACE_VARIANT, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+    loading_content = ft.Container(
+        width=width,
+        height=height,
+        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+        alignment=ft.Alignment(0, 0),
+        content=ft.Column(
+            [
+                ft.ProgressRing(width=24, height=24),
+                progress_bar,
+                progress_text,
+            ],
+            spacing=8,
+            tight=True,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+    box = ft.Container(content=loading_content, width=width, height=height)
 
     if not url:
         log_debug("async_image", "empty url")
         return box
     created_generation = getattr(page, "fletviewer_content_generation", None)
+    progress_state = {"done": False, "started_at": time.perf_counter()}
 
     def is_stale() -> bool:
         current_generation = getattr(page, "fletviewer_content_generation", None)
@@ -84,8 +112,39 @@ def async_image(
                 return
             log_exception("async_image", f"load failed url={url}: {ex}")
         finally:
+            progress_state["done"] = True
             if not is_stale():
                 request_update(page)
 
+    def progress_worker():
+        while not progress_state["done"] and not is_stale():
+            try:
+                snapshot = image_fetcher.snapshot()
+                task = next((item for item in [*snapshot.active, *snapshot.queued] if item.url == url), None)
+                if task is not None:
+                    if task.status == "queued":
+                        progress_text.value = "排队中..."
+                        progress_bar.value = 0
+                    elif task.bytes_total:
+                        progress_bar.value = max(0, min(1, task.bytes_done / task.bytes_total))
+                        progress_text.value = f"{_format_bytes(task.bytes_done)} / {_format_bytes(task.bytes_total)}"
+                    elif task.bytes_done:
+                        elapsed = max(0.0, time.perf_counter() - progress_state["started_at"])
+                        progress_bar.value = min(0.92, 0.18 + elapsed * 0.08)
+                        progress_text.value = _format_bytes(task.bytes_done)
+                    else:
+                        progress_text.value = "连接中..."
+                        elapsed = max(0.0, time.perf_counter() - progress_state["started_at"])
+                        progress_bar.value = min(0.82, 0.08 + elapsed * 0.06)
+                else:
+                    elapsed = max(0.0, time.perf_counter() - progress_state["started_at"])
+                    progress_text.value = "等待线程..."
+                    progress_bar.value = min(0.35, elapsed * 0.08)
+                request_update(page)
+            except Exception as ex:
+                log_exception("async_image", f"progress update failed url={url}: {ex}")
+            time.sleep(0.2)
+
+    page.run_thread(progress_worker)
     page.run_thread(worker)
     return box

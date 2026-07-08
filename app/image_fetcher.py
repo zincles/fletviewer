@@ -1,11 +1,11 @@
 from app import image_cache
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
-from lib.image.fetcher import ImageFetcherService, ImageFetchResult
+from lib.image.fetcher import ImageFetcherService, ImageFetchResult, ImageFetchSnapshot, ImageFetchTaskState
 
 
 def _get_image_response(url: str, headers: dict[str, str], timeout: int):
-    return browser_session.get(url, headers=headers, timeout=timeout)
+    return browser_session.get(url, headers=headers, timeout=timeout, stream=True)
 
 
 image_fetcher = ImageFetcherService(
@@ -14,7 +14,8 @@ image_fetcher = ImageFetcherService(
     log_debug=log_debug,
     log_exception=log_exception,
     timer_factory=Timer,
+    max_workers=30,
 )
 
 
-__all__ = ["ImageFetcherService", "ImageFetchResult", "image_fetcher"]
+__all__ = ["ImageFetcherService", "ImageFetchResult", "ImageFetchSnapshot", "ImageFetchTaskState", "image_fetcher"]
