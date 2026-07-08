@@ -104,11 +104,8 @@ def create_gallery_cards_view(
         )
         status_text = ft.Text("加载中...", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
         refresh_btn = ft.Button("刷新", icon=ft.Icons.REFRESH)
-        prev_btn = ft.IconButton(ft.Icons.ARROW_BACK, tooltip="上一页", disabled=True)
-        next_btn = ft.IconButton(ft.Icons.ARROW_FORWARD, tooltip="下一页", disabled=True)
-        page_label = ft.Text("第 1 页", size=14)
 
-        state = {"page_num": 1, "prev_url": None, "next_url": None, "current_url": None}
+        state = {"current_url": None}
         set_header_actions = getattr(page, "fletviewer_set_header_actions", None)
         if callable(set_header_actions):
             set_header_actions([status_text, refresh_btn])
@@ -126,8 +123,6 @@ def create_gallery_cards_view(
         def load(page_url=None):
             log_debug("画廊列表", f"{title} 开始加载 page_url={page_url}")
             refresh_btn.disabled = True
-            prev_btn.disabled = True
-            next_btn.disabled = True
             status_text.value = "加载中..."
             grid.controls.clear()
             page.update()
@@ -147,12 +142,8 @@ def create_gallery_cards_view(
                         result = load_fn(client, page_url)
                     log_debug("画廊列表", f"{title} 加载完成 count={len(result.comics)} prev={bool(result.prev_url)} next={bool(result.next_url)}")
                     grid.controls = [make_gallery_card(page, comic) for comic in result.comics]
-                    state["prev_url"] = result.prev_url
-                    state["next_url"] = result.next_url
                     state["current_url"] = page_url
 
-                    prev_btn.disabled = result.prev_url is None
-                    next_btn.disabled = result.next_url is None
                     status_text.value = f"共 {len(result.comics)} 个画廊"
                 except Exception as ex:
                     status_text.value = f"错误: {ex}"
@@ -166,55 +157,9 @@ def create_gallery_cards_view(
         def on_refresh(e):
             load(state["current_url"])
 
-        def on_prev(e):
-            if state["prev_url"]:
-                state["page_num"] -= 1
-                page_label.value = f"第 {state['page_num']} 页"
-                load(state["prev_url"])
-
-        def on_next(e):
-            if state["next_url"]:
-                state["page_num"] += 1
-                page_label.value = f"第 {state['page_num']} 页"
-                load(state["next_url"])
-
         refresh_btn.on_click = on_refresh
-        prev_btn.on_click = on_prev
-        next_btn.on_click = on_next
 
         load()
-
-        pagination_dock = ft.Container(
-            content=ft.Row(
-                [prev_btn, page_label, next_btn],
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=4,
-                tight=True,
-            ),
-            padding=ft.Padding(4, 4, 4, 4),
-            bgcolor=ft.Colors.with_opacity(0.78, ft.Colors.SURFACE_CONTAINER_HIGH),
-            border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-            border_radius=999,
-            shadow=ft.BoxShadow(
-                blur_radius=18,
-                spread_radius=0,
-                color=ft.Colors.with_opacity(0.24, ft.Colors.BLACK),
-                offset=ft.Offset(0, 6),
-            ),
-        )
-
-        return ft.Stack(
-            controls=[
-                grid,
-                ft.Container(
-                    content=pagination_dock,
-                    left=0,
-                    right=0,
-                    bottom=12,
-                    alignment=ft.Alignment(0, 1),
-                ),
-            ],
-            expand=True,
-        )
+        return grid
 
     return factory

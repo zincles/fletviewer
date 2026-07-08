@@ -20,7 +20,6 @@ from app.local_gallery_manager import local_gallery_manager
 from app.storage import should_use_linux_builtin_title_bar
 from app.views.downloads import create_view as downloads_view
 from app.views.debug import create_view as debug_view
-from app.views.input_test import create_view as input_test_view
 from app.views.home import create_view as home_view
 from app.views.subscriptions import create_view as subscriptions_view
 from app.views.popular import create_view as popular_view
@@ -42,9 +41,11 @@ PAGES = [
     ("历史", "浏览历史", ft.Icons.HISTORY, None),
     ("下载", "下载任务", ft.Icons.DOWNLOAD, downloads_view),
     ("调试", "小图任务", ft.Icons.BUG_REPORT, debug_view),
-    ("输入测试", "用户输入事件", ft.Icons.TOUCH_APP, input_test_view),
     ("设置", "应用设置", ft.Icons.SETTINGS, settings_view),
 ]
+
+BRAND_SEED = ft.Colors.DEEP_PURPLE
+APP_BG = ft.Colors.SURFACE
 
 
 def _is_linux_desktop(page: ft.Page) -> bool:
@@ -122,6 +123,9 @@ def _should_use_safe_area(page: ft.Page) -> bool:
 def main(page: ft.Page):
     """Flet 应用主入口，负责全局导航、页面缓存和二级页面切换。"""
     page.title = "FletViewer"
+    page.theme_mode = ft.ThemeMode.SYSTEM
+    page.theme = ft.Theme(color_scheme_seed=BRAND_SEED, use_material3=True, scaffold_bgcolor=APP_BG)
+    page.dark_theme = ft.Theme(color_scheme_seed=BRAND_SEED, use_material3=True, scaffold_bgcolor=ft.Colors.BLACK)
     if page.web:
         os.environ["FLETVIEWER_WEB"] = "1"
     local_gallery_manager.initialize()
@@ -136,7 +140,7 @@ def main(page: ft.Page):
         transition=ft.AnimatedSwitcherTransition.FADE,
         expand=True,
     )
-    content = ft.Container(content=content_switcher, expand=True, padding=ft.Padding(8, 72, 8, 8))
+    content = ft.Container(content=content_switcher, expand=True, padding=ft.Padding(8, 72, 8, 86))
     view_cache: dict[str, ft.Control] = {}
     content_generation = {"value": 0}
     current_content: dict[str, ft.Control | None] = {"value": None}
@@ -147,6 +151,37 @@ def main(page: ft.Page):
     header_actions = ft.Row(spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
     header_action_cache: dict[str, list[ft.Control]] = {}
     active_cache_key = {"value": ""}
+    bottom_nav_state = {"value": "阅读"}
+    bottom_nav_segments: dict[str, ft.Container] = {}
+    root_tabs_ref: dict[str, ft.Tabs | None] = {"value": None}
+    root_tabs_syncing = {"value": False}
+    section_indexes = {"阅读": 0, "本地": 1, "设置": 2}
+
+    def set_bottom_nav(value: str):
+        bottom_nav_state["value"] = value
+        for label, segment in bottom_nav_segments.items():
+            selected = label == value
+            segment.bgcolor = ft.Colors.PRIMARY if selected else ft.Colors.TRANSPARENT
+            row = segment.content
+            if isinstance(row, ft.Row):
+                for control in row.controls:
+                    if isinstance(control, ft.Icon):
+                        control.color = ft.Colors.ON_PRIMARY if selected else ft.Colors.ON_SURFACE_VARIANT
+                    elif isinstance(control, ft.Text):
+                        control.color = ft.Colors.ON_PRIMARY if selected else ft.Colors.ON_SURFACE_VARIANT
+                        control.weight = ft.FontWeight.W_600 if selected else ft.FontWeight.W_500
+
+    def activate_root_section(value: str, update: bool = True):
+        set_bottom_nav(value)
+        tabs = root_tabs_ref.get("value")
+        if tabs is not None:
+            target_index = section_indexes.get(value, 0)
+            if tabs.selected_index != target_index:
+                root_tabs_syncing["value"] = True
+                tabs.selected_index = target_index
+                root_tabs_syncing["value"] = False
+        if update:
+            page.update()
 
     def set_header(title: str, subtitle: str = "") -> None:
         header_title.value = title
@@ -307,28 +342,12 @@ def main(page: ft.Page):
 
     page.fletviewer_open_image_viewer = open_image_viewer
 
-    def open_input_test_view():
-        log_debug("nav", "open input test view")
-        page.views.append(
-            ft.View(
-                route="/input-test",
-                controls=[input_test_view(page)],
-                padding=8,
-                appbar=ft.AppBar(
-                    title=ft.Text("输入测试"),
-                    leading=ft.IconButton(ft.Icons.ARROW_BACK, tooltip="返回", on_click=lambda e: pop_top_view()),
-                    automatically_imply_leading=False,
-                ),
-            )
-        )
-        page.route = page.views[-1].route
-        page.update()
-
     def render_search():
         detach_content_for_navigation()
         active_cache_key["value"] = "search"
         started_at = time.perf_counter()
         set_header("搜索", "E-Hentai 画廊搜索")
+        set_bottom_nav("阅读")
         set_header_actions(header_action_cache.get("search", []))
         if "search" not in view_cache:
             log_debug("nav", "create view search")
@@ -344,26 +363,46 @@ def main(page: ft.Page):
             log_debug("nav", f"忽略无效导航索引 idx={idx}")
             return
         started_at = time.perf_counter()
-        label, subtitle, _icon, view_fn = PAGES[idx]
-        if view_fn is input_test_view:
-            open_input_test_view()
+        label, subtitle, icon, view_fn = PAGES[idx]
+        if label == "本地画廊":
+            set_header(label, subtitle)
+            set_header_actions([])
+            activate_root_section("本地")
+            log_debug("nav", f"切换主分区 本地 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
+            return
+        if label == "设置":
+            set_header(label, subtitle)
+            set_header_actions([])
+            activate_root_section("设置")
+            log_debug("nav", f"切换主分区 设置 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
             return
         detach_content_for_navigation()
         set_header(label, subtitle)
+        set_bottom_nav("本地" if label == "本地画廊" else "设置" if label == "设置" else "阅读")
+        activate_root_section("阅读", update=False)
         cache_key = f"page:{idx}"
         active_cache_key["value"] = cache_key
         set_header_actions(header_action_cache.get(cache_key, []))
         if view_fn is None:
             if cache_key not in view_cache:
                 log_debug("nav", f"create placeholder {label}")
-                view_cache[cache_key] = ft.Column(
-                    controls=[
-                        ft.Text(label, size=32, weight=ft.FontWeight.BOLD),
-                        ft.Text("（待实现）", size=16, color=ft.Colors.ON_SURFACE_VARIANT),
-                    ],
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                view_cache[cache_key] = ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Icon(icon, size=42, color=ft.Colors.PRIMARY),
+                            ft.Text(label, size=28, weight=ft.FontWeight.BOLD),
+                            ft.Text(subtitle, size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+                            ft.Text("入口已预留，功能稍后接入。", size=13, color=ft.Colors.ON_SURFACE_VARIANT),
+                        ],
+                        spacing=10,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
                     expand=True,
+                    alignment=ft.Alignment(0, 0),
+                    border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                    border_radius=18,
+                    padding=24,
                 )
             else:
                 log_debug("nav", f"reuse placeholder {label}")
@@ -377,6 +416,15 @@ def main(page: ft.Page):
             set_content(view_cache[cache_key])
         page.update()
         log_debug("nav", f"切换视图 {label} 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)} cache_key={cache_key}")
+
+    def render_label(label: str):
+        for idx, (page_label, _subtitle, _icon, _view_fn) in enumerate(PAGES):
+            if page_label == label:
+                render(idx)
+                return
+        log_debug("nav", f"忽略无效导航标签 label={label}")
+
+    page.fletviewer_render_label = render_label
 
     def close_left_drawer():
         async def worker():
@@ -409,8 +457,28 @@ def main(page: ft.Page):
         return ft.NavigationDrawer(
             controls=[
                 ft.Container(
-                    content=ft.Text("FletViewer", size=20, weight=ft.FontWeight.BOLD),
-                    padding=ft.Padding(16, 18, 16, 10),
+                    content=ft.Row(
+                        [
+                            ft.Container(
+                                content=ft.Icon(ft.Icons.IMAGE_SEARCH, color=ft.Colors.ON_PRIMARY),
+                                width=42,
+                                height=42,
+                                border_radius=14,
+                                bgcolor=ft.Colors.PRIMARY,
+                                alignment=ft.Alignment(0, 0),
+                            ),
+                            ft.Column(
+                                [
+                                    ft.Text("FletViewer", size=20, weight=ft.FontWeight.BOLD),
+                                    ft.Text("Provider browser", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                                ],
+                                spacing=0,
+                            ),
+                        ],
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    padding=ft.Padding(16, 18, 16, 12),
                 ),
                 ft.NavigationDrawerDestination(label="搜索", icon=ft.Icons.SEARCH),
                 *[
@@ -426,8 +494,14 @@ def main(page: ft.Page):
         return ft.NavigationDrawer(
             controls=[
                 ft.Container(
-                    content=ft.Text("平台", size=20, weight=ft.FontWeight.BOLD),
-                    padding=ft.Padding(16, 18, 16, 10),
+                    content=ft.Column(
+                        [
+                            ft.Text("平台", size=20, weight=ft.FontWeight.BOLD),
+                            ft.Text("选择当前 provider", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                        ],
+                        spacing=2,
+                    ),
+                    padding=ft.Padding(16, 18, 16, 12),
                 ),
                 ft.NavigationDrawerDestination(label="E-Hentai", icon=ft.Icons.PUBLIC),
                 ft.NavigationDrawerDestination(label="ExHentai（未实现）", icon=ft.Icons.LOCK_OUTLINE),
@@ -482,15 +556,95 @@ def main(page: ft.Page):
             top_bar.right = 12
             top_bar.align = None
 
+    def bottom_nav_segment(label: str, icon, target: str) -> ft.Container:
+        selected = label == bottom_nav_state["value"]
+        color = ft.Colors.ON_PRIMARY if selected else ft.Colors.ON_SURFACE_VARIANT
+        segment = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Icon(icon, size=18, color=color),
+                    ft.Text(label, size=13, weight=ft.FontWeight.W_600 if selected else ft.FontWeight.W_500, color=color),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=6,
+            ),
+            height=42,
+            expand=1,
+            border_radius=999,
+            bgcolor=ft.Colors.PRIMARY if selected else ft.Colors.TRANSPARENT,
+            ink=True,
+            on_click=lambda e: render_label(target),
+        )
+        bottom_nav_segments[label] = segment
+        return segment
+
+    bottom_nav = ft.Container(
+        content=ft.Row(
+            [
+                bottom_nav_segment("阅读", ft.Icons.PUBLIC, "主页"),
+                bottom_nav_segment("本地", ft.Icons.FOLDER, "本地画廊"),
+                bottom_nav_segment("设置", ft.Icons.SETTINGS, "设置"),
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=4,
+        ),
+        width=360,
+        padding=ft.Padding(5, 5, 5, 5),
+        bgcolor=ft.Colors.with_opacity(0.78, ft.Colors.SURFACE_CONTAINER_HIGH),
+        border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+        border_radius=999,
+        shadow=ft.BoxShadow(
+            blur_radius=18,
+            spread_radius=0,
+            color=ft.Colors.with_opacity(0.24, ft.Colors.BLACK),
+            offset=ft.Offset(0, 6),
+        ),
+    )
+
+    def on_root_tabs_change(e):
+        if root_tabs_syncing["value"]:
+            return
+        selected_index = int(getattr(e.control, "selected_index", 0) or 0)
+        if selected_index == 1:
+            render_label("本地画廊")
+        elif selected_index == 2:
+            render_label("设置")
+        else:
+            render_label("主页")
+
+    reading_section = content
+    local_section = ft.Container(content=local_galleries_view(page), expand=True, padding=ft.Padding(8, 72, 8, 86))
+    settings_section = ft.Container(content=settings_view(page), expand=True, padding=ft.Padding(8, 72, 8, 86))
+    root_tabs = ft.Tabs(
+        content=ft.TabBarView(
+            controls=[reading_section, local_section, settings_section],
+            expand=True,
+        ),
+        length=3,
+        selected_index=0,
+        animation_duration=180,
+        on_change=on_root_tabs_change,
+        expand=True,
+    )
+    root_tabs_ref["value"] = root_tabs
+
     body = ft.Stack(
         controls=[
             ft.Row(
                 [
-                    content,
+                    root_tabs,
                 ],
                 expand=True,
             ),
             top_bar,
+            ft.Container(
+                content=bottom_nav,
+                left=0,
+                right=0,
+                bottom=12,
+                alignment=ft.Alignment(0, 1),
+            ),
         ],
         expand=True,
     )
