@@ -191,6 +191,11 @@ def create_view(page: ft.Page) -> ft.Control:
         display_status.color = ft.Colors.PRIMARY
         page.update()
 
+    def open_page(label: str):
+        render_label = getattr(page, "fletviewer_render_label", None)
+        if callable(render_label):
+            render_label(label)
+
     account_page = ft.Container(
         padding=ft.Padding(0, 16, 0, 0),
         content=ft.Column(
@@ -234,6 +239,16 @@ def create_view(page: ft.Page) -> ft.Control:
                             display_status,
                         ],
                         spacing=16,
+                    ),
+                    ft.Divider(),
+                    ft.Text("工具入口", size=16, weight=ft.FontWeight.W_500),
+                    ft.Row(
+                        [
+                            ft.Button("历史", icon=ft.Icons.HISTORY, on_click=lambda e: open_page("历史")),
+                            ft.Button("调试", icon=ft.Icons.BUG_REPORT, on_click=lambda e: open_page("调试")),
+                        ],
+                        spacing=12,
+                        wrap=True,
                     ),
                     ft.Divider(),
                     ft.Text("调试操作", size=16, weight=ft.FontWeight.W_500),

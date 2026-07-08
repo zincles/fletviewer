@@ -43,6 +43,8 @@ PAGES = [
     ("调试", "小图任务", ft.Icons.BUG_REPORT, debug_view),
     ("设置", "应用设置", ft.Icons.SETTINGS, settings_view),
 ]
+READING_PAGE_LABELS = {"主页", "订阅", "热门", "排行榜", "收藏"}
+READING_PAGE_INDEXES = [idx for idx, (label, _subtitle, _icon, _view_fn) in enumerate(PAGES) if label in READING_PAGE_LABELS]
 
 BRAND_SEED = ft.Colors.DEEP_PURPLE
 APP_BG = ft.Colors.SURFACE
@@ -140,7 +142,7 @@ def main(page: ft.Page):
         transition=ft.AnimatedSwitcherTransition.FADE,
         expand=True,
     )
-    content = ft.Container(content=content_switcher, expand=True, padding=ft.Padding(8, 72, 8, 86))
+    content = ft.Container(content=content_switcher, expand=True, padding=ft.Padding(0, 8, 0, 0))
     view_cache: dict[str, ft.Control] = {}
     content_generation = {"value": 0}
     current_content: dict[str, ft.Control | None] = {"value": None}
@@ -155,24 +157,29 @@ def main(page: ft.Page):
     bottom_nav_segments: dict[str, ft.Container] = {}
     root_tabs_ref: dict[str, ft.Tabs | None] = {"value": None}
     root_tabs_syncing = {"value": False}
+    reading_tabs_ref: dict[str, ft.Tabs | None] = {"value": None}
+    reading_tabs_syncing = {"value": False}
+    reading_tab_pages: list[ft.Container] = []
     section_indexes = {"阅读": 0, "本地": 1, "设置": 2}
+    bottom_nav_for_page = {"本地画廊": "本地", "设置": "设置"}
 
     def set_bottom_nav(value: str):
         bottom_nav_state["value"] = value
         for label, segment in bottom_nav_segments.items():
             selected = label == value
             segment.bgcolor = ft.Colors.PRIMARY if selected else ft.Colors.TRANSPARENT
-            row = segment.content
-            if isinstance(row, ft.Row):
-                for control in row.controls:
+            content = segment.content
+            if isinstance(content, (ft.Row, ft.Column)):
+                for control in content.controls:
                     if isinstance(control, ft.Icon):
                         control.color = ft.Colors.ON_PRIMARY if selected else ft.Colors.ON_SURFACE_VARIANT
                     elif isinstance(control, ft.Text):
                         control.color = ft.Colors.ON_PRIMARY if selected else ft.Colors.ON_SURFACE_VARIANT
                         control.weight = ft.FontWeight.W_600 if selected else ft.FontWeight.W_500
 
-    def activate_root_section(value: str, update: bool = True):
-        set_bottom_nav(value)
+    def activate_root_section(value: str, update: bool = True, sync_bottom_nav: bool = True):
+        if sync_bottom_nav:
+            set_bottom_nav(value)
         tabs = root_tabs_ref.get("value")
         if tabs is not None:
             target_index = section_indexes.get(value, 0)
@@ -182,6 +189,21 @@ def main(page: ft.Page):
                 root_tabs_syncing["value"] = False
         if update:
             page.update()
+
+    def sync_reading_tab(label: str) -> None:
+        tabs = reading_tabs_ref.get("value")
+        if tabs is None:
+            return
+        try:
+            target_index = [PAGES[idx][0] for idx in READING_PAGE_INDEXES].index(label)
+        except ValueError:
+            return
+        for idx, holder in enumerate(reading_tab_pages):
+            holder.content = content if idx == target_index else None
+        if tabs.selected_index != target_index:
+            reading_tabs_syncing["value"] = True
+            tabs.selected_index = target_index
+            reading_tabs_syncing["value"] = False
 
     def set_header(title: str, subtitle: str = "") -> None:
         header_title.value = title
@@ -271,14 +293,29 @@ def main(page: ft.Page):
 
         page.run_thread(worker)
 
+    def push_route(route: str) -> None:
+        async def worker():
+            await page.push_route(route)
+
+        page.run_task(worker)
+
     def pop_top_view():
         if len(page.views) > 1:
             page.views.pop()
-            page.route = page.views[-1].route or "/"
             page.update()
+            push_route(page.views[-1].route or "/")
 
-    def handle_view_pop(e):
-        pop_top_view()
+    async def handle_view_pop(e):
+        if len(page.views) <= 1:
+            return
+        view = getattr(e, "view", None)
+        if view in page.views:
+            page.views.remove(view)
+        else:
+            page.views.pop()
+        top_view = page.views[-1]
+        page.update()
+        await page.push_route(top_view.route or "/")
 
     page.on_view_pop = handle_view_pop
 
@@ -294,6 +331,7 @@ def main(page: ft.Page):
     def open_gallery_detail(comic):
         log_debug("nav", f"open gallery detail {comic.id}")
         detail_container = animated_scale_container(ft.Container(expand=True))
+        route = f"/gallery/{len(page.views)}"
 
         def go_back():
             log_debug("nav", f"close gallery detail {comic.id}")
@@ -302,7 +340,7 @@ def main(page: ft.Page):
         detail_container.content = gallery_detail_view(page, comic, go_back)
         page.views.append(
             ft.View(
-                route=f"/gallery/{len(page.views)}",
+                route=route,
                 controls=[detail_container],
                 padding=8,
                 appbar=ft.AppBar(
@@ -312,8 +350,8 @@ def main(page: ft.Page):
                 ),
             )
         )
-        page.route = page.views[-1].route
         page.update()
+        push_route(route)
         play_enter_animation(detail_container)
 
     page.fletviewer_open_gallery_detail = open_gallery_detail
@@ -335,9 +373,10 @@ def main(page: ft.Page):
                 resolve_image_url=resolve_image_url,
             ),
         )
-        page.views.append(ft.View(route=f"/viewer/{initial_index}", controls=[viewer_container], padding=0))
-        page.route = page.views[-1].route
+        route = f"/viewer/{len(page.views)}-{initial_index}"
+        page.views.append(ft.View(route=route, controls=[viewer_container], padding=0))
         page.update()
+        push_route(route)
         play_enter_animation(viewer_container)
 
     page.fletviewer_open_image_viewer = open_image_viewer
@@ -378,8 +417,10 @@ def main(page: ft.Page):
             return
         detach_content_for_navigation()
         set_header(label, subtitle)
-        set_bottom_nav("本地" if label == "本地画廊" else "设置" if label == "设置" else "阅读")
-        activate_root_section("阅读", update=False)
+        set_bottom_nav(bottom_nav_for_page.get(label, "阅读"))
+        if label in READING_PAGE_LABELS:
+            sync_reading_tab(label)
+        activate_root_section("阅读", update=False, sync_bottom_nav=False)
         cache_key = f"page:{idx}"
         active_cache_key["value"] = cache_key
         set_header_actions(header_action_cache.get(cache_key, []))
@@ -454,6 +495,21 @@ def main(page: ft.Page):
         open_left_drawer(e)
 
     def create_left_drawer() -> ft.NavigationDrawer:
+        drawer_hidden_labels = READING_PAGE_LABELS | {"历史", "调试"}
+        drawer_items = [(label, icon) for label, _subtitle, icon, _ in PAGES if label not in drawer_hidden_labels]
+
+        def on_drawer_change(e):
+            selected_index = getattr(e.control, "selected_index", None)
+            if selected_index is None:
+                return
+            close_left_drawer()
+            if selected_index == 0:
+                render_search()
+                return
+            item_index = selected_index - 1
+            if 0 <= item_index < len(drawer_items):
+                render_label(drawer_items[item_index][0])
+
         return ft.NavigationDrawer(
             controls=[
                 ft.Container(
@@ -483,11 +539,11 @@ def main(page: ft.Page):
                 ft.NavigationDrawerDestination(label="搜索", icon=ft.Icons.SEARCH),
                 *[
                     ft.NavigationDrawerDestination(label=label, icon=icon, selected_icon=icon)
-                    for label, _subtitle, icon, _ in PAGES
+                    for label, icon in drawer_items
                 ],
             ],
-            selected_index=1,
-            on_change=lambda e: None if e.control.selected_index is None else render_search() if e.control.selected_index == 0 else (close_left_drawer(), render(e.control.selected_index - 1)),
+            selected_index=0,
+            on_change=on_drawer_change,
         )
 
     def create_right_drawer() -> ft.NavigationDrawer:
@@ -527,49 +583,26 @@ def main(page: ft.Page):
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
         visible=True,
-        left=12,
-        right=12,
-        top=12,
-        padding=ft.Padding(8, 6, 8, 6),
-        bgcolor=ft.Colors.with_opacity(0.82, ft.Colors.SURFACE_CONTAINER_HIGH),
-        border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-        border_radius=999,
-        shadow=ft.BoxShadow(
-            blur_radius=20,
-            spread_radius=0,
-            color=ft.Colors.with_opacity(0.22, ft.Colors.BLACK),
-            offset=ft.Offset(0, 6),
-        ),
+        height=58,
+        padding=ft.Padding(8, 4, 8, 4),
+        bgcolor=ft.Colors.SURFACE,
+        border=ft.border.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
     )
-
-    def update_top_bar_width(e=None):
-        width = float(page.width or 0)
-        if width >= 900:
-            bar_width = min(width * 0.7, 1120)
-            top_bar.width = bar_width
-            top_bar.left = max(12, (width - bar_width) / 2)
-            top_bar.right = None
-            top_bar.align = None
-        else:
-            top_bar.width = None
-            top_bar.left = 12
-            top_bar.right = 12
-            top_bar.align = None
 
     def bottom_nav_segment(label: str, icon, target: str) -> ft.Container:
         selected = label == bottom_nav_state["value"]
         color = ft.Colors.ON_PRIMARY if selected else ft.Colors.ON_SURFACE_VARIANT
         segment = ft.Container(
-            content=ft.Row(
+            content=ft.Column(
                 [
-                    ft.Icon(icon, size=18, color=color),
-                    ft.Text(label, size=13, weight=ft.FontWeight.W_600 if selected else ft.FontWeight.W_500, color=color),
+                    ft.Icon(icon, size=20, color=color),
+                    ft.Text(label, size=11, weight=ft.FontWeight.W_600 if selected else ft.FontWeight.W_500, color=color),
                 ],
                 alignment=ft.MainAxisAlignment.CENTER,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=6,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=1,
             ),
-            height=42,
+            height=54,
             expand=1,
             border_radius=999,
             bgcolor=ft.Colors.PRIMARY if selected else ft.Colors.TRANSPARENT,
@@ -587,10 +620,10 @@ def main(page: ft.Page):
                 bottom_nav_segment("设置", ft.Icons.SETTINGS, "设置"),
             ],
             alignment=ft.MainAxisAlignment.CENTER,
-            spacing=4,
+            spacing=3,
         ),
         width=360,
-        padding=ft.Padding(5, 5, 5, 5),
+        padding=ft.Padding(4, 5, 4, 5),
         bgcolor=ft.Colors.with_opacity(0.78, ft.Colors.SURFACE_CONTAINER_HIGH),
         border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
         border_radius=999,
@@ -613,9 +646,40 @@ def main(page: ft.Page):
         else:
             render_label("主页")
 
-    reading_section = content
-    local_section = ft.Container(content=local_galleries_view(page), expand=True, padding=ft.Padding(8, 72, 8, 86))
-    settings_section = ft.Container(content=settings_view(page), expand=True, padding=ft.Padding(8, 72, 8, 86))
+    def on_reading_tabs_change(e):
+        if reading_tabs_syncing["value"]:
+            return
+        selected_index = int(getattr(e.control, "selected_index", 0) or 0)
+        if selected_index < 0 or selected_index >= len(READING_PAGE_INDEXES):
+            return
+        render(READING_PAGE_INDEXES[selected_index])
+
+    reading_tab_pages[:] = [ft.Container(expand=True) for _idx in READING_PAGE_INDEXES]
+    reading_tab_pages[0].content = content
+
+    reading_tabs = ft.Tabs(
+        content=ft.Column(
+            [
+                ft.TabBar(
+                    tabs=[ft.Tab(label=PAGES[idx][0]) for idx in READING_PAGE_INDEXES],
+                ),
+                ft.TabBarView(
+                    controls=reading_tab_pages,
+                    expand=True,
+                ),
+            ],
+            expand=True,
+        ),
+        length=len(READING_PAGE_INDEXES),
+        selected_index=0,
+        animation_duration=160,
+        on_change=on_reading_tabs_change,
+        expand=True,
+    )
+    reading_tabs_ref["value"] = reading_tabs
+    reading_section = ft.Container(content=reading_tabs, expand=True, padding=ft.Padding(8, 8, 8, 86))
+    local_section = ft.Container(content=local_galleries_view(page), expand=True, padding=ft.Padding(8, 8, 8, 86))
+    settings_section = ft.Container(content=settings_view(page), expand=True, padding=ft.Padding(8, 8, 8, 86))
     root_tabs = ft.Tabs(
         content=ft.TabBarView(
             controls=[reading_section, local_section, settings_section],
@@ -637,7 +701,6 @@ def main(page: ft.Page):
                 ],
                 expand=True,
             ),
-            top_bar,
             ft.Container(
                 content=bottom_nav,
                 left=0,
@@ -648,10 +711,8 @@ def main(page: ft.Page):
         ],
         expand=True,
     )
-    update_top_bar_width()
-    add_resize_handler(lambda e=None: (update_top_bar_width(e), page.update()))
 
-    app_body_host = ft.Container(content=body, expand=True)
+    app_body_host = ft.Container(content=ft.Column([top_bar, body], spacing=0, expand=True), expand=True)
     shell_host["value"] = app_body_host
 
     if use_builtin_title_bar:

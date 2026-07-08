@@ -215,10 +215,16 @@ def create_view(page: ft.Page) -> ft.Control:
         )
         page.update()
 
+    def open_downloads(e):
+        render_label = getattr(page, "fletviewer_render_label", None)
+        if callable(render_label):
+            render_label("下载")
+
     refresh_btn = ft.Button("刷新", icon=ft.Icons.REFRESH, on_click=lambda e: show_list())
+    downloads_btn = ft.Button("下载", icon=ft.Icons.DOWNLOAD, on_click=open_downloads)
     root = ft.Column(
         [
-            ft.Row([refresh_btn], alignment=ft.MainAxisAlignment.END),
+            ft.Row([downloads_btn, refresh_btn], alignment=ft.MainAxisAlignment.END),
             status,
             ft.Divider(),
             content,
