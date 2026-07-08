@@ -133,6 +133,23 @@ def create_view(
         with Timer("viewer", f"resolve image index={idx}"):
             return resolve_image_url(item, idx) if resolve_image_url else item.url
 
+    def fetch_item_image(item: ImageViewerItem, idx: int):
+        provider = item.detail.get("provider")
+        gid = item.detail.get("gid")
+        token = item.detail.get("token")
+        page_idx = item.detail.get("page_idx")
+        if provider and gid and token and page_idx is not None and resolve_image_url:
+            return image_fetcher.fetch_gallery_page(
+                provider=str(provider),
+                gid=str(gid),
+                token=str(token),
+                page_idx=int(page_idx),
+                kind=str(item.detail.get("kind") or "original"),
+                resolve_url=lambda: resolve_item_url(item, idx),
+            )
+        url = resolve_item_url(item, idx)
+        return image_fetcher.fetch(url)
+
     def update_nav():
         prev_btn.disabled = state["index"] <= 0
         next_btn.disabled = state["index"] >= len(items) - 1
@@ -203,13 +220,12 @@ def create_view(
 
         def worker():
             try:
-                url = resolve_item_url(item, state["index"])
-                log_debug("viewer", f"load image index={state['index']} url={url}")
+                log_debug("viewer", f"load image index={state['index']}")
                 with Timer("viewer", f"fetch image index={state['index']}"):
-                    result = image_fetcher.fetch(url)
+                    result = fetch_item_image(item, state["index"])
                 if generation != state["paged_generation"] or state["mode"] != "paged":
                     return
-                state["current_url"] = url
+                state["current_url"] = result.url or item.url
                 state["current_path"] = result.path
                 with Timer("viewer", f"build image control index={state['index']}"):
                     image_box.content = ft.Image(
@@ -345,12 +361,11 @@ def create_view(
 
         def worker():
             try:
-                url = resolve_item_url(item, idx)
-                log_debug("viewer", f"vertical load image index={idx} url={url}")
-                result = image_fetcher.fetch(url)
+                log_debug("viewer", f"vertical load image index={idx}")
+                result = fetch_item_image(item, idx)
                 if generation != state["vertical_generation"] or state["mode"] != "vertical":
                     return
-                vertical_urls[idx] = url
+                vertical_urls[idx] = result.url or item.url
                 vertical_paths[idx] = result.path
                 vertical_loaded.add(idx)
                 vertical_cards[idx].content = ft.Column(
@@ -370,7 +385,7 @@ def create_view(
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 )
                 if idx == state["index"]:
-                    state["current_url"] = url
+                    state["current_url"] = result.url or item.url
                     state["current_path"] = result.path
                 status.value = f"垂直浏览 {state['index'] + 1}/{len(items)}，窗口内加载 {len(vertical_loaded)} 张"
                 log_debug("viewer", f"vertical image loaded index={idx} bytes={len(result.data)}")

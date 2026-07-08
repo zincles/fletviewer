@@ -6,12 +6,19 @@ ROOT_DIR = Path(os.environ.get("FLETVIEWER_HOME", "FletViewer"))
 CONFIG_DIR = ROOT_DIR / "Config"
 EH_CONFIG_PATH = CONFIG_DIR / "EHArchieve.json"
 APP_CONFIG_PATH = CONFIG_DIR / "AppConfig.json"
+CACHE_DB_PATH = ROOT_DIR / "cache.db"
+DATA_DB_PATH = ROOT_DIR / "data.db"
+CACHE_FILES_DIR = ROOT_DIR / "Cache"
+CONFIG_PATH = ROOT_DIR / "config.json"
 DOWNLOADS_DIR = ROOT_DIR / "Downloads"
 DOWNLOADING_DIR = DOWNLOADS_DIR / "Downloading"
 EH_ARCHIVE_DIR = DOWNLOADS_DIR / "EHArchieve"
-DOWNLOADS_DATA_DIR = ROOT_DIR / "Data" / "Downloads"
-DOWNLOAD_TASKS_INDEX_PATH = DOWNLOADS_DATA_DIR / "tasks.json"
+LEGACY_DATA_DIR = ROOT_DIR / "Data"
 GALLERY_CACHE_DIR = ROOT_DIR / "Data" / "GalleryCache"
+IMAGE_CACHE_DIR = ROOT_DIR / "Data" / "ImageCache"
+IMAGE_CACHE_FILES_DIR = IMAGE_CACHE_DIR / "files"
+IMAGE_CACHE_DB_PATH = CACHE_DB_PATH
+IMAGE_CACHE_LEGACY_INDEX_PATH = IMAGE_CACHE_DIR / "index.json"
 
 EH_CONFIG_KEYS = ("ipb_member_id", "ipb_pass_hash", "igneous", "star")
 APP_CONFIG_DEFAULTS = {
@@ -24,11 +31,25 @@ APP_CONFIG_DEFAULTS = {
     "linux_prefer_wayland_window_backend": False,
 }
 IMAGE_VIEWER_MODES = {"paged", "vertical"}
+CONFIG_DEFAULTS = {
+    "eh": {k: "" for k in EH_CONFIG_KEYS},
+    "app": dict(APP_CONFIG_DEFAULTS),
+}
 
 
 def ensure_dirs():
-    """确保基础配置目录存在。"""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    """确保基础目录存在，并移除旧 Config/Cache 目录。"""
+    ROOT_DIR.mkdir(parents=True, exist_ok=True)
+    _remove_legacy_dirs()
+
+
+def _remove_legacy_dirs() -> None:
+    import shutil
+
+    shutil.rmtree(IMAGE_CACHE_DIR, ignore_errors=True)
+    shutil.rmtree(GALLERY_CACHE_DIR, ignore_errors=True)
+    shutil.rmtree(LEGACY_DATA_DIR, ignore_errors=True)
+    shutil.rmtree(CONFIG_DIR, ignore_errors=True)
 
 
 def ensure_download_dirs():
@@ -37,7 +58,6 @@ def ensure_download_dirs():
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
     DOWNLOADING_DIR.mkdir(parents=True, exist_ok=True)
     EH_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    DOWNLOADS_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_gallery_cache_dirs():
@@ -46,38 +66,57 @@ def ensure_gallery_cache_dirs():
     GALLERY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def ensure_image_cache_dirs():
+    """确保图片缓存目录存在。"""
+    ensure_dirs()
+    CACHE_FILES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _load_config() -> dict:
+    ensure_dirs()
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {
+                "eh": {**CONFIG_DEFAULTS["eh"], **dict(data.get("eh") or {})},
+                "app": {**CONFIG_DEFAULTS["app"], **dict(data.get("app") or {})},
+            }
+    return {"eh": dict(CONFIG_DEFAULTS["eh"]), "app": dict(CONFIG_DEFAULTS["app"])}
+
+
+def _save_config(data: dict) -> None:
+    ensure_dirs()
+    payload = {
+        "eh": {**CONFIG_DEFAULTS["eh"], **dict(data.get("eh") or {})},
+        "app": {**CONFIG_DEFAULTS["app"], **dict(data.get("app") or {})},
+    }
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=4, ensure_ascii=False)
+
+
 def load_eh_config() -> dict:
     """读取 EH Cookie 凭据配置；不存在时返回空字段。"""
-    ensure_dirs()
-    if EH_CONFIG_PATH.exists():
-        with open(EH_CONFIG_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    return {k: "" for k in EH_CONFIG_KEYS}
+    return _load_config()["eh"]
 
 
 def save_eh_config(cfg: dict) -> None:
     """保存 EH Cookie 凭据配置。"""
-    ensure_dirs()
-    with open(EH_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=4, ensure_ascii=False)
+    data = _load_config()
+    data["eh"] = {**CONFIG_DEFAULTS["eh"], **cfg}
+    _save_config(data)
 
 
 def load_app_config() -> dict:
     """读取应用配置，并与默认值合并以兼容新增配置项。"""
-    ensure_dirs()
-    if APP_CONFIG_PATH.exists():
-        with open(APP_CONFIG_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-        return {**APP_CONFIG_DEFAULTS, **data}
-    return dict(APP_CONFIG_DEFAULTS)
+    return _load_config()["app"]
 
 
 def save_app_config(cfg: dict) -> None:
     """保存应用配置；会补齐默认字段。"""
-    ensure_dirs()
-    data = {**APP_CONFIG_DEFAULTS, **cfg}
-    with open(APP_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    data = _load_config()
+    data["app"] = {**APP_CONFIG_DEFAULTS, **cfg}
+    _save_config(data)
 
 
 def should_load_images() -> bool:

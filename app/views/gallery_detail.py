@@ -425,11 +425,17 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
                 ThumbnailItem(url=thumb, page_url=page_url)
                 for page_url, thumb in zip(thumbs.urls, thumbs.thumbnails)
             ]
+            gid, token = client.parse_url(comic.id)
             viewer_items = [
                 ImageViewerItem(
                     url=item.page_url,
                     title=f"{details.title or comic.title} #{idx + 1}",
                     detail={
+                        "provider": "ehentai",
+                        "gid": str(gid),
+                        "token": token,
+                        "page_idx": idx,
+                        "kind": "original",
                         "gallery_url": comic.id,
                         "page_url": item.page_url,
                         "thumbnail_url": item.url,

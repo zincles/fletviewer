@@ -4,8 +4,9 @@ from app.browser_session import browser_session
 from app.gallery_cache import clear_gallery_cache
 from app.image_cache import clear_image_cache
 from app.storage import (
-    APP_CONFIG_PATH,
-    EH_CONFIG_PATH,
+    CACHE_DB_PATH,
+    CACHE_FILES_DIR,
+    CONFIG_PATH,
     get_image_viewer_mode,
     get_image_grid_target_width,
     load_app_config,
@@ -162,14 +163,14 @@ def create_view(page: ft.Page) -> ft.Control:
             return
         save_eh_config(data)
         apply_login_mode("eh_config_saved")
-        status.value = f"已保存到 {EH_CONFIG_PATH}"
+        status.value = f"已保存到 {CONFIG_PATH}"
         status.color = ft.Colors.PRIMARY
         page.update()
 
     def on_save_app(e):
         save_app_config(current_app_config())
         _invalidate_gallery_views(page, "app_debug_config_saved")
-        message = f"已保存到 {APP_CONFIG_PATH}。Linux 窗口设置重启后生效。"
+        message = f"已保存到 {CONFIG_PATH}。Linux 窗口设置重启后生效。"
         for target in (display_status, linux_window_status):
             target.value = message
             target.color = ft.Colors.PRIMARY
@@ -280,9 +281,9 @@ def create_view(page: ft.Page) -> ft.Control:
         content=ft.Column(
             controls=[
                 ft.Text("存储", size=20, weight=ft.FontWeight.W_500),
-                ft.Text(f"配置目录: {EH_CONFIG_PATH.parent}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
-                ft.Text(f"应用配置: {APP_CONFIG_PATH}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
-                ft.Text(f"EH 凭据: {EH_CONFIG_PATH}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Text(f"配置文件: {CONFIG_PATH}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Text(f"缓存 DB: {CACHE_DB_PATH}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Text(f"缓存文件目录: {CACHE_FILES_DIR}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
             ],
             spacing=16,
             scroll=ft.ScrollMode.AUTO,
