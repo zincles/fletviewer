@@ -126,13 +126,13 @@ def create_view(page: ft.Page) -> ft.Control:
     refresh(update=False)
     page.run_thread(auto_refresh_worker)
     return ft.Column(
-        [
-            ft.Row([auto_status, refresh_button], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            status,
-            ft.Divider(),
-            content,
-        ],
-        spacing=12,
-        scroll=ft.ScrollMode.AUTO,
-        expand=True,
+            [
+                ft.Row([auto_status, refresh_button], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                status,
+                ft.Divider(),
+                content,
+            ],
+            spacing=12,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
     )

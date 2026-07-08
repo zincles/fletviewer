@@ -379,15 +379,6 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
 
         page.run_thread(archive_worker)
 
-    set_header_actions = getattr(page, "fletviewer_set_header_actions", None)
-    if callable(set_header_actions):
-        set_header_actions(
-            [
-                ft.Button("返回", icon=ft.Icons.ARROW_BACK, on_click=lambda e: on_back()),
-                ft.Button("下载 Archive", icon=ft.Icons.DOWNLOAD, on_click=load_archives),
-            ]
-        )
-
     def worker():
         try:
             log_debug("detail", f"load start {comic.id}")
@@ -507,6 +498,14 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
     page.run_thread(worker)
 
     detail_controls = [
+            ft.Row(
+                [
+                    ft.Button("返回", icon=ft.Icons.ARROW_BACK, on_click=lambda e: on_back()),
+                    ft.Button("下载 Archive", icon=ft.Icons.DOWNLOAD, on_click=load_archives),
+                ],
+                spacing=8,
+                wrap=True,
+            ),
             download_status,
             ft.Divider(),
             ft.Row([cover_box, meta], spacing=24, vertical_alignment=ft.CrossAxisAlignment.START),

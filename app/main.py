@@ -20,6 +20,7 @@ from app.local_gallery_manager import local_gallery_manager
 from app.storage import should_use_linux_builtin_title_bar
 from app.views.downloads import create_view as downloads_view
 from app.views.debug import create_view as debug_view
+from app.views.input_test import create_view as input_test_view
 from app.views.home import create_view as home_view
 from app.views.subscriptions import create_view as subscriptions_view
 from app.views.popular import create_view as popular_view
@@ -41,6 +42,7 @@ PAGES = [
     ("历史", "浏览历史", ft.Icons.HISTORY, None),
     ("下载", "下载任务", ft.Icons.DOWNLOAD, downloads_view),
     ("调试", "小图任务", ft.Icons.BUG_REPORT, debug_view),
+    ("输入测试", "用户输入事件", ft.Icons.TOUCH_APP, input_test_view),
     ("设置", "应用设置", ft.Icons.SETTINGS, settings_view),
 ]
 
@@ -234,6 +236,17 @@ def main(page: ft.Page):
 
         page.run_thread(worker)
 
+    def pop_top_view():
+        if len(page.views) > 1:
+            page.views.pop()
+            page.route = page.views[-1].route or "/"
+            page.update()
+
+    def handle_view_pop(e):
+        pop_top_view()
+
+    page.on_view_pop = handle_view_pop
+
     def invalidate_views(keys: list[str] | None = None, reason: str = ""):
         targets = keys or list(view_cache.keys())
         for key in targets:
@@ -244,52 +257,39 @@ def main(page: ft.Page):
     page.fletviewer_invalidate_views = invalidate_views
 
     def open_gallery_detail(comic):
-        previous_content = current_content["value"]
-        previous_header = (header_title.value, header_subtitle.value)
-        previous_actions = list(header_actions.controls)
         log_debug("nav", f"open gallery detail {comic.id}")
-        set_header("画廊详情", comic.title or comic.id)
         detail_container = animated_scale_container(ft.Container(expand=True))
 
         def go_back():
             log_debug("nav", f"close gallery detail {comic.id}")
-            def restore():
-                if previous_content is not None:
-                    set_content(previous_content)
-                set_header(*previous_header)
-                header_actions.controls = previous_actions
-                page.update()
-
-            play_exit_animation(detail_container, restore)
+            pop_top_view()
 
         detail_container.content = gallery_detail_view(page, comic, go_back)
-        set_content(detail_container)
+        page.views.append(
+            ft.View(
+                route=f"/gallery/{len(page.views)}",
+                controls=[detail_container],
+                padding=8,
+                appbar=ft.AppBar(
+                    title=ft.Text(comic.title or "画廊详情", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    leading=ft.IconButton(ft.Icons.ARROW_BACK, tooltip="返回", on_click=lambda e: go_back()),
+                    automatically_imply_leading=False,
+                ),
+            )
+        )
+        page.route = page.views[-1].route
         page.update()
         play_enter_animation(detail_container)
 
     page.fletviewer_open_gallery_detail = open_gallery_detail
 
     def open_image_viewer(items, initial_index=0, resolve_image_url=None):
-        previous_header = (header_title.value, header_subtitle.value)
-        previous_actions = list(header_actions.controls)
         log_debug("nav", f"open image viewer index={initial_index} count={len(items)}")
-        set_header("图片查看器", f"{initial_index + 1}/{len(items)}")
         viewer_container: ft.Container | None = None
 
         def go_back():
             log_debug("nav", "close image viewer")
-            def restore():
-                host = shell_host.get("value")
-                if host is not None:
-                    host.content = body
-                set_header(*previous_header)
-                header_actions.controls = previous_actions
-                page.update()
-
-            if viewer_container is not None:
-                play_exit_animation(viewer_container, restore)
-            else:
-                restore()
+            pop_top_view()
 
         viewer_container = animated_scale_container(
             image_viewer_view(
@@ -300,15 +300,29 @@ def main(page: ft.Page):
                 resolve_image_url=resolve_image_url,
             ),
         )
-        host = shell_host.get("value")
-        if host is not None:
-            host.content = viewer_container
-        else:
-            set_content(viewer_container)
+        page.views.append(ft.View(route=f"/viewer/{initial_index}", controls=[viewer_container], padding=0))
+        page.route = page.views[-1].route
         page.update()
         play_enter_animation(viewer_container)
 
     page.fletviewer_open_image_viewer = open_image_viewer
+
+    def open_input_test_view():
+        log_debug("nav", "open input test view")
+        page.views.append(
+            ft.View(
+                route="/input-test",
+                controls=[input_test_view(page)],
+                padding=8,
+                appbar=ft.AppBar(
+                    title=ft.Text("输入测试"),
+                    leading=ft.IconButton(ft.Icons.ARROW_BACK, tooltip="返回", on_click=lambda e: pop_top_view()),
+                    automatically_imply_leading=False,
+                ),
+            )
+        )
+        page.route = page.views[-1].route
+        page.update()
 
     def render_search():
         detach_content_for_navigation()
@@ -329,9 +343,12 @@ def main(page: ft.Page):
         if idx is None or idx < 0 or idx >= len(PAGES):
             log_debug("nav", f"忽略无效导航索引 idx={idx}")
             return
-        detach_content_for_navigation()
         started_at = time.perf_counter()
         label, subtitle, _icon, view_fn = PAGES[idx]
+        if view_fn is input_test_view:
+            open_input_test_view()
+            return
+        detach_content_for_navigation()
         set_header(label, subtitle)
         cache_key = f"page:{idx}"
         active_cache_key["value"] = cache_key
@@ -421,8 +438,8 @@ def main(page: ft.Page):
             on_change=lambda e: close_right_drawer(),
         )
 
-    page.drawer = create_left_drawer()
-    page.end_drawer = create_right_drawer()
+    root_left_drawer = create_left_drawer()
+    root_right_drawer = create_right_drawer()
 
     top_bar = ft.Container(
         content=ft.Row(
@@ -498,7 +515,10 @@ def main(page: ft.Page):
     if _should_use_safe_area(page):
         root = ft.SafeArea(content=root, expand=True)
 
-    page.add(root)
+    page.views.clear()
+    page.views.append(ft.View(route="/", controls=[root], padding=0, drawer=root_left_drawer, end_drawer=root_right_drawer))
+    page.route = "/"
+    page.update()
     render(0)
 
     def initialize_browser_session():
