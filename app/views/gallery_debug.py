@@ -7,6 +7,7 @@ import flet as ft
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.storage import load_eh_config
+from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
 from lib.provider.ehgrabber import EHentaiClient, SearchResult
 
@@ -43,9 +44,6 @@ def create_gallery_debug_view(
         next_btn = ft.Button("下一页", icon=ft.Icons.ARROW_FORWARD, disabled=True)
         page_label = ft.Text("第 1 页", size=14)
         state = {"page_num": 1, "prev_url": None, "next_url": None, "current_url": None}
-        set_header_actions = getattr(page, "fletviewer_set_header_actions", None)
-        if callable(set_header_actions):
-            set_header_actions([refresh_btn])
 
         def load(page_url=None):
             log_debug("gallery_debug", f"{title} load requested page_url={page_url}")
@@ -60,6 +58,7 @@ def create_gallery_debug_view(
                     cfg = load_eh_config()
                     if needs_login and (not cfg.get("ipb_member_id") or not cfg.get("ipb_pass_hash")):
                         output.value = "请先在账户页填写凭据"
+                        show_toast(page, f"{title}: 请先在账户页填写凭据")
                         return
                     client = browser_session.get_eh_client(require_login=needs_login)
                     with Timer("gallery_debug", f"{title} load_fn page_url={page_url}"):
@@ -73,6 +72,7 @@ def create_gallery_debug_view(
                     log_debug("gallery_debug", f"{title} result count={len(result.comics)}")
                 except Exception as ex:
                     output.value = f"错误: {ex}"
+                    show_error_toast(page, f"{title}加载失败", ex)
                     log_exception("gallery_debug", f"{title} worker failed: {ex}")
                 finally:
                     refresh_btn.disabled = False
@@ -93,6 +93,9 @@ def create_gallery_debug_view(
                 load(state["next_url"])
 
         refresh_btn.on_click = lambda e: load(state["current_url"])
+        set_refresh_action = getattr(page, "fletviewer_set_reading_refresh_action", None)
+        if callable(set_refresh_action):
+            set_refresh_action(lambda: load(state["current_url"]))
         prev_btn.on_click = on_prev
         next_btn.on_click = on_next
         load()

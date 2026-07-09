@@ -7,6 +7,7 @@ from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.grid_layout import runs_count_for_width
 from app.storage import load_eh_config
+from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
 from lib.provider.ehgrabber import EHentaiClient, Comic, SearchResult
 
@@ -94,9 +95,10 @@ def create_gallery_cards_view(
     """创建可复用的在线画廊卡片列表页面工厂。"""
     def factory(page: ft.Page) -> ft.Control:
         """创建具体页面实例，并注册自适应列数 resize handler。"""
+        grid_spacing = 0
         list_view = ft.ListView(
             expand=True,
-            spacing=10,
+            spacing=grid_spacing,
             padding=ft.Padding(10, 108, 10, 86),
             scroll_interval=16,
         )
@@ -108,9 +110,6 @@ def create_gallery_cards_view(
 
         state = {"current_url": None, "prev_url": None, "next_url": None, "page_num": 1, "comics": []}
         column_state = {"value": runs_count_for_width(page.width, min_columns=2, max_columns=10)}
-        set_header_actions = getattr(page, "fletviewer_set_header_actions", None)
-        if callable(set_header_actions):
-            set_header_actions([status_text, refresh_btn])
 
         pagination_bar = ft.Container(
             content=ft.Row(
@@ -135,12 +134,14 @@ def create_gallery_cards_view(
             columns = max(1, int(column_state["value"] or 1))
             cards = [make_gallery_card(page, comic) for comic in state["comics"]]
             controls: list[ft.Control] = []
+            if status_text.value:
+                controls.append(ft.Container(content=status_text, padding=ft.Padding(4, 2, 4, 2)))
             for start in range(0, len(cards), columns):
                 chunk = cards[start:start + columns]
                 cells = [ft.Container(content=card, expand=1, aspect_ratio=0.72) for card in chunk]
                 if len(cells) < columns:
                     cells.extend(ft.Container(expand=1) for _ in range(columns - len(cells)))
-                controls.append(ft.Row(cells, spacing=10, vertical_alignment=ft.CrossAxisAlignment.START))
+                controls.append(ft.Row(cells, spacing=grid_spacing, vertical_alignment=ft.CrossAxisAlignment.START))
             controls.append(ft.Container(content=pagination_bar, alignment=ft.Alignment(0, 0), padding=ft.Padding(0, 8, 0, 0)))
             list_view.controls = controls
 
@@ -179,6 +180,7 @@ def create_gallery_cards_view(
                     if needs_login and (not cfg.get("ipb_member_id") or not cfg.get("ipb_pass_hash")):
                         log_debug("画廊列表", f"{title} 缺少登录凭据")
                         status_text.value = "请先在账户页填写凭据"
+                        show_toast(page, f"{title}: 请先在账户页填写凭据")
                         return
 
                     client = browser_session.get_eh_client(require_login=needs_login)
@@ -192,11 +194,11 @@ def create_gallery_cards_view(
                     state["next_url"] = result.next_url
                     prev_btn.disabled = result.prev_url is None
                     next_btn.disabled = result.next_url is None
+                    status_text.value = ""
                     rebuild_gallery_rows()
-
-                    status_text.value = f"共 {len(result.comics)} 个画廊"
                 except Exception as ex:
                     status_text.value = f"错误: {ex}"
+                    show_error_toast(page, f"{title}加载失败", ex)
                     log_exception("画廊列表", f"{title} 加载失败: {ex}")
                 finally:
                     refresh_btn.disabled = False
@@ -206,6 +208,10 @@ def create_gallery_cards_view(
 
         def on_refresh(e):
             load(state["current_url"])
+
+        set_refresh_action = getattr(page, "fletviewer_set_reading_refresh_action", None)
+        if callable(set_refresh_action):
+            set_refresh_action(lambda: on_refresh(None))
 
         def on_prev(e):
             if state["prev_url"]:

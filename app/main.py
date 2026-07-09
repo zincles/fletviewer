@@ -18,6 +18,7 @@ from app.browser_session import browser_session
 from app.debug_log import format_duration_ms, log_debug
 from app.local_gallery_manager import local_gallery_manager
 from app.storage import should_use_linux_builtin_title_bar
+from app.theme import apply_app_theme, refresh_adaptive_theme_on_brightness_change
 from app.views.downloads import create_view as downloads_view
 from app.views.debug import create_view as debug_view
 from app.views.home import create_view as home_view
@@ -45,10 +46,6 @@ PAGES = [
 ]
 READING_PAGE_LABELS = {"主页", "订阅", "热门", "排行榜", "收藏"}
 READING_PAGE_INDEXES = [idx for idx, (label, _subtitle, _icon, _view_fn) in enumerate(PAGES) if label in READING_PAGE_LABELS]
-
-BRAND_SEED = ft.Colors.DEEP_PURPLE
-APP_BG = ft.Colors.SURFACE
-
 
 def _is_linux_desktop(page: ft.Page) -> bool:
     """判断当前是否为 Linux 桌面端。"""
@@ -125,19 +122,9 @@ def _should_use_safe_area(page: ft.Page) -> bool:
 def main(page: ft.Page):
     """Flet 应用主入口，负责全局导航、页面缓存和二级页面切换。"""
     page.title = "FletViewer"
-    page.theme_mode = ft.ThemeMode.SYSTEM
-    page.theme = ft.Theme(
-        color_scheme_seed=BRAND_SEED,
-        use_material3=True,
-        scaffold_bgcolor=APP_BG,
-        page_transitions=ft.PageTransitionsTheme(android=ft.PageTransitionTheme.PREDICTIVE),
-    )
-    page.dark_theme = ft.Theme(
-        color_scheme_seed=BRAND_SEED,
-        use_material3=True,
-        scaffold_bgcolor=ft.Colors.BLACK,
-        page_transitions=ft.PageTransitionsTheme(android=ft.PageTransitionTheme.PREDICTIVE),
-    )
+    apply_app_theme(page)
+    page.fletviewer_apply_theme = lambda update=True: apply_app_theme(page, update=update)
+    page.on_platform_brightness_change = lambda e: refresh_adaptive_theme_on_brightness_change(page)
     if page.web:
         os.environ["FLETVIEWER_WEB"] = "1"
     local_gallery_manager.initialize()
@@ -158,9 +145,9 @@ def main(page: ft.Page):
     current_content: dict[str, ft.Control | None] = {"value": None}
     shell_host: dict[str, ft.Container | None] = {"value": None}
     resize_handlers = []
-    header_title = ft.Text("FletViewer", size=18, weight=ft.FontWeight.W_600, overflow=ft.TextOverflow.ELLIPSIS, expand=True)
     header_actions = ft.Row(spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
     header_action_cache: dict[str, list[ft.Control]] = {}
+    reading_refresh_action_cache: dict[str, object] = {}
     active_cache_key = {"value": ""}
     bottom_nav_state = {"value": "阅读"}
     bottom_nav_segments: dict[str, ft.Container] = {}
@@ -218,7 +205,7 @@ def main(page: ft.Page):
             reading_tabs_syncing["value"] = False
 
     def set_header(title: str, subtitle: str = "") -> None:
-        header_title.value = title
+        return
 
     def set_header_actions(controls: list[ft.Control] | None = None) -> None:
         actions = list(controls or [])
@@ -228,6 +215,17 @@ def main(page: ft.Page):
             header_action_cache[key] = actions
 
     page.fletviewer_set_header_actions = set_header_actions
+
+    def set_reading_refresh_action(action=None) -> None:
+        key = active_cache_key.get("value")
+        if not key:
+            return
+        if callable(action):
+            reading_refresh_action_cache[key] = action
+        else:
+            reading_refresh_action_cache.pop(key, None)
+
+    page.fletviewer_set_reading_refresh_action = set_reading_refresh_action
 
     def show_reading_action_hint(message: str) -> None:
         dialog = ft.AlertDialog(
@@ -493,7 +491,7 @@ def main(page: ft.Page):
 
     page.fletviewer_open_image_viewer = open_image_viewer
 
-    def render_search():
+    def render_search(keyword: str | None = None):
         detach_content_for_navigation()
         active_cache_key["value"] = "search"
         started_at = time.perf_counter()
@@ -506,6 +504,10 @@ def main(page: ft.Page):
         else:
             log_debug("nav", "reuse view search")
         set_content(view_cache["search"])
+        if keyword is not None:
+            run_search = getattr(page, "fletviewer_run_search", None)
+            if callable(run_search):
+                run_search(keyword)
         page.update()
         log_debug("nav", f"切换视图 搜索 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
 
@@ -614,12 +616,34 @@ def main(page: ft.Page):
         )
 
     root_right_drawer = create_right_drawer()
+    top_search_field = ft.SearchBar(
+        bar_hint_text="搜索画廊、标签、作者",
+        bar_leading=ft.Icon(ft.Icons.SEARCH),
+        bar_bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
+        bar_elevation=0,
+        bar_shape=ft.StadiumBorder(),
+        bar_border_side=ft.BorderSide(0, ft.Colors.TRANSPARENT),
+        bar_padding=ft.Padding(12, 0, 12, 0),
+        view_hint_text="搜索画廊、标签、作者",
+        view_leading=ft.Icon(ft.Icons.SEARCH),
+        view_elevation=2,
+        view_shape=ft.RoundedRectangleBorder(radius=28),
+        full_screen=False,
+        shrink_wrap=True,
+        height=44,
+        expand=True,
+    )
+
+    def submit_top_search(e=None):
+        keyword = (top_search_field.value or "").strip()
+        render_search(keyword if keyword else None)
+
+    top_search_field.on_submit = submit_top_search
 
     reading_top_row = ft.Container(
         content=ft.Row(
             [
-                header_title,
-                ft.IconButton(ft.Icons.SEARCH, tooltip="搜索", on_click=lambda e: render_search()),
+                top_search_field,
                 header_actions,
                 ft.IconButton(ft.Icons.TUNE, tooltip="平台", on_click=open_right_drawer),
             ],
@@ -770,7 +794,16 @@ def main(page: ft.Page):
             animate_scale=160,
         )
 
+    def refresh_current_reading_page(e=None):
+        action = reading_refresh_action_cache.get(active_cache_key.get("value", ""))
+        set_reading_speed_dial_open(False)
+        if callable(action):
+            action()
+        else:
+            show_reading_action_hint("当前页面没有可刷新的内容。")
+
     reading_speed_dial_items = [
+        reading_speed_dial_item(ft.Icons.REFRESH, "刷新", refresh_current_reading_page),
         reading_speed_dial_item(ft.Icons.PIN, "跳转页数", lambda e: show_reading_action_hint("这里后续接“跳转到页数”功能。")),
         reading_speed_dial_item(ft.Icons.BOOKMARK_ADD, "收藏操作", lambda e: show_reading_action_hint("这里后续接收藏/批量操作。")),
         reading_speed_dial_item(ft.Icons.TUNE, "更多筛选", lambda e: show_reading_action_hint("这里后续接筛选/排序工具。")),
@@ -787,8 +820,15 @@ def main(page: ft.Page):
     )
 
     reading_tabs = ft.Tabs(
-        content=ft.TabBarView(
-            controls=reading_tab_pages,
+        content=ft.Stack(
+            controls=[
+                ft.TabBarView(
+                    controls=reading_tab_pages,
+                    expand=True,
+                ),
+                top_bar,
+                reading_speed_dial,
+            ],
             expand=True,
         ),
         length=len(READING_PAGE_INDEXES),
@@ -798,15 +838,8 @@ def main(page: ft.Page):
         expand=True,
     )
     reading_tabs_ref["value"] = reading_tabs
-    reading_content_host = ft.Container(content=reading_tabs, expand=True, left=0, right=0, bottom=0, top=0)
-    reading_section = ft.Stack(
-        controls=[
-            reading_content_host,
-            top_bar,
-            reading_speed_dial,
-        ],
-        expand=True,
-    )
+    reading_content_host = ft.Container(content=reading_tabs, expand=True)
+    reading_section = reading_content_host
     local_section = ft.Stack(
         controls=[
             ft.Container(content=local_galleries_view(page), expand=True, padding=ft.Padding(8, 0, 8, 0)),

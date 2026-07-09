@@ -7,6 +7,7 @@ from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.grid_layout import runs_count_for_width
 from app.storage import should_render_gallery_cards
+from app.toast import show_error_toast
 from app.ui_update import request_update
 from app.views.gallery_cards import make_gallery_card
 
@@ -41,11 +42,12 @@ def create_view(page: ft.Page) -> ft.Control:
     page_label = ft.Text("第 1 页", size=14)
     status = ft.Text("输入关键词后搜索", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
     render_cards = should_render_gallery_cards()
+    grid_spacing = 0
     grid = ft.GridView(
         expand=True,
         runs_count=runs_count_for_width(page.width, min_columns=2, max_columns=10),
-        spacing=10,
-        run_spacing=10,
+        spacing=grid_spacing,
+        run_spacing=grid_spacing,
         child_aspect_ratio=0.65,
         padding=10,
     )
@@ -78,7 +80,7 @@ def create_view(page: ft.Page) -> ft.Control:
         state["next_url"] = result.next_url
         prev_btn.disabled = result.prev_url is None
         next_btn.disabled = result.next_url is None
-        status.value = f"共 {len(result.comics)} 个画廊"
+        status.value = ""
         if render_cards:
             grid.controls = [make_gallery_card(page, comic) for comic in result.comics]
         else:
@@ -109,6 +111,7 @@ def create_view(page: ft.Page) -> ft.Control:
             except Exception as ex:
                 status.value = f"错误: {ex}"
                 output.value = f"错误: {ex}"
+                show_error_toast(page, "搜索加载失败", ex)
                 log_exception("search", f"search failed keyword={kw} page_url={page_url}: {ex}")
             finally:
                 btn.disabled = False
@@ -118,6 +121,12 @@ def create_view(page: ft.Page) -> ft.Control:
 
     def on_search(e=None):
         load(keyword=query.value)
+
+    def run_search(keyword: str) -> None:
+        query.value = keyword
+        load(keyword=keyword)
+
+    page.fletviewer_run_search = run_search
 
     def on_prev(e):
         if state["prev_url"]:

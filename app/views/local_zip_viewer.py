@@ -6,6 +6,7 @@ import flet as ft
 
 from app.controls.async_image import image_placeholder, image_src_for_page
 from app.debug_log import log_exception
+from app.toast import show_error_toast
 from app.ui_update import request_update
 
 
@@ -102,6 +103,7 @@ def create_view(page: ft.Page, zip_path: Path, title_text: str, on_back) -> ft.C
             except Exception as ex:
                 status.value = f"读取失败: {ex}"
                 image_box.content = image_placeholder()
+                show_error_toast(page, "本地 ZIP 图片读取失败", ex)
                 log_exception("local_zip", f"read failed {zip_path} member={member}: {ex}")
             finally:
                 request_update(page)

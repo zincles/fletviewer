@@ -1,4 +1,4 @@
-from app.storage import get_image_grid_target_width
+from app.storage import get_gallery_grid_columns
 
 
 DEFAULT_WIDTH_DEDUCTION = 200
@@ -12,8 +12,6 @@ def runs_count_for_width(
     max_columns: int = 10,
     width_deduction: int = DEFAULT_WIDTH_DEDUCTION,
 ) -> int:
-    """根据窗口宽度和参考卡片宽度计算 GridView 应显示的列数。"""
-    target = target_width or get_image_grid_target_width()
-    available = max(float(target) * min_columns, float(width or 1280) - width_deduction)
-    columns = round(available / target)
+    """根据设置中的画廊列数返回 GridView 应显示的列数。"""
+    columns = get_gallery_grid_columns()
     return max(min_columns, min(max_columns, columns))

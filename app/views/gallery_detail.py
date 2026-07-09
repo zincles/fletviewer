@@ -11,6 +11,7 @@ from app.download_manager import download_manager, now_iso
 from app.gallery_cache import get_eh_gallery_cache, put_eh_gallery_cache
 from app.grid_layout import runs_count_for_width
 from app.storage import should_render_gallery_cards
+from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
 from lib.provider.ehgrabber import Comic, Comment, ThumbnailItem
 from app.views.image_viewer import ImageViewerItem
@@ -286,6 +287,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         options = [archive for archive in archives if not archive.id.startswith("h@h_")]
         if not options:
             download_status.value = "没有可用的 Archive 下载选项"
+            show_toast(page, "没有可用的 Archive 下载选项")
             page.update()
             return
 
@@ -358,6 +360,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             log_debug("detail", f"archive task created {task.id} {comic.id}")
         except Exception as ex:
             download_status.value = f"创建下载任务失败: {ex}"
+            show_error_toast(page, "创建下载任务失败", ex)
             log_exception("detail", f"create archive task failed {comic.id}: {ex}")
         finally:
             request_update(page)
@@ -374,6 +377,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
                 show_archive_dialog(archives)
             except Exception as ex:
                 download_status.value = f"加载 Archive 失败: {ex}"
+                show_error_toast(page, "加载 Archive 失败", ex)
                 log_exception("detail", f"load archives failed {comic.id}: {ex}")
                 request_update(page)
 
@@ -491,6 +495,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             log_debug("detail", f"load done {comic.id} thumbs={len(thumbs.thumbnails)}")
         except Exception as ex:
             status.value = f"错误: {ex}"
+            show_error_toast(page, "画廊详情加载失败", ex)
             log_exception("detail", f"load failed {comic.id}: {ex}")
         finally:
             request_update(page)

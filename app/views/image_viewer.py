@@ -11,6 +11,7 @@ from app.controls.async_image import image_placeholder, image_src_for_page
 from app.debug_log import Timer, log_debug, log_exception
 from app.image_fetcher import image_fetcher
 from app.storage import ROOT_DIR, get_image_viewer_mode, should_load_images
+from app.toast import show_error_toast
 from app.ui_update import request_update
 
 
@@ -237,6 +238,7 @@ def create_view(
                 log_debug("viewer", f"image loaded index={state['index']} bytes={len(result.data)}")
             except Exception as ex:
                 status.value = f"错误: {ex}"
+                show_error_toast(page, "图片加载失败", ex)
                 log_exception("viewer", f"image load failed index={state['index']}: {ex}")
             finally:
                 request_update(page)
@@ -268,6 +270,7 @@ def create_view(
             log_debug("viewer", f"downloaded {path} -> {target}")
         except Exception as ex:
             status.value = f"下载失败: {ex}"
+            show_error_toast(page, "图片下载失败", ex)
             log_exception("viewer", f"download failed: {ex}")
         page.update()
 

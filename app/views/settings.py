@@ -1,3 +1,5 @@
+import json
+
 import flet as ft
 
 from app.browser_session import browser_session
@@ -8,12 +10,15 @@ from app.storage import (
     CACHE_FILES_DIR,
     CONFIG_PATH,
     get_image_viewer_mode,
-    get_image_grid_target_width,
+    get_gallery_grid_columns,
+    get_theme_color,
+    get_theme_mode,
     load_app_config,
     load_eh_config,
     save_app_config,
     save_eh_config,
 )
+from app.toast import show_toast
 
 COOKIE_FIELDS = [
     ("ipb_member_id", "ipb_member_id", "EH 会员 ID", True),
@@ -66,6 +71,7 @@ def create_view(page: ft.Page) -> ft.Control:
 
     status = ft.Text("", size=14)
     display_status = ft.Text("", size=14)
+    debug_status = ft.Text("", size=14)
     linux_window_status = ft.Text("", size=14)
     login_status = ft.Text(browser_session.login_status_text(), size=14, color=ft.Colors.ON_SURFACE_VARIANT)
     login_status_lamp = ft.Container(width=10, height=10, border_radius=999)
@@ -77,9 +83,38 @@ def create_view(page: ft.Page) -> ft.Control:
         label="是否加载图像",
         value=bool(app_cfg.get("load_images", True)),
     )
+    show_error_toasts_switch = ft.Switch(
+        label="显示错误提示",
+        value=bool(app_cfg.get("show_error_toasts", True)),
+    )
     render_cards_switch = ft.Switch(
-        label="是否使用卡片渲染画廊列表",
-        value=bool(app_cfg.get("render_gallery_cards", True)),
+        label="使用JSON而非解析画廊",
+        value=not bool(app_cfg.get("render_gallery_cards", True)),
+    )
+    theme_mode_segments = ft.SegmentedButton(
+        segments=[
+            ft.Segment(value="system", label="跟随系统", icon=ft.Icons.BRIGHTNESS_AUTO),
+            ft.Segment(value="light", label="浅色", icon=ft.Icons.LIGHT_MODE),
+            ft.Segment(value="dark", label="深色", icon=ft.Icons.DARK_MODE),
+        ],
+        selected=[get_theme_mode()],
+        show_selected_icon=False,
+        allow_empty_selection=False,
+    )
+    theme_color_dropdown = ft.Dropdown(
+        label="Material 3 色彩",
+        value=get_theme_color(),
+        options=[
+            ft.DropdownOption(key="adaptive", text="自适应"),
+            ft.DropdownOption(key="teal", text="青绿"),
+            ft.DropdownOption(key="blue", text="蓝色"),
+            ft.DropdownOption(key="green", text="绿色"),
+            ft.DropdownOption(key="rose", text="玫红"),
+            ft.DropdownOption(key="amber", text="琥珀"),
+            ft.DropdownOption(key="violet", text="紫色"),
+        ],
+        width=220,
+        dense=True,
     )
     viewer_mode_dropdown = ft.Dropdown(
         label="默认图像查看器",
@@ -91,11 +126,14 @@ def create_view(page: ft.Page) -> ft.Control:
         width=260,
         dense=True,
     )
-    image_grid_width_field = ft.TextField(
-        label="图片网格参考宽度",
-        value=str(get_image_grid_target_width()),
-        width=220,
-        dense=True,
+    gallery_columns_value = ft.Text(f"{get_gallery_grid_columns()} 列", size=14, weight=ft.FontWeight.W_500)
+    gallery_columns_slider = ft.Slider(
+        value=get_gallery_grid_columns(),
+        min=2,
+        max=10,
+        divisions=8,
+        label="{value} 列",
+        width=320,
     )
     linux_title_bar_switch = ft.Switch(
         label="在Linux端启用内置标题栏",
@@ -108,20 +146,136 @@ def create_view(page: ft.Page) -> ft.Control:
 
     def current_app_config() -> dict:
         try:
-            grid_width = int(image_grid_width_field.value or "220")
-        except ValueError:
-            grid_width = 220
-        grid_width = max(140, min(420, grid_width))
-        image_grid_width_field.value = str(grid_width)
+            grid_columns = int(round(float(gallery_columns_slider.value or 5)))
+        except (TypeError, ValueError):
+            grid_columns = 5
+        grid_columns = max(2, min(10, grid_columns))
+        gallery_columns_slider.value = grid_columns
+        gallery_columns_value.value = f"{grid_columns} 列"
         return {
             "enable_login": enable_login_switch.value,
             "load_images": load_images_switch.value,
-            "render_gallery_cards": render_cards_switch.value,
+            "show_error_toasts": show_error_toasts_switch.value,
+            "render_gallery_cards": not render_cards_switch.value,
+            "theme_mode": (theme_mode_segments.selected or ["system"])[0],
+            "theme_color": theme_color_dropdown.value or "adaptive",
             "image_viewer_mode": viewer_mode_dropdown.value or "paged",
-            "image_grid_target_width": grid_width,
+            "gallery_grid_columns": grid_columns,
             "linux_builtin_title_bar": linux_title_bar_switch.value,
             "linux_prefer_wayland_window_backend": linux_wayland_backend_switch.value,
         }
+
+    def _selected_segment_value(event_data, fallback: str) -> str:
+        if isinstance(event_data, list) and event_data:
+            return str(event_data[0])
+        if isinstance(event_data, str) and event_data:
+            try:
+                data = json.loads(event_data)
+                if isinstance(data, list) and data:
+                    return str(data[0])
+                if isinstance(data, str) and data:
+                    return data
+            except json.JSONDecodeError:
+                return event_data.strip("[]\"' ") or fallback
+        return fallback
+
+    def apply_app_settings(
+        *,
+        reason: str,
+        target: ft.Text | None = None,
+        message: str = "设置已更新",
+        apply_theme: bool = False,
+        invalidate_gallery: bool = False,
+        update: bool = True,
+    ) -> None:
+        save_app_config(current_app_config())
+        if apply_theme:
+            apply_theme_fn = getattr(page, "fletviewer_apply_theme", None)
+            if callable(apply_theme_fn):
+                apply_theme_fn(False)
+        if invalidate_gallery:
+            _invalidate_gallery_views(page, reason)
+        if target is not None:
+            target.value = message
+            target.color = ft.Colors.PRIMARY
+        if update:
+            page.update()
+
+    def on_theme_mode_change(e):
+        event_data = getattr(e, "data", None) or getattr(getattr(e, "control", None), "selected", None)
+        mode = _selected_segment_value(event_data, "system")
+        if mode not in {"system", "light", "dark"}:
+            mode = "system"
+        theme_mode_segments.selected = [mode]
+        apply_app_settings(
+            reason="theme_mode_changed",
+            target=display_status,
+            message="外观模式已更新",
+            apply_theme=True,
+        )
+
+    theme_mode_segments.on_change = on_theme_mode_change
+    theme_color_dropdown.on_select = lambda e: apply_app_settings(
+        reason="theme_color_changed",
+        target=display_status,
+        message="主题色已更新",
+        apply_theme=True,
+    )
+    viewer_mode_dropdown.on_select = lambda e: apply_app_settings(
+        reason="viewer_mode_changed",
+        target=display_status,
+        message="默认阅读器已更新",
+    )
+
+    def update_gallery_columns_label() -> int:
+        columns = max(2, min(10, int(round(float(gallery_columns_slider.value or 5)))))
+        gallery_columns_slider.value = columns
+        gallery_columns_value.value = f"{columns} 列"
+        return columns
+
+    def on_gallery_columns_change(e):
+        update_gallery_columns_label()
+        page.update()
+
+    def on_gallery_columns_change_end(e):
+        columns = update_gallery_columns_label()
+        apply_app_settings(
+            reason="gallery_grid_columns_changed",
+            target=display_status,
+            message=f"画廊列数已更新为 {columns} 列",
+            invalidate_gallery=True,
+        )
+
+    gallery_columns_slider.on_change = on_gallery_columns_change
+    gallery_columns_slider.on_change_end = on_gallery_columns_change_end
+
+    linux_title_bar_switch.on_change = lambda e: apply_app_settings(
+        reason="linux_window_setting_changed",
+        target=linux_window_status,
+        message="Linux 窗口设置已保存，重启后生效",
+    )
+    linux_wayland_backend_switch.on_change = lambda e: apply_app_settings(
+        reason="linux_window_setting_changed",
+        target=linux_window_status,
+        message="Linux 窗口设置已保存，重启后生效",
+    )
+    load_images_switch.on_change = lambda e: apply_app_settings(
+        reason="debug_display_setting_changed",
+        target=debug_status,
+        message="调试显示设置已更新",
+        invalidate_gallery=True,
+    )
+    show_error_toasts_switch.on_change = lambda e: apply_app_settings(
+        reason="debug_error_toast_setting_changed",
+        target=debug_status,
+        message="错误提示设置已更新",
+    )
+    render_cards_switch.on_change = lambda e: apply_app_settings(
+        reason="debug_display_setting_changed",
+        target=debug_status,
+        message="调试显示设置已更新",
+        invalidate_gallery=True,
+    )
 
     def apply_login_mode(reason: str) -> None:
         save_app_config(current_app_config())
@@ -167,28 +321,18 @@ def create_view(page: ft.Page) -> ft.Control:
         status.color = ft.Colors.PRIMARY
         page.update()
 
-    def on_save_app(e):
-        save_app_config(current_app_config())
-        _invalidate_gallery_views(page, "app_debug_config_saved")
-        message = f"已保存到 {CONFIG_PATH}。Linux 窗口设置重启后生效。"
-        for target in (display_status, linux_window_status):
-            target.value = message
-            target.color = ft.Colors.PRIMARY
-        apply_login_mode("login_mode_changed")
-        page.update()
-
     def on_clear_image_cache(e):
         clear_image_cache()
         _invalidate_gallery_views(page, "image_cache_cleared")
-        display_status.value = "已清除所有图像缓存"
-        display_status.color = ft.Colors.PRIMARY
+        debug_status.value = "已清除所有图像缓存"
+        debug_status.color = ft.Colors.PRIMARY
         page.update()
 
     def on_clear_gallery_cache(e):
         clear_gallery_cache()
         _invalidate_gallery_views(page, "gallery_cache_cleared")
-        display_status.value = "已清除所有画廊缓存"
-        display_status.color = ft.Colors.PRIMARY
+        debug_status.value = "已清除所有画廊缓存"
+        debug_status.color = ft.Colors.PRIMARY
         page.update()
 
     def open_page(label: str):
@@ -196,18 +340,21 @@ def create_view(page: ft.Page) -> ft.Control:
         if callable(render_label):
             render_label(label)
 
+    def on_test_toast(e):
+        show_toast(page, "这是一条测试用小提示")
+
     account_page = ft.Container(
         padding=ft.Padding(0, 16, 0, 0),
         content=ft.Column(
             controls=[
                 ft.Text("E-Hentai 凭据", size=20, weight=ft.FontWeight.W_500),
-                    ft.Text("Cookie 凭据，用于自动登录和访问收藏/订阅等功能。关闭自动登录后，公开页面会以游客状态访问。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
-                    enable_login_switch,
-                    ft.Row([login_status_lamp, login_status], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Text("Cookie 凭据，用于自动登录和访问收藏/订阅等功能。关闭自动登录后，公开页面会以游客状态访问。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+                enable_login_switch,
+                ft.Row([login_status_lamp, login_status], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 *fields.values(),
                 ft.Row(
                     [
-                        ft.Button("保存凭据", on_click=on_save),
+                        ft.FilledButton("保存凭据", icon=ft.Icons.SAVE, on_click=on_save),
                         status,
                     ],
                     spacing=16,
@@ -222,45 +369,19 @@ def create_view(page: ft.Page) -> ft.Control:
         padding=ft.Padding(0, 16, 0, 0),
         content=ft.Column(
             controls=[
-                ft.Text("显示与调试", size=20, weight=ft.FontWeight.W_500),
+                ft.Text("显示与阅读", size=20, weight=ft.FontWeight.W_500),
                 ft.Text(
-                    "关闭图像加载后，界面不会读取缓存图片，也不会向远端请求新图像资源。关闭卡片渲染后，画廊列表会回到 JSON 调试输出。",
+                    "外观使用 Material 3。自适应色彩会按平台和系统明暗模式选择色种。",
                     size=14,
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 ),
-                    load_images_switch,
-                    render_cards_switch,
-                    viewer_mode_dropdown,
-                    ft.Text(f"当前设备: {_platform_label(page)}", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
-                    ft.Row([image_grid_width_field, ft.Text("px", color=ft.Colors.ON_SURFACE_VARIANT)], spacing=8),
-                    ft.Row(
-                        [
-                            ft.Button("保存应用设置", on_click=on_save_app),
-                            display_status,
-                        ],
-                        spacing=16,
-                    ),
-                    ft.Divider(),
-                    ft.Text("工具入口", size=16, weight=ft.FontWeight.W_500),
-                    ft.Row(
-                        [
-                            ft.Button("历史", icon=ft.Icons.HISTORY, on_click=lambda e: open_page("历史")),
-                            ft.Button("调试", icon=ft.Icons.BUG_REPORT, on_click=lambda e: open_page("调试")),
-                        ],
-                        spacing=12,
-                        wrap=True,
-                    ),
-                    ft.Divider(),
-                    ft.Text("调试操作", size=16, weight=ft.FontWeight.W_500),
-                    ft.Row(
-                        [
-                            ft.Button("清除所有图像缓存", icon=ft.Icons.DELETE_SWEEP, on_click=on_clear_image_cache),
-                            ft.Button("清除所有画廊缓存", icon=ft.Icons.DELETE_OUTLINE, on_click=on_clear_gallery_cache),
-                        ],
-                        spacing=12,
-                        wrap=True,
-                    ),
-                ],
+                ft.Row([theme_mode_segments, theme_color_dropdown], spacing=12, wrap=True),
+                viewer_mode_dropdown,
+                ft.Text(f"当前设备: {_platform_label(page)}", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                ft.Text("画廊浏览器列数", size=14, weight=ft.FontWeight.W_500),
+                ft.Row([gallery_columns_slider, gallery_columns_value], spacing=12, wrap=True),
+                display_status,
+            ],
             spacing=16,
             scroll=ft.ScrollMode.AUTO,
         ),
@@ -278,13 +399,7 @@ def create_view(page: ft.Page) -> ft.Control:
                 ),
                 linux_wayland_backend_switch,
                 linux_title_bar_switch,
-                ft.Row(
-                    [
-                        ft.Button("保存应用设置", on_click=on_save_app),
-                        linux_window_status,
-                    ],
-                    spacing=16,
-                ),
+                linux_window_status,
             ],
             spacing=16,
             scroll=ft.ScrollMode.AUTO,
@@ -299,6 +414,61 @@ def create_view(page: ft.Page) -> ft.Control:
                 ft.Text(f"配置文件: {CONFIG_PATH}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
                 ft.Text(f"缓存 DB: {CACHE_DB_PATH}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
                 ft.Text(f"缓存文件目录: {CACHE_FILES_DIR}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+            ],
+            spacing=16,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+    )
+
+    debug_page = ft.Container(
+        padding=ft.Padding(0, 16, 0, 0),
+        content=ft.Column(
+            controls=[
+                ft.Text("调试", size=20, weight=ft.FontWeight.W_500),
+                ft.Text(
+                    "开发和排障入口集中放在这里，避免混进日常使用路径。",
+                    size=14,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                ft.Text("调试开关", size=16, weight=ft.FontWeight.W_500),
+                ft.Text(
+                    "关闭图像加载可验证无图/缓存路径；关闭卡片渲染会把画廊列表切回 JSON 输出，用于排查 provider 返回数据。",
+                    size=14,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                load_images_switch,
+                show_error_toasts_switch,
+                render_cards_switch,
+                debug_status,
+                ft.Divider(),
+                ft.Text("提示测试", size=16, weight=ft.FontWeight.W_500),
+                ft.Row(
+                    [
+                        ft.OutlinedButton("弹出测试提示", icon=ft.Icons.NOTIFICATIONS, on_click=on_test_toast),
+                    ],
+                    spacing=12,
+                    wrap=True,
+                ),
+                ft.Divider(),
+                ft.Text("工具入口", size=16, weight=ft.FontWeight.W_500),
+                ft.Row(
+                    [
+                        ft.OutlinedButton("历史", icon=ft.Icons.HISTORY, on_click=lambda e: open_page("历史")),
+                        ft.OutlinedButton("调试", icon=ft.Icons.BUG_REPORT, on_click=lambda e: open_page("调试")),
+                    ],
+                    spacing=12,
+                    wrap=True,
+                ),
+                ft.Divider(),
+                ft.Text("缓存操作", size=16, weight=ft.FontWeight.W_500),
+                ft.Row(
+                    [
+                        ft.OutlinedButton("清除所有图像缓存", icon=ft.Icons.DELETE_SWEEP, on_click=on_clear_image_cache),
+                        ft.OutlinedButton("清除所有画廊缓存", icon=ft.Icons.DELETE_OUTLINE, on_click=on_clear_gallery_cache),
+                    ],
+                    spacing=12,
+                    wrap=True,
+                ),
             ],
             spacing=16,
             scroll=ft.ScrollMode.AUTO,
@@ -367,7 +537,7 @@ def create_view(page: ft.Page) -> ft.Control:
     return ft.Column(
         [
             ft.Text("设置", size=28, weight=ft.FontWeight.BOLD),
-            ft.Text("按类别管理账户、显示、平台和存储设置。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text("按类别管理账户、显示、平台、存储和调试入口。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
             settings_group(
                 "常规",
                 [
@@ -381,7 +551,7 @@ def create_view(page: ft.Page) -> ft.Control:
                     settings_tile(
                         "display",
                         "显示与阅读",
-                        "图像加载、卡片渲染、阅读器模式和网格尺寸。",
+                        "外观、阅读器模式和画廊浏览列数。",
                         ft.Icons.PALETTE,
                         display_page,
                     ),
@@ -403,6 +573,18 @@ def create_view(page: ft.Page) -> ft.Control:
                         "配置文件、缓存数据库和缓存目录位置。",
                         ft.Icons.STORAGE,
                         storage_page,
+                    ),
+                ],
+            ),
+            settings_group(
+                "调试",
+                [
+                    settings_tile(
+                        "debug-tools",
+                        "调试工具",
+                        "历史、调试面板和缓存清理操作。",
+                        ft.Icons.BUG_REPORT,
+                        debug_page,
                     ),
                 ],
             ),

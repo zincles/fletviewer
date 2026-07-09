@@ -8,6 +8,7 @@ from app.controls.async_image import image_placeholder, image_src_for_page
 from app.grid_layout import runs_count_for_width
 from app.local_gallery_manager import LocalGallery, local_gallery_manager
 from app.storage import should_render_gallery_cards
+from app.toast import show_error_toast
 from app.views.local_zip_viewer import create_view as local_zip_viewer
 
 
@@ -156,6 +157,7 @@ def create_view(page: ft.Page) -> ft.Control:
         def open_zip_reader(e):
             if archive_path is None:
                 status.value = "ZIP 文件不存在，无法阅读"
+                show_error_toast(page, "ZIP 文件不存在，无法阅读")
                 page.update()
                 return
             content.content = local_zip_viewer(page, archive_path, _gallery_title(gallery), lambda: show_detail(gallery))

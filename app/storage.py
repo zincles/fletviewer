@@ -24,13 +24,19 @@ EH_CONFIG_KEYS = ("ipb_member_id", "ipb_pass_hash", "igneous", "star")
 APP_CONFIG_DEFAULTS = {
     "enable_login": True,
     "load_images": True,
+    "show_error_toasts": True,
     "render_gallery_cards": True,
+    "theme_mode": "system",
+    "theme_color": "adaptive",
     "image_viewer_mode": "paged",
+    "gallery_grid_columns": 5,
     "image_grid_target_width": 220,
     "linux_builtin_title_bar": False,
     "linux_prefer_wayland_window_backend": False,
 }
 IMAGE_VIEWER_MODES = {"paged", "vertical"}
+THEME_MODES = {"system", "light", "dark"}
+THEME_COLORS = {"adaptive", "teal", "blue", "green", "rose", "amber", "violet"}
 CONFIG_DEFAULTS = {
     "eh": {k: "" for k in EH_CONFIG_KEYS},
     "app": dict(APP_CONFIG_DEFAULTS),
@@ -129,6 +135,23 @@ def should_render_gallery_cards() -> bool:
     return bool(load_app_config().get("render_gallery_cards", True))
 
 
+def should_show_error_toasts() -> bool:
+    """返回错误发生时是否显示底部轻量提示。"""
+    return bool(load_app_config().get("show_error_toasts", True))
+
+
+def get_theme_mode() -> str:
+    """读取界面明暗模式，并对非法值回退到跟随系统。"""
+    mode = str(load_app_config().get("theme_mode", "system"))
+    return mode if mode in THEME_MODES else "system"
+
+
+def get_theme_color() -> str:
+    """读取 Material 3 色彩风格，并对非法值回退到自适应。"""
+    color = str(load_app_config().get("theme_color", "adaptive"))
+    return color if color in THEME_COLORS else "adaptive"
+
+
 def get_image_viewer_mode() -> str:
     """读取默认图像查看器模式，并对非法值回退到 paged。"""
     mode = str(load_app_config().get("image_viewer_mode", "paged"))
@@ -142,6 +165,15 @@ def get_image_grid_target_width() -> int:
     except (TypeError, ValueError):
         value = 220
     return max(140, min(420, value))
+
+
+def get_gallery_grid_columns() -> int:
+    """读取画廊浏览器列数，并限制在合理范围内。"""
+    try:
+        value = int(load_app_config().get("gallery_grid_columns", 5))
+    except (TypeError, ValueError):
+        value = 5
+    return max(2, min(10, value))
 
 
 def should_use_linux_builtin_title_bar() -> bool:
