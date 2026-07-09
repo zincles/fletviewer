@@ -305,31 +305,79 @@ def create_view(page: ft.Page) -> ft.Control:
         ),
     )
 
-    return ft.Column(
-        controls=[
-            ft.Tabs(
-                content=ft.Column(
-                    [
-                        ft.TabBar(
-                            tabs=[
-                                ft.Tab(label="账户"),
-                                ft.Tab(label="显示"),
-                                ft.Tab(label="Linux 窗口"),
-                                ft.Tab(label="存储"),
-                            ],
-                        ),
-                        ft.TabBarView(
-                            controls=[account_page, display_page, linux_window_page, storage_page],
-                            expand=True,
-                        ),
-                    ],
-                    expand=True,
+    def open_settings_page(route_key: str, title: str, icon, content: ft.Control):
+        push_view = getattr(page, "fletviewer_push_view", None)
+        pop_view = getattr(page, "fletviewer_pop_view", None)
+        if not callable(push_view):
+            return
+        push_view(
+            ft.View(
+                route=f"/settings/{route_key}",
+                controls=[ft.Container(content=content, padding=8, expand=True)],
+                padding=0,
+                appbar=ft.AppBar(
+                    title=ft.Row(
+                        [
+                            ft.Icon(icon, size=22, color=ft.Colors.PRIMARY),
+                            ft.Text(title, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    leading=ft.IconButton(ft.Icons.ARROW_BACK, tooltip="返回设置", on_click=lambda e: pop_view() if callable(pop_view) else None),
+                    automatically_imply_leading=False,
                 ),
-                length=4,
-                selected_index=0,
-                expand=True,
+            )
+        )
+
+    def settings_tile(route_key: str, title: str, subtitle: str, icon, content: ft.Control) -> ft.Control:
+        return ft.Container(
+            content=ft.ListTile(
+                leading=ft.Icon(icon, color=ft.Colors.PRIMARY),
+                title=ft.Text(title, size=16, weight=ft.FontWeight.W_600),
+                subtitle=ft.Text(subtitle, size=13, color=ft.Colors.ON_SURFACE_VARIANT),
+                trailing=ft.Icon(ft.Icons.CHEVRON_RIGHT),
+                on_click=lambda e: open_settings_page(route_key, title, icon, content),
+            ),
+            border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            border_radius=16,
+            bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+        )
+
+    return ft.Column(
+        [
+            ft.Text("设置", size=28, weight=ft.FontWeight.BOLD),
+            ft.Text("按类别管理账户、显示、平台和存储设置。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+            settings_tile(
+                "account",
+                "账户",
+                "E-Hentai Cookie、自动登录和当前登录状态。",
+                ft.Icons.ACCOUNT_CIRCLE,
+                account_page,
+            ),
+            settings_tile(
+                "display",
+                "显示与阅读",
+                "图像加载、卡片渲染、阅读器模式和网格尺寸。",
+                ft.Icons.PALETTE,
+                display_page,
+            ),
+            settings_tile(
+                "linux-window",
+                "Linux 窗口",
+                "Linux 桌面端标题栏和窗口后端设置。",
+                ft.Icons.DESKTOP_WINDOWS,
+                linux_window_page,
+            ),
+            settings_tile(
+                "storage",
+                "存储",
+                "配置文件、缓存数据库和缓存目录位置。",
+                ft.Icons.STORAGE,
+                storage_page,
             ),
         ],
-        spacing=16,
+        spacing=12,
         expand=True,
+        scroll=ft.ScrollMode.AUTO,
     )

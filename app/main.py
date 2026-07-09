@@ -126,8 +126,18 @@ def main(page: ft.Page):
     """Flet 应用主入口，负责全局导航、页面缓存和二级页面切换。"""
     page.title = "FletViewer"
     page.theme_mode = ft.ThemeMode.SYSTEM
-    page.theme = ft.Theme(color_scheme_seed=BRAND_SEED, use_material3=True, scaffold_bgcolor=APP_BG)
-    page.dark_theme = ft.Theme(color_scheme_seed=BRAND_SEED, use_material3=True, scaffold_bgcolor=ft.Colors.BLACK)
+    page.theme = ft.Theme(
+        color_scheme_seed=BRAND_SEED,
+        use_material3=True,
+        scaffold_bgcolor=APP_BG,
+        page_transitions=ft.PageTransitionsTheme(android=ft.PageTransitionTheme.PREDICTIVE),
+    )
+    page.dark_theme = ft.Theme(
+        color_scheme_seed=BRAND_SEED,
+        use_material3=True,
+        scaffold_bgcolor=ft.Colors.BLACK,
+        page_transitions=ft.PageTransitionsTheme(android=ft.PageTransitionTheme.PREDICTIVE),
+    )
     if page.web:
         os.environ["FLETVIEWER_WEB"] = "1"
     local_gallery_manager.initialize()
@@ -293,31 +303,69 @@ def main(page: ft.Page):
 
         page.run_thread(worker)
 
-    def push_route(route: str) -> None:
-        async def worker():
-            await page.push_route(route)
+    route_view_cache: dict[str, ft.View] = {}
+    route_parent_cache: dict[str, str] = {}
+    root_view_ref: dict[str, ft.View | None] = {"value": None}
 
-        page.run_task(worker)
+    def push_route(route: str) -> None:
+        page.navigate(route)
+
+    def rebuild_views_for_route(route: str | None = None):
+        target_route = route or page.route or "/"
+        root_view = root_view_ref.get("value")
+        if root_view is None:
+            return
+
+        chain: list[str] = []
+        cursor = target_route
+        seen: set[str] = set()
+        while cursor and cursor != "/" and cursor not in seen:
+            seen.add(cursor)
+            if cursor not in route_view_cache:
+                break
+            chain.append(cursor)
+            cursor = route_parent_cache.get(cursor, "/")
+        chain.reverse()
+
+        page.views.clear()
+        page.views.append(root_view)
+        for child_route in chain:
+            view = route_view_cache.get(child_route)
+            if view is not None:
+                page.views.append(view)
+        page.route = page.views[-1].route or "/"
+        page.update()
 
     def pop_top_view():
         if len(page.views) > 1:
-            page.views.pop()
-            page.update()
-            push_route(page.views[-1].route or "/")
+            push_route(page.views[-2].route or "/")
+
+    def push_app_view(view: ft.View, parent_route: str | None = None):
+        route = view.route or f"/view/{len(route_view_cache) + 1}"
+        view.route = route
+        route_view_cache[route] = view
+        route_parent_cache[route] = parent_route or (page.views[-1].route if page.views else "/") or "/"
+        push_route(route)
+
+    def handle_route_change(e=None):
+        log_debug("nav", f"route change route={page.route} cached_views={len(route_view_cache)}")
+        rebuild_views_for_route(page.route)
 
     async def handle_view_pop(e):
         if len(page.views) <= 1:
             return
         view = getattr(e, "view", None)
-        if view in page.views:
-            page.views.remove(view)
+        if view in page.views and page.views.index(view) > 0:
+            target_index = page.views.index(view) - 1
+            target_route = page.views[target_index].route or "/"
         else:
-            page.views.pop()
-        top_view = page.views[-1]
-        page.update()
-        await page.push_route(top_view.route or "/")
+            target_route = page.views[-2].route or "/"
+        await page.push_route(target_route)
 
+    page.on_route_change = handle_route_change
     page.on_view_pop = handle_view_pop
+    page.fletviewer_push_view = push_app_view
+    page.fletviewer_pop_view = pop_top_view
 
     def invalidate_views(keys: list[str] | None = None, reason: str = ""):
         targets = keys or list(view_cache.keys())
@@ -338,7 +386,7 @@ def main(page: ft.Page):
             pop_top_view()
 
         detail_container.content = gallery_detail_view(page, comic, go_back)
-        page.views.append(
+        push_app_view(
             ft.View(
                 route=route,
                 controls=[detail_container],
@@ -350,8 +398,6 @@ def main(page: ft.Page):
                 ),
             )
         )
-        page.update()
-        push_route(route)
         play_enter_animation(detail_container)
 
     page.fletviewer_open_gallery_detail = open_gallery_detail
@@ -374,9 +420,7 @@ def main(page: ft.Page):
             ),
         )
         route = f"/viewer/{len(page.views)}-{initial_index}"
-        page.views.append(ft.View(route=route, controls=[viewer_container], padding=0))
-        page.update()
-        push_route(route)
+        push_app_view(ft.View(route=route, controls=[viewer_container], padding=0))
         play_enter_animation(viewer_container)
 
     page.fletviewer_open_image_viewer = open_image_viewer
@@ -731,10 +775,11 @@ def main(page: ft.Page):
         root = ft.SafeArea(content=root, expand=True)
 
     page.views.clear()
-    page.views.append(ft.View(route="/", controls=[root], padding=0, drawer=root_left_drawer, end_drawer=root_right_drawer))
-    page.route = "/"
+    root_view_ref["value"] = ft.View(route="/", controls=[root], padding=0, drawer=root_left_drawer, end_drawer=root_right_drawer)
+    page.views.append(root_view_ref["value"])
     page.update()
     render(0)
+    rebuild_views_for_route(page.route or "/")
 
     def initialize_browser_session():
         try:
