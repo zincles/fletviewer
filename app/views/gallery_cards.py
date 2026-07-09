@@ -94,37 +94,82 @@ def create_gallery_cards_view(
     """创建可复用的在线画廊卡片列表页面工厂。"""
     def factory(page: ft.Page) -> ft.Control:
         """创建具体页面实例，并注册自适应列数 resize handler。"""
-        grid = ft.GridView(
+        list_view = ft.ListView(
             expand=True,
-            runs_count=runs_count_for_width(page.width, min_columns=2, max_columns=10),
             spacing=10,
-            run_spacing=10,
-            child_aspect_ratio=0.72,
-            padding=ft.Padding(10, 10, 10, 86),
+            padding=ft.Padding(10, 108, 10, 86),
+            scroll_interval=16,
         )
         status_text = ft.Text("加载中...", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
         refresh_btn = ft.Button("刷新", icon=ft.Icons.REFRESH)
+        prev_btn = ft.IconButton(ft.Icons.ARROW_BACK, tooltip="上一页", disabled=True)
+        next_btn = ft.IconButton(ft.Icons.ARROW_FORWARD, tooltip="下一页", disabled=True)
+        page_label = ft.Text("第 1 页", size=14, weight=ft.FontWeight.W_500)
 
-        state = {"current_url": None}
+        state = {"current_url": None, "prev_url": None, "next_url": None, "page_num": 1, "comics": []}
+        column_state = {"value": runs_count_for_width(page.width, min_columns=2, max_columns=10)}
         set_header_actions = getattr(page, "fletviewer_set_header_actions", None)
         if callable(set_header_actions):
             set_header_actions([status_text, refresh_btn])
 
+        pagination_bar = ft.Container(
+            content=ft.Row(
+                [prev_btn, page_label, next_btn],
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=6,
+                tight=True,
+            ),
+            padding=ft.Padding(6, 6, 6, 6),
+            bgcolor=ft.Colors.with_opacity(0.88, ft.Colors.SURFACE_CONTAINER_HIGH),
+            border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            border_radius=999,
+            shadow=ft.BoxShadow(
+                blur_radius=16,
+                spread_radius=0,
+                color=ft.Colors.with_opacity(0.18, ft.Colors.BLACK),
+                offset=ft.Offset(0, 4),
+            ),
+        )
+
+        def rebuild_gallery_rows() -> None:
+            columns = max(1, int(column_state["value"] or 1))
+            cards = [make_gallery_card(page, comic) for comic in state["comics"]]
+            controls: list[ft.Control] = []
+            for start in range(0, len(cards), columns):
+                chunk = cards[start:start + columns]
+                cells = [ft.Container(content=card, expand=1, aspect_ratio=0.72) for card in chunk]
+                if len(cells) < columns:
+                    cells.extend(ft.Container(expand=1) for _ in range(columns - len(cells)))
+                controls.append(ft.Row(cells, spacing=10, vertical_alignment=ft.CrossAxisAlignment.START))
+            controls.append(ft.Container(content=pagination_bar, alignment=ft.Alignment(0, 0), padding=ft.Padding(0, 8, 0, 0)))
+            list_view.controls = controls
+
         def update_grid_columns(e=None):
             new_count = runs_count_for_width(page.width, min_columns=2, max_columns=10)
-            if grid.runs_count != new_count:
-                grid.runs_count = new_count
+            if column_state["value"] != new_count:
+                column_state["value"] = new_count
+                rebuild_gallery_rows()
                 page.update()
 
         add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
         if callable(add_resize_handler):
             add_resize_handler(update_grid_columns)
 
+        def on_grid_scroll(e):
+            on_content_scroll = getattr(page, "fletviewer_on_content_scroll", None)
+            if callable(on_content_scroll):
+                on_content_scroll(getattr(e, "scroll_delta", None), getattr(e, "pixels", None))
+
+        list_view.on_scroll = on_grid_scroll
+
         def load(page_url=None):
             log_debug("画廊列表", f"{title} 开始加载 page_url={page_url}")
             refresh_btn.disabled = True
+            prev_btn.disabled = True
+            next_btn.disabled = True
             status_text.value = "加载中..."
-            grid.controls.clear()
+            state["comics"] = []
+            rebuild_gallery_rows()
             page.update()
 
             def worker():
@@ -141,8 +186,13 @@ def create_gallery_cards_view(
                     with Timer("gallery", f"{title} load_fn page_url={page_url}"):
                         result = load_fn(client, page_url)
                     log_debug("画廊列表", f"{title} 加载完成 count={len(result.comics)} prev={bool(result.prev_url)} next={bool(result.next_url)}")
-                    grid.controls = [make_gallery_card(page, comic) for comic in result.comics]
+                    state["comics"] = list(result.comics)
                     state["current_url"] = page_url
+                    state["prev_url"] = result.prev_url
+                    state["next_url"] = result.next_url
+                    prev_btn.disabled = result.prev_url is None
+                    next_btn.disabled = result.next_url is None
+                    rebuild_gallery_rows()
 
                     status_text.value = f"共 {len(result.comics)} 个画廊"
                 except Exception as ex:
@@ -157,9 +207,23 @@ def create_gallery_cards_view(
         def on_refresh(e):
             load(state["current_url"])
 
+        def on_prev(e):
+            if state["prev_url"]:
+                state["page_num"] = max(1, int(state["page_num"] or 1) - 1)
+                page_label.value = f"第 {state['page_num']} 页"
+                load(state["prev_url"])
+
+        def on_next(e):
+            if state["next_url"]:
+                state["page_num"] = int(state["page_num"] or 1) + 1
+                page_label.value = f"第 {state['page_num']} 页"
+                load(state["next_url"])
+
         refresh_btn.on_click = on_refresh
+        prev_btn.on_click = on_prev
+        next_btn.on_click = on_next
 
         load()
-        return grid
+        return list_view
 
     return factory

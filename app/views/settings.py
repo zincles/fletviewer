@@ -331,53 +331,83 @@ def create_view(page: ft.Page) -> ft.Control:
         )
 
     def settings_tile(route_key: str, title: str, subtitle: str, icon, content: ft.Control) -> ft.Control:
-        return ft.Container(
-            content=ft.ListTile(
-                leading=ft.Icon(icon, color=ft.Colors.PRIMARY),
-                title=ft.Text(title, size=16, weight=ft.FontWeight.W_600),
-                subtitle=ft.Text(subtitle, size=13, color=ft.Colors.ON_SURFACE_VARIANT),
-                trailing=ft.Icon(ft.Icons.CHEVRON_RIGHT),
-                on_click=lambda e: open_settings_page(route_key, title, icon, content),
+        return ft.ListTile(
+            leading=ft.Container(
+                content=ft.Icon(icon, size=22, color=ft.Colors.PRIMARY),
+                width=40,
+                height=40,
+                border_radius=999,
+                bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
+                alignment=ft.Alignment(0, 0),
             ),
-            border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-            border_radius=16,
-            bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+            title=ft.Text(title, size=16, weight=ft.FontWeight.W_500),
+            subtitle=ft.Text(subtitle, size=13, color=ft.Colors.ON_SURFACE_VARIANT),
+            trailing=ft.Icon(ft.Icons.CHEVRON_RIGHT, color=ft.Colors.ON_SURFACE_VARIANT),
+            on_click=lambda e: open_settings_page(route_key, title, icon, content),
+        )
+
+    def settings_group(title: str, tiles: list[ft.Control]) -> ft.Control:
+        controls: list[ft.Control] = []
+        for idx, tile in enumerate(tiles):
+            if idx:
+                controls.append(ft.Divider(height=1, thickness=1, color=ft.Colors.OUTLINE_VARIANT))
+            controls.append(tile)
+        return ft.Column(
+            [
+                ft.Text(title, size=13, weight=ft.FontWeight.W_600, color=ft.Colors.PRIMARY),
+                ft.Container(
+                    content=ft.Column(controls, spacing=0),
+                    bgcolor=ft.Colors.SURFACE,
+                    border=ft.border.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
+                ),
+            ],
+            spacing=6,
         )
 
     return ft.Column(
         [
             ft.Text("设置", size=28, weight=ft.FontWeight.BOLD),
             ft.Text("按类别管理账户、显示、平台和存储设置。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
-            settings_tile(
-                "account",
-                "账户",
-                "E-Hentai Cookie、自动登录和当前登录状态。",
-                ft.Icons.ACCOUNT_CIRCLE,
-                account_page,
+            settings_group(
+                "常规",
+                [
+                    settings_tile(
+                        "account",
+                        "账户",
+                        "E-Hentai Cookie、自动登录和当前登录状态。",
+                        ft.Icons.ACCOUNT_CIRCLE,
+                        account_page,
+                    ),
+                    settings_tile(
+                        "display",
+                        "显示与阅读",
+                        "图像加载、卡片渲染、阅读器模式和网格尺寸。",
+                        ft.Icons.PALETTE,
+                        display_page,
+                    ),
+                ],
             ),
-            settings_tile(
-                "display",
-                "显示与阅读",
-                "图像加载、卡片渲染、阅读器模式和网格尺寸。",
-                ft.Icons.PALETTE,
-                display_page,
-            ),
-            settings_tile(
-                "linux-window",
-                "Linux 窗口",
-                "Linux 桌面端标题栏和窗口后端设置。",
-                ft.Icons.DESKTOP_WINDOWS,
-                linux_window_page,
-            ),
-            settings_tile(
-                "storage",
-                "存储",
-                "配置文件、缓存数据库和缓存目录位置。",
-                ft.Icons.STORAGE,
-                storage_page,
+            settings_group(
+                "系统",
+                [
+                    settings_tile(
+                        "linux-window",
+                        "Linux 窗口",
+                        "Linux 桌面端标题栏和窗口后端设置。",
+                        ft.Icons.DESKTOP_WINDOWS,
+                        linux_window_page,
+                    ),
+                    settings_tile(
+                        "storage",
+                        "存储",
+                        "配置文件、缓存数据库和缓存目录位置。",
+                        ft.Icons.STORAGE,
+                        storage_page,
+                    ),
+                ],
             ),
         ],
-        spacing=12,
+        spacing=18,
         expand=True,
         scroll=ft.ScrollMode.AUTO,
     )

@@ -54,6 +54,8 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 ## 页面 / 视图
 
 - `app/main.py` 对导航页做 view cache；切页复用控件树，刷新由页面自己的“刷新”按钮负责。
+- 子页面导航使用“入栈/出栈”语义封装，例如 `push_view(...)` / `pop_view()`；业务页面不要散落直接 `page.views.append(...)` / `page.views.pop()`。
+- 底层实现必须保持 `page.route`、浏览器/系统 history 和 `page.views` 同步；优先在统一 route/view helper 或 `page.on_route_change` 中维护 View 栈。
 - 保存设置若影响已有页面渲染，必须调用 `page.fletviewer_invalidate_views(...)` 清理缓存；卡片/JSON 列表设置在 view 创建时读取。
 - 画廊列表统一入口：`app/views/gallery_debug.py:create_gallery_view(...)`；主页、热门、排行榜、收藏、订阅、搜索都应遵循同一卡片/JSON 设置。
 - 详情页：`app/views/gallery_detail.py`；图像查看器：`app/views/image_viewer.py`。
@@ -112,6 +114,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - Flet 0.85.3 配套 Flutter 3.41.7；不要用 scoop/winget 装 Flutter，版本不匹配或源不存在。
 - 不要用 Puro；Flet CLI 调用的 `flutter` 子进程不会自动拿到 Puro 环境。
 - 推荐让 `flet build apk` 自动下载配套 Flutter 到 `C:\Users\<用户名>\flutter\3.41.7\`；PATH 上不要有其他 Flutter 干扰。
+- Android 返回键行为以正式 APK 为准；Flet 官方 Debug App 连接 Web/server 地址时返回键可能被 Debug App 外壳拦截，不能作为正式 APK 返回行为依据。
 - Android SDK 需手动安装；推荐 SDK 36 + BuildTools 36.0.0，并执行 `flutter doctor --android-licenses` 接受许可。
 - Windows 必须开启开发者模式，否则插件构建会卡在 symlink support。
 - `ANDROID_HOME` / `ANDROID_SDK_ROOT` 必须指向真实 SDK 路径，Android Studio 默认通常是 `%LOCALAPPDATA%\Android\Sdk`。

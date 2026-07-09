@@ -158,8 +158,7 @@ def main(page: ft.Page):
     current_content: dict[str, ft.Control | None] = {"value": None}
     shell_host: dict[str, ft.Container | None] = {"value": None}
     resize_handlers = []
-    header_title = ft.Text("FletViewer", size=18, weight=ft.FontWeight.W_600, overflow=ft.TextOverflow.ELLIPSIS)
-    header_subtitle = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT, overflow=ft.TextOverflow.ELLIPSIS)
+    header_title = ft.Text("FletViewer", size=18, weight=ft.FontWeight.W_600, overflow=ft.TextOverflow.ELLIPSIS, expand=True)
     header_actions = ft.Row(spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
     header_action_cache: dict[str, list[ft.Control]] = {}
     active_cache_key = {"value": ""}
@@ -170,6 +169,9 @@ def main(page: ft.Page):
     reading_tabs_ref: dict[str, ft.Tabs | None] = {"value": None}
     reading_tabs_syncing = {"value": False}
     reading_tab_pages: list[ft.Container] = []
+    top_bar_state = {"offset": 0.0}
+    reading_content_host: ft.Container | None = None
+    reading_speed_dial_state = {"open": False}
     section_indexes = {"阅读": 0, "本地": 1, "设置": 2}
     bottom_nav_for_page = {"本地画廊": "本地", "设置": "设置"}
 
@@ -217,7 +219,6 @@ def main(page: ft.Page):
 
     def set_header(title: str, subtitle: str = "") -> None:
         header_title.value = title
-        header_subtitle.value = subtitle
 
     def set_header_actions(controls: list[ft.Control] | None = None) -> None:
         actions = list(controls or [])
@@ -227,6 +228,73 @@ def main(page: ft.Page):
             header_action_cache[key] = actions
 
     page.fletviewer_set_header_actions = set_header_actions
+
+    def show_reading_action_hint(message: str) -> None:
+        dialog = ft.AlertDialog(
+            title=ft.Text("阅读工具"),
+            content=ft.Text(message),
+            actions=[ft.TextButton("知道了", on_click=lambda e: page.pop_dialog())],
+        )
+        dialog.open = True
+        page.show_dialog(dialog)
+
+    def set_reading_speed_dial_open(opened: bool, update: bool = True) -> None:
+        reading_speed_dial_state["open"] = opened
+        reading_speed_dial_fab.icon = ft.Icons.CLOSE if opened else ft.Icons.ADD
+
+        if opened:
+            for idx, item in enumerate(reading_speed_dial_items):
+                item.visible = True
+                item.opacity = 0.0
+                item.offset = ft.Offset(0, 0.24 + idx * 0.04)
+            page.update()
+
+            def worker():
+                for idx, item in enumerate(reversed(reading_speed_dial_items)):
+                    time.sleep(0.03)
+                    item.opacity = 1.0
+                    item.offset = ft.Offset(0, 0)
+                    page.update()
+
+            page.run_thread(worker)
+            return
+
+        for idx, item in enumerate(reading_speed_dial_items):
+            item.opacity = 0.0
+            item.offset = ft.Offset(0, 0.24 + idx * 0.04)
+        if update:
+            page.update()
+
+        def hide_worker():
+            time.sleep(0.18)
+            for item in reading_speed_dial_items:
+                item.visible = False
+            page.update()
+
+        page.run_thread(hide_worker)
+
+    def toggle_reading_speed_dial(e=None) -> None:
+        set_reading_speed_dial_open(not reading_speed_dial_state["open"])
+
+    def set_top_bar_scroll_offset(offset: float, update: bool = True) -> None:
+        clamped = max(0.0, min(88.0, offset))
+        if abs(clamped - top_bar_state["offset"]) < 0.5:
+            return
+        top_bar_state["offset"] = clamped
+        top_bar.top = -clamped
+        top_bar.opacity = max(0.18, 1.0 - clamped / 70.0)
+        if update:
+            page.update()
+
+    def on_content_scroll(delta: float | None = None, pixels: float | None = None) -> None:
+        if pixels is not None and pixels <= 2:
+            set_top_bar_scroll_offset(0.0)
+            return
+        if delta is None or abs(delta) < 0.5:
+            return
+        set_top_bar_scroll_offset(top_bar_state["offset"] + delta)
+
+    page.fletviewer_on_content_scroll = on_content_scroll
 
     def add_resize_handler(handler):
         if handler not in resize_handlers:
@@ -511,21 +579,9 @@ def main(page: ft.Page):
 
     page.fletviewer_render_label = render_label
 
-    def close_left_drawer():
-        async def worker():
-            await page.close_drawer()
-
-        page.run_task(worker)
-
     def close_right_drawer():
         async def worker():
             await page.close_end_drawer()
-
-        page.run_task(worker)
-
-    def open_left_drawer(e=None):
-        async def worker():
-            await page.show_drawer()
 
         page.run_task(worker)
 
@@ -534,61 +590,6 @@ def main(page: ft.Page):
             await page.show_end_drawer()
 
         page.run_task(worker)
-
-    def toggle_primary_nav(e=None):
-        open_left_drawer(e)
-
-    def create_left_drawer() -> ft.NavigationDrawer:
-        drawer_hidden_labels = READING_PAGE_LABELS | {"历史", "调试"}
-        drawer_items = [(label, icon) for label, _subtitle, icon, _ in PAGES if label not in drawer_hidden_labels]
-
-        def on_drawer_change(e):
-            selected_index = getattr(e.control, "selected_index", None)
-            if selected_index is None:
-                return
-            close_left_drawer()
-            if selected_index == 0:
-                render_search()
-                return
-            item_index = selected_index - 1
-            if 0 <= item_index < len(drawer_items):
-                render_label(drawer_items[item_index][0])
-
-        return ft.NavigationDrawer(
-            controls=[
-                ft.Container(
-                    content=ft.Row(
-                        [
-                            ft.Container(
-                                content=ft.Icon(ft.Icons.IMAGE_SEARCH, color=ft.Colors.ON_PRIMARY),
-                                width=42,
-                                height=42,
-                                border_radius=14,
-                                bgcolor=ft.Colors.PRIMARY,
-                                alignment=ft.Alignment(0, 0),
-                            ),
-                            ft.Column(
-                                [
-                                    ft.Text("FletViewer", size=20, weight=ft.FontWeight.BOLD),
-                                    ft.Text("Provider browser", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
-                                ],
-                                spacing=0,
-                            ),
-                        ],
-                        spacing=12,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    padding=ft.Padding(16, 18, 16, 12),
-                ),
-                ft.NavigationDrawerDestination(label="搜索", icon=ft.Icons.SEARCH),
-                *[
-                    ft.NavigationDrawerDestination(label=label, icon=icon, selected_icon=icon)
-                    for label, icon in drawer_items
-                ],
-            ],
-            selected_index=0,
-            on_change=on_drawer_change,
-        )
 
     def create_right_drawer() -> ft.NavigationDrawer:
         return ft.NavigationDrawer(
@@ -612,26 +613,53 @@ def main(page: ft.Page):
             on_change=lambda e: close_right_drawer(),
         )
 
-    root_left_drawer = create_left_drawer()
     root_right_drawer = create_right_drawer()
 
-    top_bar = ft.Container(
+    reading_top_row = ft.Container(
         content=ft.Row(
             [
-                ft.IconButton(ft.Icons.MENU, tooltip="导航", on_click=toggle_primary_nav),
-                ft.Column([header_title, header_subtitle], spacing=0, expand=True),
+                header_title,
+                ft.IconButton(ft.Icons.SEARCH, tooltip="搜索", on_click=lambda e: render_search()),
                 header_actions,
                 ft.IconButton(ft.Icons.TUNE, tooltip="平台", on_click=open_right_drawer),
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
-        visible=True,
-        height=58,
+        height=50,
         padding=ft.Padding(8, 4, 8, 4),
+        bgcolor=ft.Colors.SURFACE,
+    )
+
+    top_bar = ft.Container(
+        visible=True,
+        height=98,
+        left=0,
+        right=0,
+        top=0,
         bgcolor=ft.Colors.SURFACE,
         border=ft.border.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
     )
+
+    def section_top_bar(title: str, actions: list[ft.Control] | None = None) -> ft.Container:
+        return ft.Container(
+            content=ft.Row(
+                [
+                    ft.Text(title, size=18, weight=ft.FontWeight.W_600, overflow=ft.TextOverflow.ELLIPSIS, expand=True),
+                    *(actions or []),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            visible=True,
+            height=50,
+            left=0,
+            right=0,
+            top=0,
+            padding=ft.Padding(8, 4, 8, 4),
+            bgcolor=ft.Colors.SURFACE,
+            border=ft.border.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
+        )
 
     def bottom_nav_segment(label: str, icon, target: str) -> ft.Container:
         selected = label == bottom_nav_state["value"]
@@ -701,17 +729,66 @@ def main(page: ft.Page):
     reading_tab_pages[:] = [ft.Container(expand=True) for _idx in READING_PAGE_INDEXES]
     reading_tab_pages[0].content = content
 
-    reading_tabs = ft.Tabs(
+    reading_tab_bar = ft.TabBar(
+        tabs=[ft.Tab(label=PAGES[idx][0]) for idx in READING_PAGE_INDEXES],
+        divider_height=0,
+        divider_color=ft.Colors.TRANSPARENT,
+        indicator_thickness=3,
+        label_padding=ft.Padding(14, 0, 14, 0),
+    )
+
+    top_bar.content = ft.Column(
+        [
+            reading_top_row,
+            reading_tab_bar,
+        ],
+        spacing=0,
+        expand=True,
+    )
+
+    def reading_speed_dial_item(icon, label: str, on_click) -> ft.Container:
+        return ft.Container(
+            content=ft.Row(
+                [
+                    ft.Container(
+                        content=ft.Text(label, size=12, color=ft.Colors.ON_SURFACE),
+                        padding=ft.Padding(10, 6, 10, 6),
+                        bgcolor=ft.Colors.SURFACE,
+                        border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                        border_radius=999,
+                    ),
+                    ft.FloatingActionButton(icon=icon, mini=True, on_click=on_click),
+                ],
+                spacing=8,
+                alignment=ft.MainAxisAlignment.END,
+            ),
+            visible=False,
+            opacity=0.0,
+            offset=ft.Offset(0, 0.2),
+            animate_opacity=160,
+            animate_offset=160,
+            animate_scale=160,
+        )
+
+    reading_speed_dial_items = [
+        reading_speed_dial_item(ft.Icons.PIN, "跳转页数", lambda e: show_reading_action_hint("这里后续接“跳转到页数”功能。")),
+        reading_speed_dial_item(ft.Icons.BOOKMARK_ADD, "收藏操作", lambda e: show_reading_action_hint("这里后续接收藏/批量操作。")),
+        reading_speed_dial_item(ft.Icons.TUNE, "更多筛选", lambda e: show_reading_action_hint("这里后续接筛选/排序工具。")),
+    ]
+    reading_speed_dial_fab = ft.FloatingActionButton(icon=ft.Icons.ADD, tooltip="阅读工具", on_click=toggle_reading_speed_dial)
+    reading_speed_dial = ft.Container(
         content=ft.Column(
-            [
-                ft.TabBar(
-                    tabs=[ft.Tab(label=PAGES[idx][0]) for idx in READING_PAGE_INDEXES],
-                ),
-                ft.TabBarView(
-                    controls=reading_tab_pages,
-                    expand=True,
-                ),
-            ],
+            [*reading_speed_dial_items, reading_speed_dial_fab],
+            spacing=10,
+            horizontal_alignment=ft.CrossAxisAlignment.END,
+        ),
+        right=16,
+        bottom=92,
+    )
+
+    reading_tabs = ft.Tabs(
+        content=ft.TabBarView(
+            controls=reading_tab_pages,
             expand=True,
         ),
         length=len(READING_PAGE_INDEXES),
@@ -721,9 +798,29 @@ def main(page: ft.Page):
         expand=True,
     )
     reading_tabs_ref["value"] = reading_tabs
-    reading_section = ft.Container(content=reading_tabs, expand=True, padding=ft.Padding(8, 8, 8, 86))
-    local_section = ft.Container(content=local_galleries_view(page), expand=True, padding=ft.Padding(8, 8, 8, 86))
-    settings_section = ft.Container(content=settings_view(page), expand=True, padding=ft.Padding(8, 8, 8, 86))
+    reading_content_host = ft.Container(content=reading_tabs, expand=True, left=0, right=0, bottom=0, top=0)
+    reading_section = ft.Stack(
+        controls=[
+            reading_content_host,
+            top_bar,
+            reading_speed_dial,
+        ],
+        expand=True,
+    )
+    local_section = ft.Stack(
+        controls=[
+            ft.Container(content=local_galleries_view(page), expand=True, padding=ft.Padding(8, 0, 8, 0)),
+            section_top_bar("本地", [ft.IconButton(ft.Icons.DOWNLOAD, tooltip="下载", on_click=lambda e: render_label("下载"))]),
+        ],
+        expand=True,
+    )
+    settings_section = ft.Stack(
+        controls=[
+            ft.Container(content=settings_view(page), expand=True, padding=ft.Padding(8, 0, 8, 0)),
+            section_top_bar("设置"),
+        ],
+        expand=True,
+    )
     root_tabs = ft.Tabs(
         content=ft.TabBarView(
             controls=[reading_section, local_section, settings_section],
@@ -756,7 +853,7 @@ def main(page: ft.Page):
         expand=True,
     )
 
-    app_body_host = ft.Container(content=ft.Column([top_bar, body], spacing=0, expand=True), expand=True)
+    app_body_host = ft.Container(content=body, expand=True)
     shell_host["value"] = app_body_host
 
     if use_builtin_title_bar:
@@ -775,7 +872,7 @@ def main(page: ft.Page):
         root = ft.SafeArea(content=root, expand=True)
 
     page.views.clear()
-    root_view_ref["value"] = ft.View(route="/", controls=[root], padding=0, drawer=root_left_drawer, end_drawer=root_right_drawer)
+    root_view_ref["value"] = ft.View(route="/", controls=[root], padding=0, end_drawer=root_right_drawer)
     page.views.append(root_view_ref["value"])
     page.update()
     render(0)
