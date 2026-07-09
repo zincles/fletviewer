@@ -458,7 +458,7 @@ def main(page: ft.Page):
                 controls=[detail_container],
                 padding=8,
                 appbar=ft.AppBar(
-                    title=ft.Text(comic.title or "画廊详情", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    title=ft.Text(""),
                     leading=ft.IconButton(ft.Icons.ARROW_BACK, tooltip="返回", on_click=lambda e: go_back()),
                     automatically_imply_leading=False,
                 ),

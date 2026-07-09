@@ -1,4 +1,5 @@
 import base64
+import threading
 import time
 
 import flet as ft
@@ -7,6 +8,17 @@ from app.debug_log import log_debug, log_exception, log_image_served
 from app.image_fetcher import image_fetcher
 from app.storage import should_load_images
 from app.ui_update import request_update
+
+
+def _start_background_task(page: ft.Page, target, name: str) -> None:
+    """优先走 page.run_thread；不可用时退回普通守护线程。"""
+    connection = getattr(getattr(page, "session", None), "connection", None)
+    loop = getattr(connection, "loop", None)
+    if loop is not None:
+        page.run_thread(target)
+        return
+    log_debug("async_image", f"fallback thread {name}")
+    threading.Thread(target=target, name=f"async_image_{name}", daemon=True).start()
 
 
 def image_src_for_page(page: ft.Page, data: bytes, mime: str) -> bytes | str:
@@ -44,6 +56,7 @@ def async_image(
     *,
     width: float | int | None = None,
     height: float | int | None = None,
+    expand: bool | int | None = None,
     fit: ft.BoxFit = ft.BoxFit.COVER,
     cache_width: int | None = None,
     cache_height: int | None = None,
@@ -58,6 +71,7 @@ def async_image(
     loading_content = ft.Container(
         width=width,
         height=height,
+        expand=expand,
         bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
         alignment=ft.Alignment(0, 0),
         content=ft.Column(
@@ -71,7 +85,7 @@ def async_image(
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         ),
     )
-    box = ft.Container(content=loading_content, width=width, height=height)
+    box = ft.Container(content=loading_content, width=width, height=height, expand=expand)
 
     if not url:
         log_debug("async_image", "empty url")
@@ -95,6 +109,7 @@ def async_image(
                 src=image_src_for_page(page, result.data, result.mime),
                 width=width,
                 height=height,
+                expand=expand,
                 fit=fit,
                 cache_width=cache_width,
                 cache_height=cache_height,
@@ -145,6 +160,6 @@ def async_image(
                 log_exception("async_image", f"progress update failed url={url}: {ex}")
             time.sleep(0.2)
 
-    page.run_thread(progress_worker)
-    page.run_thread(worker)
+    _start_background_task(page, progress_worker, "progress")
+    _start_background_task(page, worker, "fetch")
     return box

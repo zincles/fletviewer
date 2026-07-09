@@ -19,7 +19,12 @@ from app.views.image_viewer import ImageViewerItem
 
 THUMBNAIL_BATCH_SIZE = 12
 THUMBNAIL_TILE_HEIGHT = 150
-THUMBNAIL_GRID_SPACING = 8
+THUMBNAIL_GRID_SPACING = 6
+DETAIL_SECTION_RADIUS = 20
+DETAIL_SECTION_PADDING = 16
+COVER_FLEX = 1
+META_FLEX = 1
+COVER_ASPECT_RATIO = 280 / 360
 
 
 def _to_jsonable(value):
@@ -33,7 +38,7 @@ def _tag_pill(text: str) -> ft.Control:
     """创建标签胶囊控件。"""
     return ft.Container(
         content=ft.Text(text, size=12, color=ft.Colors.ON_SURFACE),
-        padding=ft.Padding(8, 4, 8, 4),
+        padding=ft.Padding(6, 3, 6, 3),
         bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
         border_radius=999,
     )
@@ -49,15 +54,66 @@ def _meta_pill(label: str, value: str) -> ft.Control:
     )
 
 
+def _info_item(label: str, value: str, *, selectable: bool = False) -> ft.Control:
+    """创建详情信息行。"""
+    return ft.Column(
+        [
+            ft.Text(label, size=11, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text(value or "-", size=14, selectable=selectable),
+        ],
+        spacing=2,
+    )
+
+
 def _make_tag_controls(tags: dict[str, list[str]]) -> list[ft.Control]:
-    """把 provider 返回的 namespace tags 渲染为一组标签控件。"""
+    """把 provider 返回的 namespace tags 渲染为分组标签控件。"""
     controls: list[ft.Control] = []
     for namespace, values in tags.items():
         if not values:
             continue
-        controls.append(ft.Text(f"{namespace}:", size=13, weight=ft.FontWeight.BOLD))
-        controls.extend(_tag_pill(tag) for tag in values)
+        controls.append(
+            ft.Row(
+                [
+                    ft.Text(namespace, size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.PRIMARY),
+                    *[_tag_pill(tag) for tag in values],
+                ],
+                wrap=True,
+                spacing=6,
+                run_spacing=6,
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            )
+        )
     return controls
+
+
+def _section_shell(title: str, body: ft.Control, subtitle: ft.Control | None = None, action: ft.Control | None = None) -> ft.Control:
+    """创建无背景、无边框的详情区块。"""
+    header_column_controls: list[ft.Control] = [ft.Text(title, size=18, weight=ft.FontWeight.BOLD)]
+    if subtitle is not None:
+        header_column_controls.append(subtitle)
+    header = ft.Row(
+        [
+            ft.Column(header_column_controls, spacing=2, expand=True),
+            action or ft.Container(),
+        ],
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+    return ft.Column([header, body], spacing=10)
+
+
+def _constrain(control: ft.Control) -> ft.Control:
+    """让区块跟随页面可用宽度，避免固定宽度把移动端撑爆。"""
+    return ft.Row(
+        [ft.Container(content=control, expand=True)],
+        alignment=ft.MainAxisAlignment.CENTER,
+    )
+
+
+def _section_divider() -> ft.Control:
+    """详情页使用和设置页类似的分隔线。"""
+    return ft.Divider(height=1, thickness=1, color=ft.Colors.OUTLINE_VARIANT)
 
 
 def _comment_value(comment: Comment | dict, key: str, default=None):
@@ -102,54 +158,136 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
     show_raw_json = not should_render_gallery_cards()
     title = ft.Text(
         comic.title or "加载中...",
-        size=28,
+        size=18,
         weight=ft.FontWeight.BOLD,
         max_lines=3,
         overflow=ft.TextOverflow.ELLIPSIS,
         selectable=True,
     )
-    subtitle = ft.Text(
-        comic.id,
-        size=13,
-        color=ft.Colors.ON_SURFACE_VARIANT,
-        max_lines=2,
-        overflow=ft.TextOverflow.ELLIPSIS,
-        selectable=True,
-    )
-    status = ft.Text("加载中...", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
+    status = ft.Text("加载中...", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
+    tags_status = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+    comments_status = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+    thumbs_status = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
     download_status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
     cover_box = ft.Container(
-        content=async_image(page, comic.cover, width=float("inf"), height=360, fit=ft.BoxFit.COVER, cache_width=520),
-        expand=4,
-        height=360,
-        border_radius=8,
+        content=async_image(page, comic.cover, expand=True, fit=ft.BoxFit.COVER, cache_width=520),
+        expand=COVER_FLEX,
+        aspect_ratio=COVER_ASPECT_RATIO,
+        border_radius=16,
         clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
     )
-    meta = ft.Column(
-        controls=[
-            title,
-            subtitle,
+    title_box = ft.Container(
+        content=ft.Column(
+            [title],
+            spacing=0,
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.START,
+        ),
+        padding=16,
+        bgcolor=ft.Colors.TRANSPARENT,
+        expand=META_FLEX,
+        alignment=ft.Alignment(-1, 0),
+    )
+    read_first_button = ft.FilledButton("阅读", icon=ft.Icons.MENU_BOOK, disabled=True, width=float("inf"))
+    archive_button = ft.OutlinedButton("下载", icon=ft.Icons.DOWNLOAD, width=float("inf"), on_click=lambda e: load_archives(e))
+    action_section = ft.Column(
+        [
             ft.Row(
                 [
-                    ft.Text(comic.type, size=13),
-                    ft.Text(f"{comic.max_page}P", size=13),
-                    ft.Text(f"★{comic.stars}", size=13),
+                    ft.Container(content=read_first_button, expand=1),
+                    ft.Container(content=archive_button, expand=1),
                 ],
                 spacing=12,
             ),
-            status,
+            download_status,
+        ],
+        spacing=10,
+    )
+    info_extra_column = ft.Column(spacing=12)
+    versions_column = ft.Column(spacing=8, visible=False)
+    versions_group = ft.Column(
+        [
+            ft.Text("版本关系", size=13, weight=ft.FontWeight.W_500),
+            versions_column,
         ],
         spacing=8,
-        alignment=ft.MainAxisAlignment.START,
-        horizontal_alignment=ft.CrossAxisAlignment.START,
-        expand=6,
+        visible=False,
     )
-    tags_wrap = ft.Row(wrap=True, spacing=8, run_spacing=8)
-    extra_meta_wrap = ft.Row(wrap=True, spacing=8, run_spacing=8)
-    versions_column = ft.Column(spacing=8, visible=False)
+    info_expand_tile = ft.ExpansionTile(
+        title=ft.Text("更多信息", size=13, weight=ft.FontWeight.W_500),
+        subtitle=ft.Text("链接、上传者、分类等", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+        controls=[info_extra_column, versions_group],
+        maintain_state=True,
+        tile_padding=ft.Padding(0, 0, 0, 0),
+        controls_padding=ft.Padding(0, 8, 0, 0),
+        expanded_cross_axis_alignment=ft.CrossAxisAlignment.START,
+        bgcolor=ft.Colors.TRANSPARENT,
+        collapsed_bgcolor=ft.Colors.TRANSPARENT,
+    )
+    info_section = ft.Column([status, info_expand_tile], spacing=12)
+    hero_layout_box = ft.Container()
+    tags_wrap = ft.Column(
+        spacing=8,
+        horizontal_alignment=ft.CrossAxisAlignment.START,
+        alignment=ft.MainAxisAlignment.START,
+        tight=True,
+    )
     thumb_columns = {"value": runs_count_for_width(page.width, min_columns=3, max_columns=12)}
     thumb_controls: list[ft.Control] = []
     thumbs_grid = ft.Column(spacing=THUMBNAIL_GRID_SPACING)
+    comments_column = ft.Column(spacing=8)
+    root_view = ft.Column(spacing=16, scroll=ft.ScrollMode.AUTO, expand=True)
+    detail_controls: list[ft.Control] = []
+    hero_section = ft.Container(
+        content=hero_layout_box,
+        padding=DETAIL_SECTION_PADDING,
+        border_radius=DETAIL_SECTION_RADIUS,
+        bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+        border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+    )
+    tags_section = ft.ExpansionTile(
+        title=ft.Text("标签", size=14, weight=ft.FontWeight.W_500),
+        subtitle=tags_status,
+        controls=[tags_wrap],
+        maintain_state=True,
+        tile_padding=ft.Padding(0, 0, 0, 0),
+        controls_padding=ft.Padding(0, 6, 0, 0),
+        expanded_alignment=ft.Alignment(-1, -1),
+        expanded_cross_axis_alignment=ft.CrossAxisAlignment.START,
+        bgcolor=ft.Colors.TRANSPARENT,
+        collapsed_bgcolor=ft.Colors.TRANSPARENT,
+    )
+    show_more_comments_button = ft.TextButton("显示更多评论", visible=False)
+    comments_section = _section_shell(
+        "评论",
+        ft.Column([comments_column, show_more_comments_button], spacing=10),
+        subtitle=comments_status,
+    )
+    load_more_thumbs_button = ft.OutlinedButton("加载更多缩略图", visible=False)
+    thumbs_section = _section_shell(
+        "缩略图",
+        ft.Column([thumbs_grid, load_more_thumbs_button], spacing=12),
+        subtitle=thumbs_status,
+    )
+    raw_json = ft.Text("{}", size=12, selectable=True)
+    raw_json_section = ft.ExpansionTile(
+        title=ft.Text("原始详情 JSON", size=14, weight=ft.FontWeight.W_500),
+        subtitle=ft.Text("展开查看完整 provider 响应", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+        controls=[
+            ft.Container(
+                content=ft.Column([raw_json], scroll=ft.ScrollMode.AUTO),
+                height=420,
+                padding=ft.Padding(0, 8, 0, 0),
+            )
+        ],
+        maintain_state=True,
+        tile_padding=ft.Padding(0, 0, 0, 0),
+        controls_padding=ft.Padding(0, 12, 0, 0),
+        expanded_cross_axis_alignment=ft.CrossAxisAlignment.START,
+        bgcolor=ft.Colors.TRANSPARENT,
+        collapsed_bgcolor=ft.Colors.TRANSPARENT,
+    )
 
     def rebuild_thumb_grid():
         """用普通 Row/Column 铺缩略图，避免详情页里出现独立滚动条。"""
@@ -163,25 +301,49 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             rows.append(ft.Row(cells, spacing=THUMBNAIL_GRID_SPACING, height=THUMBNAIL_TILE_HEIGHT))
         thumbs_grid.controls = rows
 
+    def rebuild_hero_layout():
+        """详情首屏固定 40/60 横向布局，封面按长宽比计算高度。"""
+        hero_layout_box.content = ft.Row(
+            [cover_box, title_box],
+            spacing=20,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+        )
+
     def update_thumb_grid_columns(e=None):
         new_count = runs_count_for_width(page.width, min_columns=3, max_columns=12)
+        rebuild_hero_layout()
         if thumb_columns["value"] != new_count:
             thumb_columns["value"] = new_count
             rebuild_thumb_grid()
-            page.update()
+        page.update()
 
     add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
     if callable(add_resize_handler):
         add_resize_handler(update_thumb_grid_columns)
-    raw_json = ft.Text("{}", size=12, selectable=True)
-    comments_column = ft.Column(spacing=8)
-    show_more_comments_button = ft.Button("显示更多评论", visible=False)
-    load_more_thumbs_button = ft.Button("加载更多缩略图", visible=False)
     thumb_state = {"items": [], "loaded": 0, "make_thumb": None}
     resolved_image_urls: dict[int, str] = {}
     image_key_state = {"key": None}
-    root_view = ft.Column(spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
-    detail_controls: list[ft.Control] = []
+
+    def update_info_panel(details=None):
+        """刷新标题下方的信息容器。"""
+        if details is None:
+            status.value = "加载中..."
+            info_extra_column.controls = []
+            versions_group.visible = False
+            info_expand_tile.visible = False
+            return
+        status.value = f"{details.max_page or comic.max_page or '-'} 页，{details.favorite_count} 收藏，评分 {(details.stars or comic.stars):.1f}"
+        info_extra_column.controls = [
+            _info_item("语言", details.language_detail or "-"),
+            _info_item("大小", details.file_size or "-"),
+            _info_item("上传时间", details.upload_time or "-"),
+            _info_item("链接", details.url or comic.id, selectable=True),
+            _info_item("上传者", details.uploader or comic.uploader or "-"),
+            _info_item("分类", comic.type or "-"),
+            _info_item("可见性", details.visible or "-"),
+            _info_item("评分数", str(details.rating_count) if details.rating_count else "0"),
+        ]
+        info_expand_tile.visible = True
 
     def show_detail_view(update: bool = True):
         """回到画廊详情主体内容。"""
@@ -194,15 +356,17 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         details = state.get("details")
         comments = list(getattr(details, "comments", []) or [])
         root_view.controls = [
-            ft.Row(
-                [
-                    ft.Button("返回画廊详情", icon=ft.Icons.ARROW_BACK, on_click=lambda ev: show_detail_view()),
-                    ft.Text(f"全部评论（{len(comments)}）", size=22, weight=ft.FontWeight.BOLD),
-                ],
-                spacing=12,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            _constrain(
+                _section_shell(
+                    "全部评论",
+                    ft.Column(
+                        [_make_comment_card(comment) for comment in comments] or [ft.Text("暂无评论", size=14, color=ft.Colors.ON_SURFACE_VARIANT)],
+                        spacing=10,
+                    ),
+                    subtitle=ft.Text(f"{len(comments)} 条评论", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                    action=ft.OutlinedButton("返回画廊详情", icon=ft.Icons.ARROW_BACK, on_click=lambda ev: show_detail_view()),
+                )
             ),
-            *( [_make_comment_card(comment) for comment in comments] or [ft.Text("暂无评论", size=14, color=ft.Colors.ON_SURFACE_VARIANT)] ),
         ]
         page.update()
 
@@ -221,29 +385,14 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         )
         open_detail(version_comic)
 
-    def update_extra_meta(details):
-        """刷新详情顶部的扩展元信息。"""
-        controls: list[ft.Control] = []
-        if details.visible:
-            controls.append(_meta_pill("Visible", details.visible))
-        if details.language_detail:
-            controls.append(_meta_pill("Language", details.language_detail))
-        if details.file_size:
-            controls.append(_meta_pill("Size", details.file_size))
-        if details.favorite_count:
-            controls.append(_meta_pill("Favorited", str(details.favorite_count)))
-        if details.rating_count:
-            controls.append(_meta_pill("Ratings", str(details.rating_count)))
-        extra_meta_wrap.controls = controls
-
     def update_versions(details):
         """刷新版本链区域。"""
         controls: list[ft.Control] = []
         if details.parent:
-            parent_comic = Comic(id=details.parent, title="Parent Gallery", cover="")
+            parent_comic = Comic(id=details.parent, title="父版本画廊", cover="")
             controls.append(
                 ft.ListTile(
-                    title=ft.Text("Parent Gallery"),
+                    title=ft.Text("父版本画廊"),
                     subtitle=ft.Text(details.parent, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                     trailing=ft.Icon(ft.Icons.OPEN_IN_NEW),
                     on_click=lambda e, c=parent_comic: getattr(page, "fletviewer_open_gallery_detail", lambda _comic: None)(c),
@@ -260,6 +409,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             )
         versions_column.controls = controls
         versions_column.visible = bool(controls)
+        versions_group.visible = bool(controls)
 
     def render_thumb_batch():
         viewer_items = thumb_state["items"]
@@ -275,6 +425,9 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         load_more_thumbs_button.visible = end < len(viewer_items)
         if viewer_items:
             load_more_thumbs_button.text = f"加载更多缩略图（{end}/{len(viewer_items)}）"
+            thumbs_status.value = f"已渲染 {end}/{len(viewer_items)} 张"
+        else:
+            thumbs_status.value = "暂无缩略图"
         rebuild_thumb_grid()
 
     def load_more_thumbs(e):
@@ -402,12 +555,12 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             state["thumbs"] = thumbs
 
             title.value = details.title or comic.title
-            subtitle.value = details.sub_title or details.url or comic.id
             if details.cover:
-                cover_box.content = async_image(page, details.cover, width=float("inf"), height=360, fit=ft.BoxFit.COVER, cache_width=520)
+                cover_box.content = async_image(page, details.cover, expand=True, fit=ft.BoxFit.COVER, cache_width=520)
 
-            tags_wrap.controls = _make_tag_controls(details.tags)
-            update_extra_meta(details)
+            update_info_panel(details)
+            tags_wrap.controls = _make_tag_controls(details.tags) or [ft.Text("暂无标签", size=14, color=ft.Colors.ON_SURFACE_VARIANT)]
+            tags_status.value = f"{sum(len(values) for values in details.tags.values())} 个标签"
             update_versions(details)
             comments = list(details.comments or [])
             comments_column.controls = [
@@ -416,6 +569,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             ] or [ft.Text("暂无评论", size=14, color=ft.Colors.ON_SURFACE_VARIANT)]
             show_more_comments_button.visible = len(comments) > 2
             show_more_comments_button.text = f"显示更多评论（{len(comments)} 条）"
+            comments_status.value = f"{len(comments)} 条评论"
             thumb_items = thumbs.items or [
                 ThumbnailItem(url=thumb, page_url=page_url)
                 for page_url, thumb in zip(thumbs.urls, thumbs.thumbnails)
@@ -482,6 +636,10 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             thumb_state["items"] = viewer_items
             thumb_state["loaded"] = 0
             thumb_state["make_thumb"] = make_thumb
+            read_first_button.disabled = not bool(viewer_items)
+            open_viewer = getattr(page, "fletviewer_open_image_viewer", None)
+            if callable(open_viewer) and viewer_items:
+                read_first_button.on_click = lambda e: open_viewer(viewer_items, 0, resolve_full_image)
             render_thumb_batch()
             raw_json.value = json.dumps(
                 {
@@ -491,7 +649,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
                 ensure_ascii=False,
                 indent=2,
             )
-            status.value = f"{details.max_page} 页，{len(thumbs.thumbnails)} 个缩略图"
+            thumbs_status.value = f"{len(viewer_items)} 张缩略图"
             log_debug("detail", f"load done {comic.id} thumbs={len(thumbs.thumbnails)}")
         except Exception as ex:
             status.value = f"错误: {ex}"
@@ -502,43 +660,23 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
 
     page.run_thread(worker)
 
+    update_info_panel()
+    rebuild_hero_layout()
     detail_controls = [
-            ft.Row(
-                [
-                    ft.Button("返回", icon=ft.Icons.ARROW_BACK, on_click=lambda e: on_back()),
-                    ft.Button("下载 Archive", icon=ft.Icons.DOWNLOAD, on_click=load_archives),
-                ],
-                spacing=8,
-                wrap=True,
-            ),
-            download_status,
-            ft.Divider(),
-            ft.Row([cover_box, meta], spacing=24, vertical_alignment=ft.CrossAxisAlignment.START),
-            extra_meta_wrap,
-            versions_column,
-            ft.Text("标签", size=18, weight=ft.FontWeight.BOLD),
-            tags_wrap,
-            ft.Text("评论", size=18, weight=ft.FontWeight.BOLD),
-            comments_column,
-            show_more_comments_button,
-            ft.Text("缩略图", size=18, weight=ft.FontWeight.BOLD),
-            thumbs_grid,
-            load_more_thumbs_button,
+            _constrain(hero_section),
+            _constrain(action_section),
+            _constrain(_section_divider()),
+            _constrain(info_section),
+            _constrain(_section_divider()),
+            _constrain(tags_section),
+            _constrain(_section_divider()),
+            _constrain(comments_section),
+            _constrain(_section_divider()),
+            _constrain(thumbs_section),
     ]
 
     if show_raw_json:
-        detail_controls.extend(
-            [
-                ft.Text("原始详情 JSON", size=18, weight=ft.FontWeight.BOLD),
-                ft.Container(
-                    content=ft.Column([raw_json], scroll=ft.ScrollMode.AUTO),
-                    height=420,
-                    border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-                    border_radius=8,
-                    padding=16,
-                ),
-            ]
-        )
+        detail_controls.extend([_constrain(_section_divider()), _constrain(raw_json_section)])
 
     show_detail_view(update=False)
     return root_view
