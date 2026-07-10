@@ -4,6 +4,7 @@ eh_config.json
 .env
 .cache/
 tmp/.cache/
+/references/
 
 # Python
 __pycache__/

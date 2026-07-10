@@ -772,10 +772,43 @@ def main(page: ft.Page):
         dialog.open = True
         page.show_dialog(dialog)
 
+    def show_provider_selector(e=None) -> None:
+        """显示阅读来源选择；未实现的来源暂时禁用。"""
+        dialog = ft.AlertDialog(
+            title=ft.Text("切换平台"),
+            content=ft.Container(
+                content=ft.Column(
+                    [
+                        ft.ListTile(
+                            leading=ft.Icon(ft.Icons.PUBLIC, color=ft.Colors.PRIMARY),
+                            title=ft.Text("E-Hentai"),
+                            subtitle=ft.Text("当前平台", color=ft.Colors.PRIMARY),
+                            trailing=ft.Icon(ft.Icons.CHECK, color=ft.Colors.PRIMARY),
+                            selected=True,
+                        ),
+                        ft.ListTile(leading=ft.Icon(ft.Icons.LOCK_OUTLINE), title=ft.Text("ExHentai"), subtitle=ft.Text("尚未实现"), disabled=True),
+                        ft.ListTile(leading=ft.Icon(ft.Icons.IMAGE_SEARCH), title=ft.Text("Booru"), subtitle=ft.Text("尚未实现"), disabled=True),
+                        ft.ListTile(leading=ft.Icon(ft.Icons.BRUSH), title=ft.Text("Pixiv"), subtitle=ft.Text("尚未实现"), disabled=True),
+                    ],
+                    spacing=0,
+                    tight=True,
+                ),
+                width=320,
+            ),
+            actions=[ft.TextButton("关闭", on_click=lambda event: page.pop_dialog())],
+        )
+        dialog.open = True
+        page.show_dialog(dialog)
+
     account_avatar_button = ft.IconButton(
         icon=ft.Icons.ACCOUNT_CIRCLE,
         tooltip="账户",
         on_click=show_account_summary,
+    )
+    reading_source_button = ft.IconButton(
+        icon=ft.Icons.SWAP_HORIZ,
+        tooltip="切换阅读来源",
+        on_click=show_provider_selector,
     )
 
     reading_top_row = ft.Container(
@@ -784,6 +817,7 @@ def main(page: ft.Page):
                 top_search_field,
                 header_actions,
                 account_avatar_button,
+                reading_source_button,
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -822,34 +856,6 @@ def main(page: ft.Page):
             bgcolor=ft.Colors.SURFACE,
             border=ft.border.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
         )
-
-    def show_provider_selector(e=None) -> None:
-        """长按设置时显示平台选择；未实现平台暂时禁用。"""
-        dialog = ft.AlertDialog(
-            title=ft.Text("切换平台"),
-            content=ft.Container(
-                content=ft.Column(
-                    [
-                        ft.ListTile(
-                            leading=ft.Icon(ft.Icons.PUBLIC, color=ft.Colors.PRIMARY),
-                            title=ft.Text("E-Hentai"),
-                            subtitle=ft.Text("当前平台", color=ft.Colors.PRIMARY),
-                            trailing=ft.Icon(ft.Icons.CHECK, color=ft.Colors.PRIMARY),
-                            selected=True,
-                        ),
-                        ft.ListTile(leading=ft.Icon(ft.Icons.LOCK_OUTLINE), title=ft.Text("ExHentai"), subtitle=ft.Text("尚未实现"), disabled=True),
-                        ft.ListTile(leading=ft.Icon(ft.Icons.IMAGE_SEARCH), title=ft.Text("Booru"), subtitle=ft.Text("尚未实现"), disabled=True),
-                        ft.ListTile(leading=ft.Icon(ft.Icons.BRUSH), title=ft.Text("Pixiv"), subtitle=ft.Text("尚未实现"), disabled=True),
-                    ],
-                    spacing=0,
-                    tight=True,
-                ),
-                width=320,
-            ),
-            actions=[ft.TextButton("关闭", on_click=lambda event: page.pop_dialog())],
-        )
-        dialog.open = True
-        page.show_dialog(dialog)
 
     def bottom_nav_segment(label: str, icon, target: str) -> ft.Container:
         selected = label == bottom_nav_state["value"]

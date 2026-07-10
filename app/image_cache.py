@@ -6,7 +6,7 @@ from app.storage import (
     ROOT_DIR,
     IMAGE_CACHE_LEGACY_INDEX_PATH,
 )
-from core.cache.image_cache_db import ImageCacheDB
+from core.cache.image_cache_db import ImageCacheDB, ImageCacheStats
 
 
 image_cache_db = ImageCacheDB(
@@ -98,3 +98,7 @@ def repair_gallery_page_entry(provider: str, gid: str, token: str, page_idx: int
 
 def clear_image_cache() -> None:
     image_cache_db.clear()
+
+
+def get_image_cache_stats() -> ImageCacheStats:
+    return image_cache_db.stats()

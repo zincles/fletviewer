@@ -6,9 +6,16 @@ import mimetypes
 import shutil
 import sqlite3
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+
+
+@dataclass(frozen=True)
+class ImageCacheStats:
+    file_count: int
+    bytes_used: int
 
 
 class ImageCacheDB:
@@ -182,6 +189,23 @@ class ImageCacheDB:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute("DELETE FROM image_url_cache")
                 conn.execute("DELETE FROM gallery_page_cache")
+
+    def stats(self) -> ImageCacheStats:
+        """Return the physical image files currently present in the cache."""
+        file_count = 0
+        bytes_used = 0
+        with self._lock:
+            if not self.files_dir.exists():
+                return ImageCacheStats(file_count=0, bytes_used=0)
+            for path in self.files_dir.rglob("*"):
+                try:
+                    if path.is_file():
+                        file_count += 1
+                        bytes_used += path.stat().st_size
+                except OSError:
+                    # A fetch or cache clear may replace a file during the scan.
+                    continue
+        return ImageCacheStats(file_count=file_count, bytes_used=bytes_used)
 
     def _connect(self) -> sqlite3.Connection:
         with self._lock:

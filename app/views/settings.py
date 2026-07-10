@@ -3,9 +3,10 @@ import json
 import flet as ft
 
 from app.browser_session import browser_session
+from app.debug_log import log_exception
 from app.gallery_cache import clear_gallery_cache
 from app.gallery_type_colors import GALLERY_TYPE_COLORS, GALLERY_TYPE_LABELS, gallery_type_foreground
-from app.image_cache import clear_image_cache
+from app.image_cache import clear_image_cache, get_image_cache_stats
 from app.storage import (
     CACHE_DB_PATH,
     CACHE_FILES_DIR,
@@ -20,7 +21,8 @@ from app.storage import (
     save_app_config,
     save_eh_config,
 )
-from app.toast import show_toast
+from app.toast import show_error_toast, show_toast
+from app.ui_update import request_update
 
 COOKIE_FIELDS = [
     ("ipb_member_id", "ipb_member_id", "EH 会员 ID", True),
@@ -55,6 +57,41 @@ def _invalidate_gallery_views(page: ft.Page, reason: str) -> None:
         invalidate(GALLERY_VIEW_CACHE_KEYS, reason=reason)
 
 
+def _format_bytes(value: int) -> str:
+    size = float(value or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{int(value)} B"
+
+
+class _ImageCacheSizeText(ft.Text):
+    def __init__(self, page: ft.Page):
+        super().__init__("统计中...", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
+        self._page = page
+        self._alive = False
+
+    def did_mount(self) -> None:
+        self._alive = True
+        self._page.run_thread(self._load)
+
+    def will_unmount(self) -> None:
+        self._alive = False
+
+    def _load(self) -> None:
+        try:
+            stats = get_image_cache_stats()
+            if self._alive:
+                self.value = f"{_format_bytes(stats.bytes_used)} · {stats.file_count} 个文件"
+        except Exception as ex:
+            if self._alive:
+                self.value = "统计失败"
+            log_exception("设置", f"统计图像缓存失败: {ex}")
+        if self._alive:
+            request_update(self._page)
+
+
 def create_view(page: ft.Page) -> ft.Control:
     """创建设置页，包含账户、显示、Linux 窗口和存储选项卡。"""
     cfg = load_eh_config()
@@ -74,6 +111,7 @@ def create_view(page: ft.Page) -> ft.Control:
     status = ft.Text("", size=14)
     display_status = ft.Text("", size=14)
     debug_status = ft.Text("", size=14)
+    image_cache_size = _ImageCacheSizeText(page)
     linux_window_status = ft.Text("", size=14)
     login_status = ft.Text(browser_session.login_status_text(), size=14, color=ft.Colors.ON_SURFACE_VARIANT)
     login_status_lamp = ft.Container(width=10, height=10, border_radius=999)
@@ -401,19 +439,43 @@ def create_view(page: ft.Page) -> ft.Control:
         status.color = ft.Colors.PRIMARY
         page.update()
 
+    image_cache_state = {"busy": False}
+    clear_image_cache_button = ft.OutlinedButton("清除所有图像缓存", icon=ft.Icons.DELETE_SWEEP)
+
     def on_clear_image_cache(e):
-        clear_image_cache()
-        _invalidate_gallery_views(page, "image_cache_cleared")
-        debug_status.value = "已清除所有图像缓存"
-        debug_status.color = ft.Colors.PRIMARY
+        if image_cache_state["busy"]:
+            return
+        image_cache_state["busy"] = True
+        clear_image_cache_button.disabled = True
+        image_cache_size.value = "正在清理..."
         page.update()
 
+        def worker():
+            try:
+                clear_image_cache()
+                stats = get_image_cache_stats()
+                image_cache_size.value = f"{_format_bytes(stats.bytes_used)} · {stats.file_count} 个文件"
+                _invalidate_gallery_views(page, "image_cache_cleared")
+                show_toast(page, "已清除所有图像缓存")
+            except Exception as ex:
+                image_cache_size.value = "清理失败"
+                log_exception("设置", f"清除图像缓存失败: {ex}")
+                show_error_toast(page, "清除图像缓存失败", ex)
+            finally:
+                image_cache_state["busy"] = False
+                clear_image_cache_button.disabled = False
+                request_update(page)
+
+        page.run_thread(worker)
+
     def on_clear_gallery_cache(e):
-        clear_gallery_cache()
-        _invalidate_gallery_views(page, "gallery_cache_cleared")
-        debug_status.value = "已清除所有画廊缓存"
-        debug_status.color = ft.Colors.PRIMARY
-        page.update()
+        try:
+            clear_gallery_cache()
+            _invalidate_gallery_views(page, "gallery_cache_cleared")
+            show_toast(page, "已清除所有画廊缓存")
+        except Exception as ex:
+            log_exception("设置", f"清除画廊缓存失败: {ex}")
+            show_error_toast(page, "清除画廊缓存失败", ex)
 
     def open_page(label: str):
         render_label = getattr(page, "fletviewer_render_label", None)
@@ -584,7 +646,8 @@ def create_view(page: ft.Page) -> ft.Control:
                 ft.Text("缓存操作", size=16, weight=ft.FontWeight.W_500),
                 ft.Row(
                     [
-                        ft.OutlinedButton("清除所有图像缓存", icon=ft.Icons.DELETE_SWEEP, on_click=on_clear_image_cache),
+                        clear_image_cache_button,
+                        image_cache_size,
                         ft.OutlinedButton("清除所有画廊缓存", icon=ft.Icons.DELETE_OUTLINE, on_click=on_clear_gallery_cache),
                     ],
                     spacing=12,
@@ -595,6 +658,8 @@ def create_view(page: ft.Page) -> ft.Control:
             scroll=ft.ScrollMode.AUTO,
         ),
     )
+
+    clear_image_cache_button.on_click = on_clear_image_cache
 
     def open_settings_page(route_key: str, title: str, icon, content: ft.Control):
         push_view = getattr(page, "fletviewer_push_view", None)
