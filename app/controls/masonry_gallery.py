@@ -1,3 +1,14 @@
+"""Flet 画廊瀑布流布局。
+
+正常分页禁止向已有 ``Column.controls`` 直接追加子项：实测 Flet 会重绘该列，
+导致列内所有封面闪烁。每列因此始终以一个空 TailHost 结尾；新一页先按
+全局累计列高完成整批分配，再把该列的新卡片作为一个 Column 填入当前
+TailHost，并在批次末尾留下下一代 TailHost。这样只会 patch 原本为空的
+Host，旧列、旧卡片和图片控件均保持挂载。
+
+列数变化属于低频操作，允许通过 ``set_column_count()`` 全量重建。
+"""
+
 from dataclasses import dataclass
 
 import flet as ft
@@ -30,7 +41,7 @@ def safe_aspect_ratio(value: float | int | None) -> float:
 
 
 class MasonryGallery(ft.Container):
-    """使用等宽 Column 和最短列算法排列不同高度的子项。"""
+    """使用等宽列、全局最短列算法和每列 TailHost 排列子项。"""
 
     def __init__(self, *, column_count: int = 2, spacing: float = 8) -> None:
         super().__init__()
@@ -62,6 +73,7 @@ class MasonryGallery(ft.Container):
 
     def append_batch(self, items: list[MasonryItem], *, update: bool = False) -> list[ft.Container]:
         """按全局最短列分配一批新项，只更新每列当前的空 TailHost。"""
+        # 先完成整批分配，保留 Provider 顺序，同时持续更新全局累计列高。
         batches: list[list[ft.Control]] = [[] for _ in range(self.column_count)]
         normalized_spacing = self.spacing / SPACING_REFERENCE_WIDTH
 
@@ -76,6 +88,7 @@ class MasonryGallery(ft.Container):
         for index, controls in enumerate(batches):
             if not controls:
                 continue
+            # 不修改外层 Column；只填充此前为空的 Host，并留下下一代空 Host。
             old_tail = self._tail_hosts[index]
             next_tail = ft.Container()
             old_tail.content = ft.Column(
@@ -112,6 +125,7 @@ class MasonryGallery(ft.Container):
             )
             self.column_heights[target] += (1.0 / ratio) + normalized_spacing
 
+        # 初始构建后，各列末尾也必须保留一个空 Host，供首个追加批次使用。
         for column, tail_host in zip(self._columns, self._tail_hosts):
             column.controls.append(tail_host)
 
