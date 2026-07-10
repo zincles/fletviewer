@@ -8,7 +8,16 @@ from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.gallery_type_colors import gallery_type_color, gallery_type_foreground
 from app.grid_layout import runs_count_for_width
-from app.storage import get_gallery_view_mode, load_eh_config, should_show_gallery_info, should_show_gallery_page_count
+from app.storage import (
+    get_gallery_view_mode,
+    load_eh_config,
+    should_debug_force_gallery_downloaded,
+    should_debug_force_gallery_favorite,
+    should_debug_force_gallery_update,
+    should_debug_show_cover_dimensions,
+    should_show_gallery_info,
+    should_show_gallery_page_count,
+)
 from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
 from core.provider.ehgrabber import EHentaiClient, Comic, SearchResult
@@ -40,6 +49,16 @@ def _language_code(language: str | None) -> str:
 
 def _gallery_cover(page: ft.Page, comic: Comic) -> ft.Control:
     """创建纯封面和语言角标。"""
+    show_dimensions = should_debug_show_cover_dimensions()
+    force_favorite = should_debug_force_gallery_favorite()
+    force_downloaded = should_debug_force_gallery_downloaded()
+    force_update = should_debug_force_gallery_update()
+    status_icons: list[ft.Control] = []
+    if force_favorite:
+        status_icons.append(ft.Icon(ft.Icons.FAVORITE, size=14, color=ft.Colors.ON_PRIMARY))
+    if force_downloaded:
+        status_icons.append(ft.Icon(ft.Icons.DOWNLOAD_DONE, size=14, color=ft.Colors.ON_PRIMARY))
+
     return ft.Container(
         content=ft.Stack(
             controls=[
@@ -74,8 +93,23 @@ def _gallery_cover(page: ft.Page, comic: Comic) -> ft.Control:
                     alignment=ft.Alignment(0, 0),
                     tooltip=comic.language or "未知语言",
                 ),
+                ft.Container(
+                    content=ft.Text(
+                        f"{comic.cover_width or '?'}×{comic.cover_height or '?'}",
+                        size=10,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.WHITE,
+                    ),
+                    left=6,
+                    top=6,
+                    padding=ft.Padding(6, 3, 6, 3),
+                    bgcolor=ft.Colors.with_opacity(0.78, ft.Colors.BLACK),
+                    border_radius=999,
+                    visible=show_dimensions,
+                    tooltip="Fetcher 解析到的封面尺寸",
+                ),
                 # 封面状态约定：右下胶囊依次表示已收藏/已下载，上方圆标表示本地画廊有新版本。
-                # 当前全部显示用于验证布局；接入真实状态后只切换 visible，不改变这组位置和语义。
+                # 调试开关可强制显示；接入真实状态后只切换 visible，不改变这组位置和语义。
                 ft.Container(
                     content=ft.Icon(ft.Icons.UPGRADE, size=14, color=ft.Colors.ON_PRIMARY),
                     width=26,
@@ -87,13 +121,11 @@ def _gallery_cover(page: ft.Page, comic: Comic) -> ft.Control:
                     border=ft.border.Border.all(2, ft.Colors.SURFACE),
                     border_radius=999,
                     tooltip="有新版本可用",
+                    visible=force_update,
                 ),
                 ft.Container(
                     content=ft.Row(
-                        [
-                            ft.Icon(ft.Icons.FAVORITE, size=14, color=ft.Colors.ON_PRIMARY),
-                            ft.Icon(ft.Icons.DOWNLOAD_DONE, size=14, color=ft.Colors.ON_PRIMARY),
-                        ],
+                        status_icons,
                         spacing=5,
                         tight=True,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -105,6 +137,7 @@ def _gallery_cover(page: ft.Page, comic: Comic) -> ft.Control:
                     border=ft.border.Border.all(1, ft.Colors.with_opacity(0.72, ft.Colors.SURFACE)),
                     border_radius=999,
                     tooltip="已收藏 · 已下载",
+                    visible=bool(status_icons),
                 ),
             ],
             expand=True,

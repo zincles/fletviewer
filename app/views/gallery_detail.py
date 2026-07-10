@@ -14,13 +14,12 @@ from app.grid_layout import runs_count_for_width
 from app.storage import should_render_gallery_cards
 from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
-from core.provider.ehgrabber import Comic, Comment, ThumbnailItem
+from core.provider.ehgrabber import EH_MAX_GALLERY_PAGES, Comic, Comment, ThumbnailItem
 from app.views.image_viewer import ImageViewerItem
 
 
 THUMBNAIL_BATCH_SIZE = 12
 THUMBNAIL_PLACEHOLDER_LIMIT = 20
-EH_MAX_GALLERY_PAGES = 2000
 THUMBNAIL_TILE_HEIGHT = 150
 THUMBNAIL_GRID_SPACING = 6
 DETAIL_SECTION_RADIUS = 20

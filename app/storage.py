@@ -33,6 +33,10 @@ APP_CONFIG_DEFAULTS = {
     "gallery_view_mode": "waterfall",
     "show_gallery_page_count": True,
     "show_gallery_info": True,
+    "debug_show_cover_dimensions": False,
+    "debug_force_gallery_favorite": False,
+    "debug_force_gallery_downloaded": False,
+    "debug_force_gallery_update": False,
     "image_grid_target_width": 220,
     "linux_builtin_title_bar": False,
     "linux_prefer_wayland_window_backend": False,
@@ -194,6 +198,23 @@ def should_show_gallery_page_count() -> bool:
 def should_show_gallery_info() -> bool:
     """返回画廊卡片是否显示底部标题和元信息。"""
     return bool(load_app_config().get("show_gallery_info", True))
+
+
+def should_debug_show_cover_dimensions() -> bool:
+    """返回是否在画廊封面显示解析到的尺寸。"""
+    return bool(load_app_config().get("debug_show_cover_dimensions", False))
+
+
+def should_debug_force_gallery_favorite() -> bool:
+    return bool(load_app_config().get("debug_force_gallery_favorite", False))
+
+
+def should_debug_force_gallery_downloaded() -> bool:
+    return bool(load_app_config().get("debug_force_gallery_downloaded", False))
+
+
+def should_debug_force_gallery_update() -> bool:
+    return bool(load_app_config().get("debug_force_gallery_update", False))
 
 
 def should_use_linux_builtin_title_bar() -> bool:

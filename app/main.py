@@ -151,6 +151,8 @@ def main(page: ft.Page):
     active_cache_key = {"value": ""}
     bottom_nav_state = {"value": "阅读"}
     bottom_nav_segments: dict[str, ft.Container] = {}
+    bottom_nav_indicator_ref: dict[str, ft.Container | None] = {"value": None}
+    bottom_nav_indexes = {"阅读": 0, "本地": 1, "下载": 2, "设置": 3}
     root_tabs_ref: dict[str, ft.Tabs | None] = {"value": None}
     root_tabs_syncing = {"value": False}
     reading_tabs_ref: dict[str, ft.Tabs | None] = {"value": None}
@@ -159,11 +161,14 @@ def main(page: ft.Page):
     top_bar_state = {"offset": 0.0}
     reading_content_host: ft.Container | None = None
     reading_speed_dial_state = {"open": False}
-    section_indexes = {"阅读": 0, "本地": 1, "设置": 2}
-    bottom_nav_for_page = {"本地画廊": "本地", "设置": "设置"}
+    section_indexes = {"阅读": 0, "本地": 1, "下载": 2, "设置": 3}
+    bottom_nav_for_page = {"本地画廊": "本地", "下载": "下载", "设置": "设置"}
 
     def set_bottom_nav(value: str):
         bottom_nav_state["value"] = value
+        indicator = bottom_nav_indicator_ref.get("value")
+        if indicator is not None:
+            indicator.left = bottom_nav_indexes.get(value, 0) * 71
         for label, segment in bottom_nav_segments.items():
             selected = label == value
             segment.bgcolor = ft.Colors.PRIMARY if selected else ft.Colors.TRANSPARENT
@@ -576,6 +581,12 @@ def main(page: ft.Page):
             activate_root_section("设置")
             log_debug("nav", f"切换主分区 设置 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
             return
+        if label == "下载":
+            set_header(label, subtitle)
+            set_header_actions([])
+            activate_root_section("下载")
+            log_debug("nav", f"切换主分区 下载 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
+            return
         set_header(label, subtitle)
         set_bottom_nav(bottom_nav_for_page.get(label, "阅读"))
         if label in READING_PAGE_LABELS:
@@ -639,41 +650,6 @@ def main(page: ft.Page):
 
     page.fletviewer_render_label = render_label
 
-    def close_right_drawer():
-        async def worker():
-            await page.close_end_drawer()
-
-        page.run_task(worker)
-
-    def open_right_drawer(e=None):
-        async def worker():
-            await page.show_end_drawer()
-
-        page.run_task(worker)
-
-    def create_right_drawer() -> ft.NavigationDrawer:
-        return ft.NavigationDrawer(
-            controls=[
-                ft.Container(
-                    content=ft.Column(
-                        [
-                            ft.Text("平台", size=20, weight=ft.FontWeight.BOLD),
-                            ft.Text("选择当前 provider", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
-                        ],
-                        spacing=2,
-                    ),
-                    padding=ft.Padding(16, 18, 16, 12),
-                ),
-                ft.NavigationDrawerDestination(label="E-Hentai", icon=ft.Icons.PUBLIC),
-                ft.NavigationDrawerDestination(label="ExHentai（未实现）", icon=ft.Icons.LOCK_OUTLINE),
-                ft.NavigationDrawerDestination(label="Booru（未实现）", icon=ft.Icons.IMAGE_SEARCH),
-                ft.NavigationDrawerDestination(label="Pixiv（未实现）", icon=ft.Icons.BRUSH),
-            ],
-            selected_index=0,
-            on_change=lambda e: close_right_drawer(),
-        )
-
-    root_right_drawer = create_right_drawer()
     top_search_field = ft.SearchBar(
         bar_hint_text="搜索画廊、标签、作者",
         bar_leading=ft.Icon(ft.Icons.SEARCH),
@@ -698,12 +674,93 @@ def main(page: ft.Page):
 
     top_search_field.on_submit = submit_top_search
 
+    def show_account_summary(e=None) -> None:
+        """显示当前 EH 账户摘要；资产数据接口接入前使用占位值。"""
+        logged_in = browser_session.login_status_level() in {"ok", "pending"}
+        value = "待同步" if logged_in else "--"
+
+        def metric(label: str, icon) -> ft.Control:
+            return ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Icon(icon, size=20, color=ft.Colors.PRIMARY),
+                        ft.Text(value, size=16, weight=ft.FontWeight.BOLD),
+                        ft.Text(label, size=11, color=ft.Colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER),
+                    ],
+                    spacing=4,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                width=112,
+                padding=10,
+                border_radius=14,
+                bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
+            )
+
+        # TODO: 在 core provider 增加账户资产接口，填充 GP、Credit、HatH 和每周免费归档配额。
+        dialog = ft.AlertDialog(
+            content=ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Row(
+                            [ft.IconButton(ft.Icons.CLOSE, tooltip="关闭", on_click=lambda event: page.pop_dialog())],
+                            alignment=ft.MainAxisAlignment.START,
+                        ),
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.PERSON, size=54, color=ft.Colors.ON_PRIMARY_CONTAINER),
+                            width=96,
+                            height=96,
+                            border_radius=999,
+                            bgcolor=ft.Colors.PRIMARY_CONTAINER,
+                            alignment=ft.Alignment(0, 0),
+                        ),
+                        ft.Text(
+                            browser_session.login_status_text(),
+                            size=14,
+                            color=ft.Colors.ON_SURFACE_VARIANT,
+                            text_align=ft.TextAlign.CENTER,
+                        ),
+                        ft.Row(
+                            [
+                                metric("GP", ft.Icons.PAID),
+                                metric("Credit", ft.Icons.ACCOUNT_BALANCE_WALLET),
+                                metric("HatH", ft.Icons.DNS),
+                                metric("每周免费归档", ft.Icons.INVENTORY_2),
+                            ],
+                            spacing=8,
+                            run_spacing=8,
+                            wrap=True,
+                            alignment=ft.MainAxisAlignment.CENTER,
+                        ),
+                        ft.Text(
+                            "登录后可查看账户资产。" if not logged_in else "账户资产接口尚未接入。",
+                            size=12,
+                            color=ft.Colors.ON_SURFACE_VARIANT,
+                            text_align=ft.TextAlign.CENTER,
+                        ),
+                    ],
+                    spacing=14,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
+                ),
+                width=500,
+            ),
+            content_padding=ft.Padding(8, 8, 8, 20),
+        )
+        dialog.open = True
+        page.show_dialog(dialog)
+
+    account_avatar_button = ft.IconButton(
+        icon=ft.Icons.ACCOUNT_CIRCLE,
+        tooltip="账户",
+        on_click=show_account_summary,
+    )
+
     reading_top_row = ft.Container(
         content=ft.Row(
             [
                 top_search_field,
                 header_actions,
-                ft.IconButton(ft.Icons.TUNE, tooltip="平台", on_click=open_right_drawer),
+                account_avatar_button,
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -743,6 +800,34 @@ def main(page: ft.Page):
             border=ft.border.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
         )
 
+    def show_provider_selector(e=None) -> None:
+        """长按设置时显示平台选择；未实现平台暂时禁用。"""
+        dialog = ft.AlertDialog(
+            title=ft.Text("切换平台"),
+            content=ft.Container(
+                content=ft.Column(
+                    [
+                        ft.ListTile(
+                            leading=ft.Icon(ft.Icons.PUBLIC, color=ft.Colors.PRIMARY),
+                            title=ft.Text("E-Hentai"),
+                            subtitle=ft.Text("当前平台", color=ft.Colors.PRIMARY),
+                            trailing=ft.Icon(ft.Icons.CHECK, color=ft.Colors.PRIMARY),
+                            selected=True,
+                        ),
+                        ft.ListTile(leading=ft.Icon(ft.Icons.LOCK_OUTLINE), title=ft.Text("ExHentai"), subtitle=ft.Text("尚未实现"), disabled=True),
+                        ft.ListTile(leading=ft.Icon(ft.Icons.IMAGE_SEARCH), title=ft.Text("Booru"), subtitle=ft.Text("尚未实现"), disabled=True),
+                        ft.ListTile(leading=ft.Icon(ft.Icons.BRUSH), title=ft.Text("Pixiv"), subtitle=ft.Text("尚未实现"), disabled=True),
+                    ],
+                    spacing=0,
+                    tight=True,
+                ),
+                width=320,
+            ),
+            actions=[ft.TextButton("关闭", on_click=lambda event: page.pop_dialog())],
+        )
+        dialog.open = True
+        page.show_dialog(dialog)
+
     def bottom_nav_segment(label: str, icon, target: str) -> ft.Container:
         selected = label == bottom_nav_state["value"]
         color = ft.Colors.ON_PRIMARY if selected else ft.Colors.ON_SURFACE_VARIANT
@@ -750,37 +835,63 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Icon(icon, size=20, color=color),
-                    ft.Text(label, size=11, weight=ft.FontWeight.W_600 if selected else ft.FontWeight.W_500, color=color),
+                    ft.Text(
+                        label,
+                        size=11,
+                        weight=ft.FontWeight.W_600 if selected else ft.FontWeight.W_500,
+                        color=color,
+                    ),
                 ],
                 alignment=ft.MainAxisAlignment.CENTER,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=1,
             ),
+            width=68,
             height=54,
-            expand=1,
             border_radius=999,
-            bgcolor=ft.Colors.PRIMARY if selected else ft.Colors.TRANSPARENT,
+            bgcolor=ft.Colors.TRANSPARENT,
             ink=True,
             on_click=lambda e: render_label(target),
+            on_long_press=show_provider_selector if label == "设置" else None,
         )
         bottom_nav_segments[label] = segment
         return segment
 
+    bottom_nav_indicator = ft.Container(
+        width=68,
+        height=54,
+        left=0,
+        top=0,
+        bgcolor=ft.Colors.PRIMARY,
+        border_radius=999,
+        animate_position=ft.Animation(220, ft.AnimationCurve.EASE_OUT_CUBIC),
+        ignore_interactions=True,
+    )
+    bottom_nav_indicator_ref["value"] = bottom_nav_indicator
     bottom_nav = ft.Container(
-        content=ft.Row(
+        content=ft.Stack(
             [
-                bottom_nav_segment("阅读", ft.Icons.PUBLIC, "主页"),
-                bottom_nav_segment("本地", ft.Icons.FOLDER, "本地画廊"),
-                bottom_nav_segment("设置", ft.Icons.SETTINGS, "设置"),
+                bottom_nav_indicator,
+                ft.Row(
+                    [
+                        bottom_nav_segment("阅读", ft.Icons.PUBLIC, "主页"),
+                        bottom_nav_segment("本地", ft.Icons.FOLDER, "本地画廊"),
+                        bottom_nav_segment("下载", ft.Icons.DOWNLOAD, "下载"),
+                        bottom_nav_segment("设置", ft.Icons.SETTINGS, "设置"),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=3,
+                    tight=True,
+                ),
             ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            spacing=3,
+            width=281,
+            height=54,
         ),
-        width=360,
         padding=ft.Padding(4, 5, 4, 5),
-        bgcolor=ft.Colors.with_opacity(0.78, ft.Colors.SURFACE_CONTAINER_HIGH),
+        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
         border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
         border_radius=999,
+        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
         shadow=ft.BoxShadow(
             blur_radius=18,
             spread_radius=0,
@@ -796,6 +907,8 @@ def main(page: ft.Page):
         if selected_index == 1:
             render_label("本地画廊")
         elif selected_index == 2:
+            render_label("下载")
+        elif selected_index == 3:
             render_label("设置")
         else:
             render_label("主页")
@@ -904,6 +1017,13 @@ def main(page: ft.Page):
         ],
         expand=True,
     )
+    downloads_section = ft.Stack(
+        controls=[
+            ft.Container(content=downloads_view(page), expand=True, padding=ft.Padding(8, 50, 8, 86)),
+            section_top_bar("下载"),
+        ],
+        expand=True,
+    )
     settings_section = ft.Stack(
         controls=[
             ft.Container(content=settings_view(page), expand=True, padding=ft.Padding(8, 0, 8, 0)),
@@ -913,10 +1033,10 @@ def main(page: ft.Page):
     )
     root_tabs = ft.Tabs(
         content=ft.TabBarView(
-            controls=[reading_section, local_section, settings_section],
+            controls=[reading_section, local_section, downloads_section, settings_section],
             expand=True,
         ),
-        length=3,
+        length=4,
         selected_index=0,
         animation_duration=180,
         on_change=on_root_tabs_change,
@@ -962,7 +1082,7 @@ def main(page: ft.Page):
         root = ft.SafeArea(content=root, expand=True)
 
     page.views.clear()
-    root_view_ref["value"] = ft.View(route="/", controls=[root], padding=0, end_drawer=root_right_drawer)
+    root_view_ref["value"] = ft.View(route="/", controls=[root], padding=0)
     page.views.append(root_view_ref["value"])
     page.update()
     render(0)

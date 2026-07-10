@@ -93,6 +93,22 @@ def create_view(page: ft.Page) -> ft.Control:
         label="使用JSON而非解析画廊",
         value=not bool(app_cfg.get("render_gallery_cards", True)),
     )
+    debug_cover_dimensions_switch = ft.Switch(
+        label="在封面左上角显示尺寸",
+        value=bool(app_cfg.get("debug_show_cover_dimensions", False)),
+    )
+    debug_force_favorite_switch = ft.Switch(
+        label="始终显示已收藏",
+        value=bool(app_cfg.get("debug_force_gallery_favorite", False)),
+    )
+    debug_force_downloaded_switch = ft.Switch(
+        label="始终显示已下载",
+        value=bool(app_cfg.get("debug_force_gallery_downloaded", False)),
+    )
+    debug_force_update_switch = ft.Switch(
+        label="始终显示可更新",
+        value=bool(app_cfg.get("debug_force_gallery_update", False)),
+    )
     theme_mode_segments = ft.SegmentedButton(
         segments=[
             ft.Segment(value="system", label="跟随系统", icon=ft.Icons.BRIGHTNESS_AUTO),
@@ -183,6 +199,10 @@ def create_view(page: ft.Page) -> ft.Control:
             "gallery_view_mode": (gallery_view_mode_segments.selected or ["waterfall"])[0],
             "show_gallery_page_count": show_gallery_page_count_switch.value,
             "show_gallery_info": show_gallery_info_switch.value,
+            "debug_show_cover_dimensions": debug_cover_dimensions_switch.value,
+            "debug_force_gallery_favorite": debug_force_favorite_switch.value,
+            "debug_force_gallery_downloaded": debug_force_downloaded_switch.value,
+            "debug_force_gallery_update": debug_force_update_switch.value,
             "linux_builtin_title_bar": linux_title_bar_switch.value,
             "linux_prefer_wayland_window_backend": linux_wayland_backend_switch.value,
         }
@@ -323,6 +343,18 @@ def create_view(page: ft.Page) -> ft.Control:
         message="调试显示设置已更新",
         invalidate_gallery=True,
     )
+    for debug_switch in (
+        debug_cover_dimensions_switch,
+        debug_force_favorite_switch,
+        debug_force_downloaded_switch,
+        debug_force_update_switch,
+    ):
+        debug_switch.on_change = lambda e: apply_app_settings(
+            reason="gallery_cover_debug_setting_changed",
+            target=debug_status,
+            message="画廊封面调试设置已更新",
+            invalidate_gallery=True,
+        )
 
     def apply_login_mode(reason: str) -> None:
         save_app_config(current_app_config())
@@ -490,6 +522,16 @@ def create_view(page: ft.Page) -> ft.Control:
                 load_images_switch,
                 show_error_toasts_switch,
                 render_cards_switch,
+                ft.Text("封面调试覆盖", size=16, weight=ft.FontWeight.W_500),
+                ft.Text(
+                    "这些开关仅用于检查封面尺寸和状态标签布局，默认全部关闭。",
+                    size=14,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                debug_cover_dimensions_switch,
+                debug_force_favorite_switch,
+                debug_force_downloaded_switch,
+                debug_force_update_switch,
                 debug_status,
                 ft.Divider(),
                 ft.Text("画廊类型颜色", size=16, weight=ft.FontWeight.W_500),

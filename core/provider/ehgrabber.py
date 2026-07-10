@@ -33,6 +33,7 @@ EH_API_EX = "https://exhentai.org/api.php"
 
 EH_DOMAIN_EH = "e-hentai.org"
 EH_DOMAIN_EX = "exhentai.org"
+EH_MAX_GALLERY_PAGES = 2000
 
 # CSS background-position → star rating
 STAR_POSITION_MAP: dict[str, float] = {
@@ -47,6 +48,15 @@ STAR_POSITION_MAP: dict[str, float] = {
     "background-position:-64px -1px":  1.0,
     "background-position:-64px -21px": 0.5,
 }
+
+
+def parse_gallery_page_count(text: str | None) -> int:
+    """解析 EH 的“874 pages”字段，并拒绝超过协议上限的异常值。"""
+    match = re.search(r"(?<!\d)(\d{1,4})\s*pages?\b", text or "", flags=re.IGNORECASE)
+    if not match:
+        return 0
+    page_count = int(match.group(1))
+    return page_count if 1 <= page_count <= EH_MAX_GALLERY_PAGES else 0
 
 # ---------------------------------------------------------------------------
 # 数据模型
@@ -67,6 +77,13 @@ class Comic:
     language: Optional[str] = None
     type: str = ""
     uploader: str = ""
+    cover_width: int = 0
+    cover_height: int = 0
+    cover_aspect_ratio: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.cover_aspect_ratio and self.cover_width > 0 and self.cover_height > 0:
+            self.cover_aspect_ratio = self.cover_width / self.cover_height
 
 
 @dataclass
@@ -421,6 +438,8 @@ class EHentaiClient:
 
                     # 封面、时间、星级、页数 — 在 td.gl2c 内的 div.glthumb
                     cover = ""
+                    cover_width = 0
+                    cover_height = 0
                     time_str = ""
                     stars = 0.5
                     td_gl2c = row.select_one("td.gl2c")
@@ -430,9 +449,7 @@ class EHentaiClient:
                             # 封面 — lazy load 时 src 是 data: 占位符，真实 URL 在 data-src
                             img = glthumb.select_one("div > img")
                             if img:
-                                cover = img.get("data-src") or ""
-                                if not cover or cover.startswith("data:"):
-                                    cover = img.get("src", "")
+                                cover, cover_width, cover_height = self._parse_gallery_cover(img)
                             # info 容器: glthumb > div[1] > [div(类型+时间), div(星级+页数)]
                             info_groups = glthumb.select("div > div")
                             for group in info_groups:
@@ -453,10 +470,7 @@ class EHentaiClient:
                         first_a = td_gl4c.select_one("a")
                         if first_a:
                             uploader = first_a.get_text(strip=True)
-                        pages_text = td_gl4c.get_text()
-                        m = re.search(r"(\d+)\s*pages?", pages_text)
-                        if m:
-                            pages = int(m.group(1))
+                        pages = parse_gallery_page_count(td_gl4c.get_text(" ", strip=True))
 
                     galleries.append(Comic(
                         id=link,
@@ -469,6 +483,8 @@ class EHentaiClient:
                         max_page=pages,
                         language=language,
                         type=item_type,
+                        cover_width=cover_width,
+                        cover_height=cover_height,
                     ))
                 except Exception:
                     continue
@@ -492,24 +508,22 @@ class EHentaiClient:
                     gl5t = item.select_one("div.gl5t")
                     if gl5t:
                         for el in gl5t.select("div"):
-                            txt = el.get_text(strip=True)
+                            txt = el.get_text(" ", strip=True)
                             cls = el.get("class", [])
                             if cls in [["cs"], ["cs", "ct2"], ["cn"], ["cn", "ct2"]]:
                                 continue
                             if "page" in txt.lower():
-                                m = re.search(r"\d+", txt)
-                                if m:
-                                    pages = int(m.group())
+                                pages = parse_gallery_page_count(txt) or pages
                             elif re.match(r"\d{4}-\d{2}-\d{2}", txt):
                                 time_str = txt
 
                     # 封面在 div.gl3t 内
                     img = item.select_one("div.gl3t img, img")
                     cover = ""
+                    cover_width = 0
+                    cover_height = 0
                     if img:
-                        cover = img.get("data-src") or ""
-                        if not cover or cover.startswith("data:"):
-                            cover = img.get("src", "")
+                        cover, cover_width, cover_height = self._parse_gallery_cover(img)
 
                     star_elem = item.select_one("div.ir")
                     stars = self._get_stars_from_position(star_elem.get("style", "") if star_elem else "")
@@ -535,6 +549,8 @@ class EHentaiClient:
                         max_page=pages,
                         language=language,
                         type=item_type,
+                        cover_width=cover_width,
+                        cover_height=cover_height,
                     ))
                 except Exception:
                     continue
@@ -557,11 +573,9 @@ class EHentaiClient:
 
                         time_str = pages = 0
                         for el in row.select("div.gl3e > div"):
-                            txt = el.get_text(strip=True)
+                            txt = el.get_text(" ", strip=True)
                             if "page" in txt.lower():
-                                m = re.search(r"\d+", txt)
-                                if m:
-                                    pages = int(m.group())
+                                pages = parse_gallery_page_count(txt) or pages
                             elif ":" in txt or "-" in txt:
                                 time_str = txt
 
@@ -569,7 +583,7 @@ class EHentaiClient:
                         uploader = uploader_elem.get_text(strip=True) if uploader_elem else ""
 
                         img = row.select_one("td.gl1e img")
-                        cover = img.get("src", "") if img else ""
+                        cover, cover_width, cover_height = self._parse_gallery_cover(img) if img else ("", 0, 0)
 
                         star_elem = row.select_one("div.ir")
                         stars = self._get_stars_from_position(star_elem.get("style", "") if star_elem else "")
@@ -596,6 +610,8 @@ class EHentaiClient:
                             max_page=pages,
                             language=language,
                             type=item_type,
+                            cover_width=cover_width,
+                            cover_height=cover_height,
                         ))
                     except Exception:
                         continue
@@ -628,8 +644,10 @@ class EHentaiClient:
 
                         img = row.select_one("td.gl2m img")
                         cover = ""
+                        cover_width = 0
+                        cover_height = 0
                         if img:
-                            cover = img.get("src") or img.get("data-src", "")
+                            cover, cover_width, cover_height = self._parse_gallery_cover(img)
 
                         star_elem = row.select_one("div.ir")
                         stars = self._get_stars_from_position(star_elem.get("style", "") if star_elem else "")
@@ -642,6 +660,8 @@ class EHentaiClient:
                             description=time_str,
                             stars=stars,
                             type=item_type,
+                            cover_width=cover_width,
+                            cover_height=cover_height,
                         ))
                     except Exception:
                         continue
@@ -694,11 +714,10 @@ class EHentaiClient:
         # --- 页数 ---
         max_page = 1
         for el in soup.select("td.gdt2"):
-            if "page" in el.get_text(strip=True).lower():
-                m = re.search(r"\d+", el.get_text(strip=True))
-                if m:
-                    max_page = int(m.group())
-                    break
+            parsed_page_count = parse_gallery_page_count(el.get_text(" ", strip=True))
+            if parsed_page_count:
+                max_page = parsed_page_count
+                break
 
         # --- 收藏状态 ---
         fav_link = soup.select_one("a#favoritelink")
@@ -1019,6 +1038,21 @@ class EHentaiClient:
         width = int(width_m.group(1)) if width_m else 0
         height = int(height_m.group(1)) if height_m else 0
         return width, height
+
+    @classmethod
+    def _parse_gallery_cover(cls, element: Any) -> tuple[str, int, int]:
+        """从画廊列表 img 节点解析封面 URL 和 EH 提供的显示尺寸。"""
+        if element is None:
+            return "", 0, 0
+        src = element.get("data-src") or ""
+        if not src or src.startswith("data:"):
+            src = element.get("src", "")
+        width = cls._parse_int(element.get("width"))
+        height = cls._parse_int(element.get("height"))
+        style_width, style_height = cls._parse_size_from_style(element.get("style", ""))
+        width = width or style_width
+        height = height or style_height
+        return src, width, height
 
     @classmethod
     def _parse_direct_thumbnail(cls, element: Any) -> Optional[ParsedThumbnail]:
