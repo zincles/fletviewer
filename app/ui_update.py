@@ -1,14 +1,13 @@
 import flet as ft
 
+from app.debug_log import log_exception
 
-def request_update(page: ft.Page) -> None:
+
+def request_update(page: ft.Page) -> bool:
     """在事件 handler 之外修改 Flet 控件后，强制把 diff 推送到前端。"""
     try:
         page.update()
-    except Exception:
-        try:
-            schedule_update = getattr(page, "schedule_update", None)
-            if callable(schedule_update):
-                schedule_update()
-        except Exception:
-            pass
+        return True
+    except Exception as ex:
+        log_exception("ui_update", f"page.update failed: {ex}")
+        return False

@@ -1,20 +1,21 @@
 import logging
 import os
-from pathlib import Path
 import sys
 import time
 import traceback
+
+from app.storage import ROOT_DIR
 
 
 _QUIET_AREAS = {"image"}
 _CACHE_KEYWORDS = ("cache", "缓存", "gallery_cache", "命中", "cache read", "cache write")
 _WEB_KEYWORDS = ("GET", "POST", "HEAD", "抓取", "请求", "浏览器会话", "EH解析", "network fetched")
-DEBUG_LOG_PATH = Path("debug_log.md")
+DEBUG_LOG_PATH = ROOT_DIR / "debug_log.md"
 _LOGGER = logging.getLogger("fletviewer")
 
 
 def _setup_logger() -> None:
-    """配置标准库 logging：终端和 debug_log.md 双写。"""
+    """配置标准库 logging：终端和数据根目录日志文件双写。"""
     _LOGGER.setLevel(logging.DEBUG)
     _LOGGER.handlers.clear()
     _LOGGER.propagate = False
@@ -26,6 +27,7 @@ def _setup_logger() -> None:
     _LOGGER.addHandler(console_handler)
 
     try:
+        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(DEBUG_LOG_PATH, mode="w", encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)

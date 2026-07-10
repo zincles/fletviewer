@@ -1,5 +1,4 @@
 import base64
-import threading
 import time
 
 import flet as ft
@@ -8,17 +7,6 @@ from app.debug_log import log_debug, log_exception, log_image_served
 from app.image_fetcher import image_fetcher
 from app.storage import should_load_images
 from app.ui_update import request_update
-
-
-def _start_background_task(page: ft.Page, target, name: str) -> None:
-    """优先走 page.run_thread；不可用时退回普通守护线程。"""
-    connection = getattr(getattr(page, "session", None), "connection", None)
-    loop = getattr(connection, "loop", None)
-    if loop is not None:
-        page.run_thread(target)
-        return
-    log_debug("async_image", f"fallback thread {name}")
-    threading.Thread(target=target, name=f"async_image_{name}", daemon=True).start()
 
 
 def image_src_for_page(page: ft.Page, data: bytes, mime: str) -> bytes | str:
@@ -41,13 +29,95 @@ def image_placeholder(width=None, height=None, *, loading: bool = False) -> ft.C
     )
 
 
-def _format_bytes(value: int) -> str:
-    size = float(value or 0)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
-        size /= 1024
-    return f"{int(value)} B"
+class _AsyncImage(ft.Container):
+    """挂载后才启动加载，卸载后丢弃后台结果。"""
+
+    def __init__(
+        self,
+        page: ft.Page,
+        url: str,
+        *,
+        width: float | int | None,
+        height: float | int | None,
+        expand: bool | int | None,
+        fit: ft.BoxFit,
+        cache_width: int | None,
+        cache_height: int | None,
+    ) -> None:
+        super().__init__(
+            content=image_placeholder(width, height, loading=True),
+            width=width,
+            height=height,
+            expand=expand,
+        )
+        self._page = page
+        self._url = url
+        self._fit = fit
+        self._cache_width = cache_width
+        self._cache_height = cache_height
+        self._mounted = False
+        self._loading = False
+        self._loaded = False
+        self._load_token = 0
+        self._content_generation = getattr(page, "fletviewer_content_generation", None)
+
+    def did_mount(self) -> None:
+        self._mounted = True
+        self._content_generation = getattr(self._page, "fletviewer_content_generation", None)
+        if self._loaded or self._loading:
+            return
+        self._loading = True
+        token = self._load_token
+        try:
+            self._page.run_thread(lambda: self._load(token))
+        except Exception as ex:
+            self._loading = False
+            log_exception("async_image", f"start failed url={self._url}: {ex}")
+
+    def will_unmount(self) -> None:
+        self._mounted = False
+        self._loading = False
+        self._load_token += 1
+
+    def _is_active(self, token: int) -> bool:
+        current_generation = getattr(self._page, "fletviewer_content_generation", None)
+        generation_matches = self._content_generation is None or current_generation == self._content_generation
+        return self._mounted and token == self._load_token and generation_matches
+
+    def _load(self, token: int) -> None:
+        started_at = time.perf_counter()
+        try:
+            if not self._is_active(token):
+                return
+            result = image_fetcher.fetch(self._url)
+            if not self._is_active(token):
+                return
+            self.content = ft.Image(
+                src=image_src_for_page(self._page, result.data, result.mime),
+                width=self.width,
+                height=self.height,
+                expand=self.expand,
+                fit=self._fit,
+                cache_width=self._cache_width,
+                cache_height=self._cache_height,
+                error_content=image_placeholder(),
+            )
+            self._loaded = True
+            source = "缓存命中💾" if result.from_cache else "网络抓取🌐"
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+            log_image_served(source, elapsed_ms, self._url, len(result.data))
+        except Exception as ex:
+            if not self._is_active(token):
+                return
+            self.content = ft.Container(
+                bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                alignment=ft.Alignment(0, 0),
+                content=ft.Icon(ft.Icons.BROKEN_IMAGE_OUTLINED, color=ft.Colors.ON_SURFACE_VARIANT),
+            )
+            log_exception("async_image", f"load failed url={self._url}: {ex}")
+        self._loading = False
+        if self._is_active(token):
+            request_update(self._page)
 
 
 def async_image(
@@ -65,101 +135,16 @@ def async_image(
     if not should_load_images():
         log_debug("async_image", f"disabled url={url}")
         return image_placeholder(width, height)
-
-    progress_bar = ft.ProgressBar(width=140, value=None)
-    progress_text = ft.Text("等待中...", size=11, color=ft.Colors.ON_SURFACE_VARIANT, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
-    loading_content = ft.Container(
+    if not url:
+        log_debug("async_image", "empty url")
+        return image_placeholder(width, height)
+    return _AsyncImage(
+        page,
+        url,
         width=width,
         height=height,
         expand=expand,
-        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-        alignment=ft.Alignment(0, 0),
-        content=ft.Column(
-            [
-                ft.ProgressRing(width=24, height=24),
-                progress_bar,
-                progress_text,
-            ],
-            spacing=8,
-            tight=True,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
+        fit=fit,
+        cache_width=cache_width,
+        cache_height=cache_height,
     )
-    box = ft.Container(content=loading_content, width=width, height=height, expand=expand)
-
-    if not url:
-        log_debug("async_image", "empty url")
-        return box
-    created_generation = getattr(page, "fletviewer_content_generation", None)
-    progress_state = {"done": False, "started_at": time.perf_counter()}
-
-    def is_stale() -> bool:
-        current_generation = getattr(page, "fletviewer_content_generation", None)
-        return created_generation is not None and current_generation != created_generation
-
-    def worker():
-        started_at = time.perf_counter()
-        try:
-            if is_stale():
-                return
-            result = image_fetcher.fetch(url)
-            if is_stale():
-                return
-            box.content = ft.Image(
-                src=image_src_for_page(page, result.data, result.mime),
-                width=width,
-                height=height,
-                expand=expand,
-                fit=fit,
-                cache_width=cache_width,
-                cache_height=cache_height,
-                error_content=ft.Container(
-                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-                    alignment=ft.Alignment(0, 0),
-                    content=ft.Icon(ft.Icons.BROKEN_IMAGE_OUTLINED, color=ft.Colors.ON_SURFACE_VARIANT),
-                ),
-            )
-            source = "缓存命中💾" if result.from_cache else "网络抓取🌐"
-            elapsed_ms = (time.perf_counter() - started_at) * 1000
-            log_image_served(source, elapsed_ms, url, len(result.data))
-        except Exception as ex:
-            if is_stale():
-                return
-            log_exception("async_image", f"load failed url={url}: {ex}")
-        finally:
-            progress_state["done"] = True
-            if not is_stale():
-                request_update(page)
-
-    def progress_worker():
-        while not progress_state["done"] and not is_stale():
-            try:
-                snapshot = image_fetcher.snapshot()
-                task = next((item for item in [*snapshot.active, *snapshot.queued] if item.url == url), None)
-                if task is not None:
-                    if task.status == "queued":
-                        progress_text.value = "排队中..."
-                        progress_bar.value = 0
-                    elif task.bytes_total:
-                        progress_bar.value = max(0, min(1, task.bytes_done / task.bytes_total))
-                        progress_text.value = f"{_format_bytes(task.bytes_done)} / {_format_bytes(task.bytes_total)}"
-                    elif task.bytes_done:
-                        elapsed = max(0.0, time.perf_counter() - progress_state["started_at"])
-                        progress_bar.value = min(0.92, 0.18 + elapsed * 0.08)
-                        progress_text.value = _format_bytes(task.bytes_done)
-                    else:
-                        progress_text.value = "连接中..."
-                        elapsed = max(0.0, time.perf_counter() - progress_state["started_at"])
-                        progress_bar.value = min(0.82, 0.08 + elapsed * 0.06)
-                else:
-                    elapsed = max(0.0, time.perf_counter() - progress_state["started_at"])
-                    progress_text.value = "等待线程..."
-                    progress_bar.value = min(0.35, elapsed * 0.08)
-                request_update(page)
-            except Exception as ex:
-                log_exception("async_image", f"progress update failed url={url}: {ex}")
-            time.sleep(0.2)
-
-    _start_background_task(page, progress_worker, "progress")
-    _start_background_task(page, worker, "fetch")
-    return box
