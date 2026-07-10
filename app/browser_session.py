@@ -1,6 +1,6 @@
 from app.debug_log import Timer, log_debug
 from app.storage import load_app_config, load_eh_config
-from lib.net.browser_session import BrowserSessionService, DEFAULT_UA, EH_DOMAIN_EH, is_image_request_url
+from core.net.browser_session import BrowserSessionService, DEFAULT_UA, EH_DOMAIN_EH, is_image_request_url
 
 
 browser_session = BrowserSessionService(

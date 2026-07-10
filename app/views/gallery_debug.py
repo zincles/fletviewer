@@ -9,7 +9,7 @@ from app.debug_log import Timer, log_debug, log_exception
 from app.storage import load_eh_config
 from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
-from lib.provider.ehgrabber import EHentaiClient, SearchResult
+from core.provider.ehgrabber import EHentaiClient, SearchResult
 
 
 def _comic_to_dict(comic):

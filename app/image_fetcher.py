@@ -1,7 +1,7 @@
 from app import image_cache
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
-from lib.image.fetcher import ImageFetcherService, ImageFetchResult, ImageFetchSnapshot, ImageFetchTaskState
+from core.image.fetcher import ImageFetcherService, ImageFetchResult, ImageFetchSnapshot, ImageFetchTaskState
 
 
 def _get_image_response(url: str, headers: dict[str, str], timeout: int):

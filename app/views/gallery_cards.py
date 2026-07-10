@@ -9,7 +9,7 @@ from app.grid_layout import runs_count_for_width
 from app.storage import load_eh_config
 from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
-from lib.provider.ehgrabber import EHentaiClient, Comic, SearchResult
+from core.provider.ehgrabber import EHentaiClient, Comic, SearchResult
 
 
 def make_gallery_card(page: ft.Page, comic: Comic) -> ft.Control:

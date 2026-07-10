@@ -2,8 +2,8 @@ from datetime import timedelta
 
 from app.debug_log import log_debug, log_exception
 from app.storage import CACHE_DB_PATH, ensure_dirs
-from lib.cache.gallery_cache import EHGalleryCache, GalleryCacheEntry
-from lib.provider.ehgrabber import ComicDetails, ThumbnailsResult
+from core.cache.gallery_cache import EHGalleryCache, GalleryCacheEntry
+from core.provider.ehgrabber import ComicDetails, ThumbnailsResult
 
 
 GALLERY_CACHE_TTL = timedelta(days=1)

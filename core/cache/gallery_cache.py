@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
-from lib.provider.ehgrabber import Comment, ComicDetails, EHentaiClient, GalleryVersion, ThumbnailItem, ThumbnailsResult
+from core.provider.ehgrabber import Comment, ComicDetails, EHentaiClient, GalleryVersion, ThumbnailItem, ThumbnailsResult
 
 
 GALLERY_CACHE_SCHEMA_VERSION = 2

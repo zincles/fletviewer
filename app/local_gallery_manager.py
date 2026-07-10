@@ -1,8 +1,8 @@
 from app.debug_log import log_exception
 from app.download_manager import download_manager
 from app.storage import DATA_DB_PATH, EH_ARCHIVE_DIR, ensure_download_dirs
-from lib.data.data_db import AppDataDB
-from lib.download.local_gallery import LocalGallery, LocalGalleryManager
+from core.data.data_db import AppDataDB
+from core.download.local_gallery import LocalGallery, LocalGalleryManager
 
 
 local_gallery_manager = LocalGalleryManager(

@@ -6,7 +6,7 @@ from app.storage import (
     ROOT_DIR,
     IMAGE_CACHE_LEGACY_INDEX_PATH,
 )
-from lib.cache.image_cache_db import ImageCacheDB
+from core.cache.image_cache_db import ImageCacheDB
 
 
 image_cache_db = ImageCacheDB(

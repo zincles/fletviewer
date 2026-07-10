@@ -13,7 +13,7 @@ from app.grid_layout import runs_count_for_width
 from app.storage import should_render_gallery_cards
 from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
-from lib.provider.ehgrabber import Comic, Comment, ThumbnailItem
+from core.provider.ehgrabber import Comic, Comment, ThumbnailItem
 from app.views.image_viewer import ImageViewerItem
 
 

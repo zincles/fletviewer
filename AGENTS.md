@@ -13,6 +13,14 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - TODO 文档只保留“决策、约束、下一步”；长期规则写进 `AGENTS.md`，实验流水账写进 `tmp/` 或 commit message。
 - 不要随意重构。优先小改、可验证、低风险；不要为了“统一”抹掉 provider 差异。
 
+## 架构边界
+
+- `core/` 是与 UI 框架无关的业务核心；Provider、网络协议、缓存、数据库、下载、图片获取等能力优先放入 `core/`。
+- `app/` 是 Flet 前端和应用装配层；负责页面、控件、主题、导航、展示状态，以及把配置、路径、日志和平台能力注入 `core/` 服务。
+- 依赖方向固定为 `app -> core`；`core/` 不得 import `app`、`flet` 或其他具体前端，也不得通过 fallback import 绕过该边界。
+- `core/` 的公开输入输出使用普通 Python 类型、dataclass、枚举、dict、bytes 和 Path；不得返回或持有 Flet 控件。
+- 平台相关能力由 `core/` 定义小接口/回调并由 `app/` 注入；不要让核心业务直接调用 Toast、Dialog、页面导航或 UI 更新。
+
 ## Shell / 环境
 
 - Windows 默认 `bash` 会被 WSL2 劫持且当前 WSL 不可用；需要类 Unix shell 时用 `sh -c "..."`。

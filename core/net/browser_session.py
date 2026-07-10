@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from lib.provider.ehgrabber import EH_DOMAIN_EH, EHentaiClient
+from core.provider.ehgrabber import EH_DOMAIN_EH, EHentaiClient
 
 
 DEFAULT_UA = (
@@ -149,7 +149,7 @@ class BrowserSessionService:
         else:
             self.configure_from_storage()
         self._debug(f"创建 EH 客户端 require_login={require_login} 登录开关={self.login_enabled()} has_cookie={self.has_eh_cookie()}")
-        return EHentaiClient(domain=domain, session=self.session)
+        return EHentaiClient(domain=domain, session=self.session, log_debug=self._log_debug)
 
     def get_session(self) -> requests.Session:
         self.configure_from_storage()

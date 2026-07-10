@@ -15,8 +15,8 @@ except ModuleNotFoundError:
         invalid = '<>:"/\\|?*\0'
         return "".join("_" if ch in invalid or ord(ch) < 32 else ch for ch in value)
 
-from lib.data.data_db import AppDataDB
-from lib.download.manager import DownloadManager, DownloadTask, now_iso
+from core.data.data_db import AppDataDB
+from core.download.manager import DownloadManager, DownloadTask, now_iso
 
 
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
