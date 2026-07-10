@@ -197,12 +197,27 @@ def main(page: ft.Page):
             target_index = [PAGES[idx][0] for idx in READING_PAGE_INDEXES].index(label)
         except ValueError:
             return
-        for idx, holder in enumerate(reading_tab_pages):
-            holder.content = content if idx == target_index else None
         if tabs.selected_index != target_index:
             reading_tabs_syncing["value"] = True
             tabs.selected_index = target_index
             reading_tabs_syncing["value"] = False
+
+    def set_reading_tab_content(label: str, control: ft.Control) -> None:
+        """让阅读 Tab 持续持有自己的控件树，切换时不卸载和重绘。"""
+        try:
+            target_index = [PAGES[idx][0] for idx in READING_PAGE_INDEXES].index(label)
+        except ValueError:
+            return
+        holder = reading_tab_pages[target_index]
+        if holder.content is not control:
+            holder.content = control
+
+    def show_shared_reading_content() -> None:
+        """搜索等独立入口临时复用当前阅读 Tab 的内容宿主。"""
+        tabs = reading_tabs_ref.get("value")
+        selected_index = int(getattr(tabs, "selected_index", 0) or 0)
+        if 0 <= selected_index < len(reading_tab_pages):
+            reading_tab_pages[selected_index].content = content
 
     def set_header(title: str, subtitle: str = "") -> None:
         return
@@ -439,6 +454,14 @@ def main(page: ft.Page):
             if key in view_cache:
                 view_cache.pop(key, None)
                 log_debug("nav", f"invalidate {key} reason={reason}")
+            if key.startswith("page:"):
+                try:
+                    page_index = int(key.split(":", 1)[1])
+                    reading_index = READING_PAGE_INDEXES.index(page_index)
+                except (ValueError, IndexError):
+                    continue
+                if reading_index < len(reading_tab_pages):
+                    reading_tab_pages[reading_index].content = None
 
     page.fletviewer_invalidate_views = invalidate_views
 
@@ -446,12 +469,25 @@ def main(page: ft.Page):
         log_debug("nav", f"open gallery detail {comic.id}")
         detail_container = animated_scale_container(ft.Container(expand=True))
         route = f"/gallery/{len(page.views)}"
+        detail_actions: dict[str, object] = {}
 
         def go_back():
             log_debug("nav", f"close gallery detail {comic.id}")
             pop_top_view()
 
-        detail_container.content = gallery_detail_view(page, comic, go_back)
+        def register_refresh(action):
+            detail_actions["refresh"] = action
+
+        def refresh_detail(e=None):
+            action = detail_actions.get("refresh")
+            if callable(action):
+                action()
+
+        # TODO: 使用平台 URL launcher，在其他应用中打开 comic.id。
+        def open_gallery_externally(e=None):
+            return
+
+        detail_container.content = gallery_detail_view(page, comic, go_back, register_refresh=register_refresh)
         push_app_view(
             ft.View(
                 route=route,
@@ -461,6 +497,16 @@ def main(page: ft.Page):
                     title=ft.Text(""),
                     leading=ft.IconButton(ft.Icons.ARROW_BACK, tooltip="返回", on_click=lambda e: go_back()),
                     automatically_imply_leading=False,
+                    actions=[
+                        ft.PopupMenuButton(
+                            icon=ft.Icons.MORE_VERT,
+                            tooltip="更多",
+                            items=[
+                                ft.PopupMenuItem(content="刷新", icon=ft.Icons.REFRESH, on_click=refresh_detail),
+                                ft.PopupMenuItem(content="在其他应用中打开", icon=ft.Icons.OPEN_IN_NEW, on_click=open_gallery_externally),
+                            ],
+                        )
+                    ],
                 ),
             )
         )
@@ -493,6 +539,7 @@ def main(page: ft.Page):
 
     def render_search(keyword: str | None = None):
         detach_content_for_navigation()
+        show_shared_reading_content()
         active_cache_key["value"] = "search"
         started_at = time.perf_counter()
         set_header("搜索", "E-Hentai 画廊搜索")
@@ -529,7 +576,6 @@ def main(page: ft.Page):
             activate_root_section("设置")
             log_debug("nav", f"切换主分区 设置 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
             return
-        detach_content_for_navigation()
         set_header(label, subtitle)
         set_bottom_nav(bottom_nav_for_page.get(label, "阅读"))
         if label in READING_PAGE_LABELS:
@@ -538,6 +584,18 @@ def main(page: ft.Page):
         cache_key = f"page:{idx}"
         active_cache_key["value"] = cache_key
         set_header_actions(header_action_cache.get(cache_key, []))
+        if label in READING_PAGE_LABELS:
+            if cache_key not in view_cache:
+                log_debug("nav", f"create persistent reading view {label}")
+                view_cache[cache_key] = view_fn(page) if view_fn is not None else ft.Container(expand=True)
+            else:
+                log_debug("nav", f"reuse persistent reading view {label}")
+            set_reading_tab_content(label, view_cache[cache_key])
+            page.update()
+            log_debug("nav", f"切换阅读视图 {label} 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)} cache_key={cache_key}")
+            return
+        detach_content_for_navigation()
+        show_shared_reading_content()
         if view_fn is None:
             if cache_key not in view_cache:
                 log_debug("nav", f"create placeholder {label}")
@@ -750,8 +808,7 @@ def main(page: ft.Page):
             return
         render(READING_PAGE_INDEXES[selected_index])
 
-    reading_tab_pages[:] = [ft.Container(expand=True) for _idx in READING_PAGE_INDEXES]
-    reading_tab_pages[0].content = content
+    reading_tab_pages[:] = [ft.Container(expand=True, padding=ft.Padding(0, 8, 0, 0)) for _idx in READING_PAGE_INDEXES]
 
     reading_tab_bar = ft.TabBar(
         tabs=[ft.Tab(label=PAGES[idx][0]) for idx in READING_PAGE_INDEXES],

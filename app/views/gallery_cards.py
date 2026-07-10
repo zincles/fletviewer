@@ -1,3 +1,4 @@
+import math
 from typing import Callable
 
 import flet as ft
@@ -5,84 +6,169 @@ import flet as ft
 from app.controls.async_image import async_image
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
+from app.gallery_type_colors import gallery_type_color, gallery_type_foreground
 from app.grid_layout import runs_count_for_width
-from app.storage import load_eh_config
+from app.storage import get_gallery_view_mode, load_eh_config, should_show_gallery_info, should_show_gallery_page_count
 from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
 from core.provider.ehgrabber import EHentaiClient, Comic, SearchResult
 
 
-def make_gallery_card(page: ft.Page, comic: Comic) -> ft.Control:
-    """创建在线画廊卡片，包含封面、标题、页数徽章和基础信息。"""
-    card = ft.Card(
-        content=ft.Container(
-            content=ft.Stack(
-                controls=[
-                    async_image(
-                        page,
-                        comic.cover,
-                        fit=ft.BoxFit.COVER,
-                        width=float("inf"),
-                        height=float("inf"),
-                        cache_width=360,
-                        cache_height=360,
+LANGUAGE_CODES = {
+    "chinese": "ZH",
+    "english": "EN",
+    "japanese": "JA",
+    "korean": "KO",
+    "spanish": "ES",
+    "french": "FR",
+    "german": "DE",
+    "italian": "IT",
+    "portuguese": "PT",
+    "russian": "RU",
+    "thai": "TH",
+    "vietnamese": "VI",
+}
+
+
+def _language_code(language: str | None) -> str:
+    """把 provider 语言名转换为卡片角标使用的两字母代码。"""
+    normalized = (language or "").strip().lower()
+    if not normalized:
+        return "--"
+    return LANGUAGE_CODES.get(normalized, normalized[:2].upper())
+
+
+def _gallery_cover(page: ft.Page, comic: Comic) -> ft.Control:
+    """创建纯封面和语言角标。"""
+    return ft.Container(
+        content=ft.Stack(
+            controls=[
+                async_image(
+                    page,
+                    comic.cover,
+                    fit=ft.BoxFit.COVER,
+                    width=float("inf"),
+                    height=float("inf"),
+                    cache_width=360,
+                    cache_height=360,
+                ),
+                ft.Container(
+                    width=40,
+                    height=40,
+                    top=-20,
+                    right=-20,
+                    rotate=ft.Rotate(angle=math.pi / 4),
+                    bgcolor=gallery_type_color(comic.type),
+                ),
+                ft.Container(
+                    content=ft.Text(
+                        _language_code(comic.language),
+                        size=9,
+                        weight=ft.FontWeight.BOLD,
+                        color=gallery_type_foreground(comic.type),
                     ),
-                    ft.Container(
-                        content=ft.Text(str(comic.max_page or "?"), size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_PRIMARY),
-                        width=34,
-                        height=34,
-                        bgcolor=ft.Colors.PRIMARY,
-                        border_radius=999,
-                        alignment=ft.Alignment(0, 0),
-                        top=8,
-                        right=8,
-                        tooltip="页数",
+                    width=24,
+                    height=20,
+                    top=-2,
+                    right=-2,
+                    alignment=ft.Alignment(0, 0),
+                    tooltip=comic.language or "未知语言",
+                ),
+                # 封面状态约定：右下胶囊依次表示已收藏/已下载，上方圆标表示本地画廊有新版本。
+                # 当前全部显示用于验证布局；接入真实状态后只切换 visible，不改变这组位置和语义。
+                ft.Container(
+                    content=ft.Icon(ft.Icons.UPGRADE, size=14, color=ft.Colors.ON_PRIMARY),
+                    width=26,
+                    height=26,
+                    right=6,
+                    bottom=36,
+                    alignment=ft.Alignment(0, 0),
+                    bgcolor=ft.Colors.PRIMARY,
+                    border=ft.border.Border.all(2, ft.Colors.SURFACE),
+                    border_radius=999,
+                    tooltip="有新版本可用",
+                ),
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Icon(ft.Icons.FAVORITE, size=14, color=ft.Colors.ON_PRIMARY),
+                            ft.Icon(ft.Icons.DOWNLOAD_DONE, size=14, color=ft.Colors.ON_PRIMARY),
+                        ],
+                        spacing=5,
+                        tight=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
-                    ft.Container(
-                        content=ft.Column(
-                            controls=[
-                                ft.Text(
-                                    comic.title,
-                                    max_lines=2,
-                                    overflow=ft.TextOverflow.ELLIPSIS,
-                                    size=13,
-                                    weight=ft.FontWeight.W_500,
-                                    color=ft.Colors.WHITE,
-                                ),
-                                ft.Row(
-                                    controls=[
-                                        ft.Text(comic.type, size=11, color=ft.Colors.WHITE),
-                                        ft.Text(f"{comic.max_page}P", size=11, color=ft.Colors.WHITE),
-                                        ft.Text(f"★{comic.stars}", size=11, color=ft.Colors.WHITE),
-                                    ],
-                                    spacing=8,
-                                ),
-                            ],
-                            spacing=4,
-                        ),
-                        padding=8,
-                        bgcolor=ft.Colors.with_opacity(0.55, ft.Colors.BLACK),
-                        bottom=0,
-                        left=0,
-                        right=0,
-                        alignment=ft.Alignment(-1, 1),
-                    ),
-                ],
-                expand=True,
-            ),
-            border_radius=8,
-            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                    right=6,
+                    bottom=6,
+                    padding=ft.Padding(7, 5, 7, 5),
+                    bgcolor=ft.Colors.with_opacity(0.86, ft.Colors.PRIMARY),
+                    border=ft.border.Border.all(1, ft.Colors.with_opacity(0.72, ft.Colors.SURFACE)),
+                    border_radius=999,
+                    tooltip="已收藏 · 已下载",
+                ),
+            ],
             expand=True,
         ),
+        border_radius=8,
+        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+        expand=True,
     )
+
+
+def _openable_card(page: ft.Page, comic: Comic, card: ft.Control) -> ft.Control:
+    """让画廊卡片可进入详情页。"""
     open_detail = getattr(page, "fletviewer_open_gallery_detail", None)
-    if callable(open_detail):
-        return ft.GestureDetector(
-            content=card,
-            mouse_cursor=ft.MouseCursor.CLICK,
-            on_tap=lambda e: open_detail(comic),
+    if not callable(open_detail):
+        return card
+    return ft.GestureDetector(
+        content=card,
+        mouse_cursor=ft.MouseCursor.CLICK,
+        on_tap=lambda e: open_detail(comic),
+    )
+
+
+def make_gallery_card(page: ft.Page, comic: Comic, *, mode: str | None = None) -> ft.Control:
+    """按浏览模式创建纯封面瀑布流卡片或详细列表卡片。"""
+    view_mode = mode or get_gallery_view_mode()
+    if view_mode == "waterfall":
+        return _openable_card(page, comic, ft.Card(content=_gallery_cover(page, comic)))
+
+    show_page_count = should_show_gallery_page_count()
+    show_gallery_info = should_show_gallery_info()
+    details: list[ft.Control] = []
+    if show_gallery_info:
+        details.extend(
+            [
+                ft.Text(comic.type or "未知类型", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                ft.Text(f"评分 {comic.stars:.1f}", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                ft.Text(comic.sub_title or comic.uploader or "", size=12, color=ft.Colors.ON_SURFACE_VARIANT, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+            ]
         )
-    return card
+    if show_page_count:
+        details.append(ft.Text(f"{comic.max_page or '?'} 页", size=12, color=ft.Colors.ON_SURFACE_VARIANT))
+    card = ft.Card(
+        content=ft.Container(
+            content=ft.Row(
+                [
+                    ft.Container(content=_gallery_cover(page, comic), width=104, height=140),
+                    ft.Column(
+                        [
+                            ft.Text(comic.title or "未命名画廊", size=15, weight=ft.FontWeight.W_600, max_lines=3, overflow=ft.TextOverflow.ELLIPSIS),
+                            *details,
+                        ],
+                        spacing=6,
+                        expand=True,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                    ),
+                ],
+                spacing=14,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.Padding(0, 0, 14, 0),
+            height=140,
+        ),
+    )
+    return _openable_card(page, comic, card)
 
 
 def create_gallery_cards_view(
@@ -109,6 +195,7 @@ def create_gallery_cards_view(
         page_label = ft.Text("第 1 页", size=14, weight=ft.FontWeight.W_500)
 
         state = {"current_url": None, "prev_url": None, "next_url": None, "page_num": 1, "comics": []}
+        view_mode = get_gallery_view_mode()
         column_state = {"value": runs_count_for_width(page.width, min_columns=2, max_columns=10)}
 
         pagination_bar = ft.Container(
@@ -131,17 +218,20 @@ def create_gallery_cards_view(
         )
 
         def rebuild_gallery_rows() -> None:
-            columns = max(1, int(column_state["value"] or 1))
-            cards = [make_gallery_card(page, comic) for comic in state["comics"]]
             controls: list[ft.Control] = []
             if status_text.value:
                 controls.append(ft.Container(content=status_text, padding=ft.Padding(4, 2, 4, 2)))
-            for start in range(0, len(cards), columns):
-                chunk = cards[start:start + columns]
-                cells = [ft.Container(content=card, expand=1, aspect_ratio=0.72) for card in chunk]
-                if len(cells) < columns:
-                    cells.extend(ft.Container(expand=1) for _ in range(columns - len(cells)))
-                controls.append(ft.Row(cells, spacing=grid_spacing, vertical_alignment=ft.CrossAxisAlignment.START))
+            if view_mode == "list":
+                controls.extend(make_gallery_card(page, comic, mode="list") for comic in state["comics"])
+            else:
+                columns = max(1, int(column_state["value"] or 1))
+                cards = [make_gallery_card(page, comic, mode="waterfall") for comic in state["comics"]]
+                for start in range(0, len(cards), columns):
+                    chunk = cards[start:start + columns]
+                    cells = [ft.Container(content=card, expand=1, aspect_ratio=0.72) for card in chunk]
+                    if len(cells) < columns:
+                        cells.extend(ft.Container(expand=1) for _ in range(columns - len(cells)))
+                    controls.append(ft.Row(cells, spacing=grid_spacing, vertical_alignment=ft.CrossAxisAlignment.START))
             controls.append(ft.Container(content=pagination_bar, alignment=ft.Alignment(0, 0), padding=ft.Padding(0, 8, 0, 0)))
             list_view.controls = controls
 

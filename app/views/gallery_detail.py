@@ -5,10 +5,11 @@ from urllib.parse import urlsplit
 import flet as ft
 
 from app.browser_session import browser_session
-from app.controls.async_image import async_image
+from app.controls.async_image import async_image, image_placeholder
 from app.debug_log import Timer, log_debug, log_exception
 from app.download_manager import download_manager, now_iso
 from app.gallery_cache import get_eh_gallery_cache, put_eh_gallery_cache
+from app.gallery_type_colors import gallery_type_color, gallery_type_foreground
 from app.grid_layout import runs_count_for_width
 from app.storage import should_render_gallery_cards
 from app.toast import show_error_toast, show_toast
@@ -18,6 +19,8 @@ from app.views.image_viewer import ImageViewerItem
 
 
 THUMBNAIL_BATCH_SIZE = 12
+THUMBNAIL_PLACEHOLDER_LIMIT = 20
+EH_MAX_GALLERY_PAGES = 2000
 THUMBNAIL_TILE_HEIGHT = 150
 THUMBNAIL_GRID_SPACING = 6
 DETAIL_SECTION_RADIUS = 20
@@ -32,6 +35,15 @@ def _to_jsonable(value):
     if dataclasses.is_dataclass(value):
         return dataclasses.asdict(value)
     return value
+
+
+def _thumbnail_placeholder_count(page_count: int) -> int:
+    """根据列表页数准备骨架，但无论输入是否异常都不超过 20 个。"""
+    try:
+        count = int(page_count or 0)
+    except (TypeError, ValueError):
+        return 0
+    return min(max(0, count), THUMBNAIL_PLACEHOLDER_LIMIT)
 
 
 def _tag_pill(text: str) -> ft.Control:
@@ -152,9 +164,9 @@ def _make_comment_card(comment: Comment | dict) -> ft.Control:
     )
 
 
-def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
+def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> ft.Control:
     """创建在线画廊详情页，展示 metadata、评论、缩略图和 Archive 下载入口。"""
-    state = {"details": None, "thumbs": None}
+    state = {"details": None, "thumbs": None, "loading": False}
     show_raw_json = not should_render_gallery_cards()
     title = ft.Text(
         comic.title or "加载中...",
@@ -163,6 +175,27 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
         max_lines=3,
         overflow=ft.TextOverflow.ELLIPSIS,
         selectable=True,
+    )
+    uploader_text = ft.Text(
+        comic.uploader or comic.sub_title or "未知上传者",
+        size=13,
+        color=ft.Colors.ON_SURFACE_VARIANT,
+        max_lines=1,
+        overflow=ft.TextOverflow.ELLIPSIS,
+        selectable=True,
+    )
+    gallery_type_text = ft.Text(
+        comic.type or "未知类型",
+        size=11,
+        weight=ft.FontWeight.BOLD,
+        color=gallery_type_foreground(comic.type),
+    )
+    gallery_type_pill = ft.Container(
+        content=gallery_type_text,
+        padding=ft.Padding(9, 4, 9, 4),
+        bgcolor=gallery_type_color(comic.type),
+        border_radius=999,
+        alignment=ft.Alignment(0, 0),
     )
     status = ft.Text("加载中...", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
     tags_status = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
@@ -179,8 +212,12 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
     )
     title_box = ft.Container(
         content=ft.Column(
-            [title],
-            spacing=0,
+            [
+                title,
+                uploader_text,
+                ft.Row([gallery_type_pill], spacing=0),
+            ],
+            spacing=8,
             alignment=ft.MainAxisAlignment.CENTER,
             horizontal_alignment=ft.CrossAxisAlignment.START,
         ),
@@ -301,6 +338,30 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             rows.append(ft.Row(cells, spacing=THUMBNAIL_GRID_SPACING, height=THUMBNAIL_TILE_HEIGHT))
         thumbs_grid.controls = rows
 
+    def show_thumbnail_placeholders() -> None:
+        """在详情 fetch 完成前，用列表页数预渲染有限数量的缩略图骨架。"""
+        placeholder_count = _thumbnail_placeholder_count(comic.max_page)
+        try:
+            listed_page_count = int(comic.max_page or 0)
+        except (TypeError, ValueError):
+            listed_page_count = 0
+        thumb_controls[:] = [
+            ft.Container(
+                content=image_placeholder(height=THUMBNAIL_TILE_HEIGHT, loading=True),
+                height=THUMBNAIL_TILE_HEIGHT,
+                border_radius=6,
+                clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            )
+            for _ in range(placeholder_count)
+        ]
+        if listed_page_count > EH_MAX_GALLERY_PAGES:
+            thumbs_status.value = f"页数待详情确认 · 预渲染 {placeholder_count} 个占位"
+        elif placeholder_count:
+            thumbs_status.value = f"预计 {listed_page_count} 页 · 预渲染 {placeholder_count} 个占位"
+        else:
+            thumbs_status.value = "正在获取缩略图..."
+        rebuild_thumb_grid()
+
     def rebuild_hero_layout():
         """详情首屏固定 40/60 横向布局，封面按长宽比计算高度。"""
         hero_layout_box.content = ft.Row(
@@ -333,6 +394,7 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             info_expand_tile.visible = False
             return
         status.value = f"{details.max_page or comic.max_page or '-'} 页，{details.favorite_count} 收藏，评分 {(details.stars or comic.stars):.1f}"
+        uploader_text.value = details.uploader or comic.uploader or comic.sub_title or "未知上传者"
         info_extra_column.controls = [
             _info_item("语言", details.language_detail or "-"),
             _info_item("大小", details.file_size or "-"),
@@ -536,11 +598,14 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
 
         page.run_thread(archive_worker)
 
-    def worker():
+    def worker(force_refresh: bool = False):
+        if state["loading"]:
+            return
+        state["loading"] = True
         try:
             log_debug("detail", f"load start {comic.id}")
             client = browser_session.get_eh_client(require_login=False)
-            cached = get_eh_gallery_cache(comic.id)
+            cached = None if force_refresh else get_eh_gallery_cache(comic.id)
             if cached is not None:
                 details = cached.details
                 thumbs = cached.thumbnails
@@ -656,12 +721,28 @@ def create_view(page: ft.Page, comic: Comic, on_back) -> ft.Control:
             show_error_toast(page, "画廊详情加载失败", ex)
             log_exception("detail", f"load failed {comic.id}: {ex}")
         finally:
+            state["loading"] = False
             request_update(page)
+
+    def refresh_detail(e=None):
+        """绕过详情缓存，重新加载当前画廊详情和缩略图。"""
+        if state["loading"]:
+            return
+        status.value = "正在刷新..."
+        read_first_button.disabled = True
+        resolved_image_urls.clear()
+        image_key_state["key"] = None
+        page.update()
+        page.run_thread(lambda: worker(force_refresh=True))
+
+    if callable(register_refresh):
+        register_refresh(refresh_detail)
 
     page.run_thread(worker)
 
     update_info_panel()
     rebuild_hero_layout()
+    show_thumbnail_placeholders()
     detail_controls = [
             _constrain(hero_section),
             _constrain(action_section),

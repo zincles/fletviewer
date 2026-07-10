@@ -6,7 +6,7 @@ import flet as ft
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.grid_layout import runs_count_for_width
-from app.storage import should_render_gallery_cards
+from app.storage import get_gallery_view_mode, should_render_gallery_cards
 from app.toast import show_error_toast
 from app.ui_update import request_update
 from app.views.gallery_cards import make_gallery_card
@@ -42,22 +42,28 @@ def create_view(page: ft.Page) -> ft.Control:
     page_label = ft.Text("第 1 页", size=14)
     status = ft.Text("输入关键词后搜索", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
     render_cards = should_render_gallery_cards()
+    view_mode = get_gallery_view_mode()
     grid_spacing = 0
-    grid = ft.GridView(
-        expand=True,
-        runs_count=runs_count_for_width(page.width, min_columns=2, max_columns=10),
-        spacing=grid_spacing,
-        run_spacing=grid_spacing,
-        child_aspect_ratio=0.65,
-        padding=10,
-    )
+    if view_mode == "list":
+        gallery_results = ft.ListView(expand=True, spacing=8, padding=10)
+    else:
+        gallery_results = ft.GridView(
+            expand=True,
+            runs_count=runs_count_for_width(page.width, min_columns=2, max_columns=10),
+            spacing=grid_spacing,
+            run_spacing=grid_spacing,
+            child_aspect_ratio=0.72,
+            padding=10,
+        )
     output = ft.Text("输入关键词后搜索", size=14, selectable=True)
     state = {"keyword": "", "page_num": 1, "prev_url": None, "next_url": None}
 
     def update_grid_columns(e=None):
+        if not isinstance(gallery_results, ft.GridView):
+            return
         new_count = runs_count_for_width(page.width, min_columns=2, max_columns=10)
-        if grid.runs_count != new_count:
-            grid.runs_count = new_count
+        if gallery_results.runs_count != new_count:
+            gallery_results.runs_count = new_count
             page.update()
 
     add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
@@ -70,7 +76,7 @@ def create_view(page: ft.Page) -> ft.Control:
         next_btn.disabled = True
         status.value = text
         if render_cards:
-            grid.controls.clear()
+            gallery_results.controls.clear()
         else:
             output.value = text
         page.update()
@@ -82,7 +88,7 @@ def create_view(page: ft.Page) -> ft.Control:
         next_btn.disabled = result.next_url is None
         status.value = ""
         if render_cards:
-            grid.controls = [make_gallery_card(page, comic) for comic in result.comics]
+            gallery_results.controls = [make_gallery_card(page, comic, mode=view_mode) for comic in result.comics]
         else:
             output.value = _result_to_json(result)
 
@@ -145,7 +151,7 @@ def create_view(page: ft.Page) -> ft.Control:
     prev_btn.on_click = on_prev
     next_btn.on_click = on_next
 
-    result_content = grid if render_cards else ft.Container(
+    result_content = gallery_results if render_cards else ft.Container(
         content=ft.Column([output], scroll=ft.ScrollMode.AUTO),
         expand=True,
         border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),

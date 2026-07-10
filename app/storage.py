@@ -30,6 +30,9 @@ APP_CONFIG_DEFAULTS = {
     "theme_color": "adaptive",
     "image_viewer_mode": "paged",
     "gallery_grid_columns": 5,
+    "gallery_view_mode": "waterfall",
+    "show_gallery_page_count": True,
+    "show_gallery_info": True,
     "image_grid_target_width": 220,
     "linux_builtin_title_bar": False,
     "linux_prefer_wayland_window_backend": False,
@@ -37,6 +40,7 @@ APP_CONFIG_DEFAULTS = {
 IMAGE_VIEWER_MODES = {"paged", "vertical"}
 THEME_MODES = {"system", "light", "dark"}
 THEME_COLORS = {"adaptive", "teal", "blue", "green", "rose", "amber", "violet"}
+GALLERY_VIEW_MODES = {"list", "waterfall"}
 CONFIG_DEFAULTS = {
     "eh": {k: "" for k in EH_CONFIG_KEYS},
     "app": dict(APP_CONFIG_DEFAULTS),
@@ -174,6 +178,22 @@ def get_gallery_grid_columns() -> int:
     except (TypeError, ValueError):
         value = 5
     return max(2, min(10, value))
+
+
+def get_gallery_view_mode() -> str:
+    """读取画廊浏览模式，并对非法值回退到瀑布流。"""
+    mode = str(load_app_config().get("gallery_view_mode", "waterfall"))
+    return mode if mode in GALLERY_VIEW_MODES else "waterfall"
+
+
+def should_show_gallery_page_count() -> bool:
+    """返回画廊卡片是否显示页数。"""
+    return bool(load_app_config().get("show_gallery_page_count", True))
+
+
+def should_show_gallery_info() -> bool:
+    """返回画廊卡片是否显示底部标题和元信息。"""
+    return bool(load_app_config().get("show_gallery_info", True))
 
 
 def should_use_linux_builtin_title_bar() -> bool:

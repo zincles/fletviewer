@@ -4,6 +4,7 @@ import flet as ft
 
 from app.browser_session import browser_session
 from app.gallery_cache import clear_gallery_cache
+from app.gallery_type_colors import GALLERY_TYPE_COLORS, GALLERY_TYPE_LABELS, gallery_type_foreground
 from app.image_cache import clear_image_cache
 from app.storage import (
     CACHE_DB_PATH,
@@ -11,6 +12,7 @@ from app.storage import (
     CONFIG_PATH,
     get_image_viewer_mode,
     get_gallery_grid_columns,
+    get_gallery_view_mode,
     get_theme_color,
     get_theme_mode,
     load_app_config,
@@ -127,6 +129,15 @@ def create_view(page: ft.Page) -> ft.Control:
         dense=True,
     )
     gallery_columns_value = ft.Text(f"{get_gallery_grid_columns()} 列", size=14, weight=ft.FontWeight.W_500)
+    gallery_view_mode_segments = ft.SegmentedButton(
+        segments=[
+            ft.Segment(value="waterfall", label="瀑布流", icon=ft.Icons.GRID_VIEW),
+            ft.Segment(value="list", label="列表", icon=ft.Icons.VIEW_LIST),
+        ],
+        selected=[get_gallery_view_mode()],
+        show_selected_icon=False,
+        allow_empty_selection=False,
+    )
     gallery_columns_slider = ft.Slider(
         value=get_gallery_grid_columns(),
         min=2,
@@ -134,6 +145,14 @@ def create_view(page: ft.Page) -> ft.Control:
         divisions=8,
         label="{value} 列",
         width=320,
+    )
+    show_gallery_page_count_switch = ft.Switch(
+        label="列表模式显示页数",
+        value=bool(app_cfg.get("show_gallery_page_count", True)),
+    )
+    show_gallery_info_switch = ft.Switch(
+        label="列表模式显示详细信息",
+        value=bool(app_cfg.get("show_gallery_info", True)),
     )
     linux_title_bar_switch = ft.Switch(
         label="在Linux端启用内置标题栏",
@@ -161,6 +180,9 @@ def create_view(page: ft.Page) -> ft.Control:
             "theme_color": theme_color_dropdown.value or "adaptive",
             "image_viewer_mode": viewer_mode_dropdown.value or "paged",
             "gallery_grid_columns": grid_columns,
+            "gallery_view_mode": (gallery_view_mode_segments.selected or ["waterfall"])[0],
+            "show_gallery_page_count": show_gallery_page_count_switch.value,
+            "show_gallery_info": show_gallery_info_switch.value,
             "linux_builtin_title_bar": linux_title_bar_switch.value,
             "linux_prefer_wayland_window_backend": linux_wayland_backend_switch.value,
         }
@@ -248,6 +270,31 @@ def create_view(page: ft.Page) -> ft.Control:
 
     gallery_columns_slider.on_change = on_gallery_columns_change
     gallery_columns_slider.on_change_end = on_gallery_columns_change_end
+
+    def on_gallery_view_mode_change(e):
+        event_data = getattr(e, "data", None) or getattr(getattr(e, "control", None), "selected", None)
+        mode = _selected_segment_value(event_data, "waterfall")
+        gallery_view_mode_segments.selected = [mode if mode in {"waterfall", "list"} else "waterfall"]
+        apply_app_settings(
+            reason="gallery_view_mode_changed",
+            target=display_status,
+            message="画廊浏览模式已更新",
+            invalidate_gallery=True,
+        )
+
+    gallery_view_mode_segments.on_change = on_gallery_view_mode_change
+    show_gallery_page_count_switch.on_change = lambda e: apply_app_settings(
+        reason="gallery_page_count_visibility_changed",
+        target=display_status,
+        message="画廊页数显示设置已更新",
+        invalidate_gallery=True,
+    )
+    show_gallery_info_switch.on_change = lambda e: apply_app_settings(
+        reason="gallery_info_visibility_changed",
+        target=display_status,
+        message="画廊信息显示设置已更新",
+        invalidate_gallery=True,
+    )
 
     linux_title_bar_switch.on_change = lambda e: apply_app_settings(
         reason="linux_window_setting_changed",
@@ -378,8 +425,12 @@ def create_view(page: ft.Page) -> ft.Control:
                 ft.Row([theme_mode_segments, theme_color_dropdown], spacing=12, wrap=True),
                 viewer_mode_dropdown,
                 ft.Text(f"当前设备: {_platform_label(page)}", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
-                ft.Text("画廊浏览器列数", size=14, weight=ft.FontWeight.W_500),
+                ft.Text("画廊浏览模式", size=14, weight=ft.FontWeight.W_500),
+                gallery_view_mode_segments,
+                ft.Text("瀑布流列数", size=14, weight=ft.FontWeight.W_500),
                 ft.Row([gallery_columns_slider, gallery_columns_value], spacing=12, wrap=True),
+                show_gallery_page_count_switch,
+                show_gallery_info_switch,
                 display_status,
             ],
             spacing=16,
@@ -440,6 +491,33 @@ def create_view(page: ft.Page) -> ft.Control:
                 show_error_toasts_switch,
                 render_cards_switch,
                 debug_status,
+                ft.Divider(),
+                ft.Text("画廊类型颜色", size=16, weight=ft.FontWeight.W_500),
+                ft.Text(
+                    "这些颜色与画廊封面右上角的语言角标一致，用于快速检查类型辨识度。",
+                    size=14,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                ft.Row(
+                    [
+                        ft.Container(
+                            content=ft.Text(
+                                GALLERY_TYPE_LABELS[key],
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color=gallery_type_foreground(key),
+                            ),
+                            bgcolor=color,
+                            padding=ft.Padding(10, 7, 10, 7),
+                            border_radius=8,
+                            alignment=ft.Alignment(0, 0),
+                        )
+                        for key, color in GALLERY_TYPE_COLORS.items()
+                    ],
+                    spacing=8,
+                    run_spacing=8,
+                    wrap=True,
+                ),
                 ft.Divider(),
                 ft.Text("提示测试", size=16, weight=ft.FontWeight.W_500),
                 ft.Row(
@@ -551,7 +629,7 @@ def create_view(page: ft.Page) -> ft.Control:
                     settings_tile(
                         "display",
                         "显示与阅读",
-                        "外观、阅读器模式和画廊浏览列数。",
+                        "外观、阅读器模式和画廊卡片显示。",
                         ft.Icons.PALETTE,
                         display_page,
                     ),
