@@ -148,6 +148,8 @@ def main(page: ft.Page):
     header_actions = ft.Row(spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
     header_action_cache: dict[str, list[ft.Control]] = {}
     reading_refresh_action_cache: dict[str, object] = {}
+    reading_loading_sources: set[str] = set()
+    reading_loading_indicator_ref: dict[str, ft.ProgressBar | None] = {"value": None}
     active_cache_key = {"value": ""}
     bottom_nav_state = {"value": "阅读"}
     bottom_nav_segments: dict[str, ft.Container] = {}
@@ -246,6 +248,20 @@ def main(page: ft.Page):
             reading_refresh_action_cache.pop(key, None)
 
     page.fletviewer_set_reading_refresh_action = set_reading_refresh_action
+
+    def set_reading_loading(source: str, loading: bool) -> None:
+        """按请求来源维护阅读顶栏加载状态，避免并发请求提前关闭进度条。"""
+        if loading:
+            reading_loading_sources.add(source)
+        else:
+            reading_loading_sources.discard(source)
+        indicator = reading_loading_indicator_ref.get("value")
+        if indicator is not None:
+            indicator.visible = bool(reading_loading_sources)
+            if getattr(indicator, "page", None) is not None:
+                indicator.update()
+
+    page.fletviewer_set_reading_loading = set_reading_loading
 
     def show_reading_action_hint(message: str) -> None:
         dialog = ft.AlertDialog(
@@ -930,13 +946,32 @@ def main(page: ft.Page):
         indicator_thickness=3,
         label_padding=ft.Padding(14, 0, 14, 0),
     )
+    reading_loading_indicator = ft.ProgressBar(
+        value=None,
+        height=3,
+        color=ft.Colors.PRIMARY,
+        bgcolor=ft.Colors.TRANSPARENT,
+        visible=False,
+    )
+    reading_loading_indicator_ref["value"] = reading_loading_indicator
 
-    top_bar.content = ft.Column(
+    top_bar.content = ft.Stack(
         [
-            reading_top_row,
-            reading_tab_bar,
+            ft.Column(
+                [
+                    reading_top_row,
+                    reading_tab_bar,
+                ],
+                spacing=0,
+                expand=True,
+            ),
+            ft.Container(
+                content=reading_loading_indicator,
+                left=0,
+                right=0,
+                bottom=0,
+            ),
         ],
-        spacing=0,
         expand=True,
     )
 

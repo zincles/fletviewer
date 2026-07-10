@@ -4,6 +4,7 @@ import json
 import flet as ft
 
 from app.browser_session import browser_session
+from app.controls.masonry_gallery import MasonryGallery, MasonryItem
 from app.debug_log import Timer, log_debug, log_exception
 from app.grid_layout import runs_count_for_width
 from app.storage import get_gallery_view_mode, should_render_gallery_cards
@@ -39,13 +40,23 @@ def create_view(page: ft.Page) -> ft.Control:
     btn = ft.Button("搜索", icon=ft.Icons.SEARCH)
     prev_btn = ft.Button("上一页", icon=ft.Icons.ARROW_BACK, disabled=True)
     next_btn = ft.Button("下一页", icon=ft.Icons.ARROW_FORWARD, disabled=True)
+    if get_gallery_view_mode() == "masonry":
+        next_btn.text = "加载下一页内容"
+        next_btn.icon = ft.Icons.EXPAND_MORE
     page_label = ft.Text("第 1 页", size=14)
     status = ft.Text("输入关键词后搜索", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
     render_cards = should_render_gallery_cards()
     view_mode = get_gallery_view_mode()
     grid_spacing = 0
+    masonry_gallery: MasonryGallery | None = None
     if view_mode == "list":
         gallery_results = ft.ListView(expand=True, spacing=8, padding=10)
+    elif view_mode == "masonry":
+        masonry_gallery = MasonryGallery(
+            column_count=runs_count_for_width(page.width, min_columns=2, max_columns=10),
+            spacing=grid_spacing,
+        )
+        gallery_results = ft.ListView(expand=True, padding=10, controls=[masonry_gallery])
     else:
         gallery_results = ft.GridView(
             expand=True,
@@ -56,9 +67,24 @@ def create_view(page: ft.Page) -> ft.Control:
             padding=10,
         )
     output = ft.Text("输入关键词后搜索", size=14, selectable=True)
-    state = {"keyword": "", "page_num": 1, "prev_url": None, "next_url": None}
+    state = {
+        "keyword": "",
+        "page_num": 1,
+        "prev_url": None,
+        "next_url": None,
+        "comics": [],
+        "cards": [],
+        "comic_ids": set(),
+        "requested_urls": set(),
+        "loading": False,
+    }
 
     def update_grid_columns(e=None):
+        if masonry_gallery is not None:
+            new_count = runs_count_for_width(page.width, min_columns=2, max_columns=10)
+            if masonry_gallery.set_column_count(new_count):
+                page.update()
+            return
         if not isinstance(gallery_results, ft.GridView):
             return
         new_count = runs_count_for_width(page.width, min_columns=2, max_columns=10)
@@ -70,38 +96,84 @@ def create_view(page: ft.Page) -> ft.Control:
     if callable(add_resize_handler):
         add_resize_handler(update_grid_columns)
 
-    def set_loading(text: str):
+    def set_loading(text: str, *, preserve_results: bool = False):
         btn.disabled = True
         prev_btn.disabled = True
         next_btn.disabled = True
         status.value = text
-        if render_cards:
-            gallery_results.controls.clear()
+        if render_cards and not preserve_results:
+            if masonry_gallery is not None:
+                masonry_gallery.set_items([])
+            else:
+                gallery_results.controls.clear()
         else:
             output.value = text
         page.update()
 
-    def render_result(result):
+    def render_result(result, *, append: bool = False):
         state["prev_url"] = result.prev_url
         state["next_url"] = result.next_url
         prev_btn.disabled = result.prev_url is None
         next_btn.disabled = result.next_url is None
         status.value = ""
+        incoming = [comic for comic in result.comics if comic.id not in state["comic_ids"]]
+        if append:
+            state["comics"].extend(incoming)
+            state["cards"].extend(make_gallery_card(page, comic, mode=view_mode) for comic in incoming)
+            state["page_num"] += 1
+        else:
+            state["comics"] = incoming
+            state["cards"] = [make_gallery_card(page, comic, mode=view_mode) for comic in incoming]
+            state["page_num"] = 1
+        state["comic_ids"].update(comic.id for comic in incoming)
+        page_label.value = f"已加载 {state['page_num']} 页" if state["page_num"] > 1 else "第 1 页"
         if render_cards:
-            gallery_results.controls = [make_gallery_card(page, comic, mode=view_mode) for comic in result.comics]
+            if masonry_gallery is not None:
+                items = [
+                    MasonryItem(card, comic.cover_aspect_ratio, key=comic.id)
+                    for comic, card in zip(
+                        incoming if append else state["comics"],
+                        state["cards"][-len(incoming):] if append and incoming else ([] if append else state["cards"]),
+                    )
+                ]
+                if append:
+                    masonry_gallery.append_batch(items, update=True)
+                else:
+                    masonry_gallery.set_items(items)
+            else:
+                if append:
+                    gallery_results.controls.extend(state["cards"][-len(incoming):] if incoming else [])
+                else:
+                    gallery_results.controls = list(state["cards"])
         else:
             output.value = _result_to_json(result)
 
-    def load(keyword: str | None = None, page_url: str | None = None):
+    def load(keyword: str | None = None, page_url: str | None = None, *, append: bool = False):
         kw = (keyword if keyword is not None else state["keyword"]).strip()
         if not kw and not page_url:
             return
+        request_key = page_url or f"search:{kw}"
+        if state["loading"] or (append and request_key in state["requested_urls"]):
+            return
+        state["loading"] = True
+        state["requested_urls"].add(request_key)
+        set_reading_loading = getattr(page, "fletviewer_set_reading_loading", None)
+        if callable(set_reading_loading):
+            set_reading_loading("search", True)
         if keyword is not None:
             state["keyword"] = kw
             state["page_num"] = 1
             page_label.value = "第 1 页"
+        if not append:
+            state["comics"] = []
+            state["cards"] = []
+            state["comic_ids"] = set()
+            state["requested_urls"] = {request_key}
 
-        set_loading("搜索中...")
+        set_loading("" if append else "搜索中...", preserve_results=append)
+        if append and view_mode == "masonry":
+            next_btn.text = "加载中..."
+            next_btn.icon = ft.Icons.HOURGLASS_TOP
 
         def worker():
             try:
@@ -113,15 +185,26 @@ def create_view(page: ft.Page) -> ft.Control:
                     "search",
                     f"search result count={len(result.comics)} prev={result.prev_url} next={result.next_url}",
                 )
-                render_result(result)
+                render_result(result, append=append)
             except Exception as ex:
+                state["requested_urls"].discard(request_key)
                 status.value = f"错误: {ex}"
                 output.value = f"错误: {ex}"
                 show_error_toast(page, "搜索加载失败", ex)
                 log_exception("search", f"search failed keyword={kw} page_url={page_url}: {ex}")
             finally:
+                state["loading"] = False
+                if callable(set_reading_loading):
+                    set_reading_loading("search", False)
                 btn.disabled = False
-                request_update(page)
+                if view_mode == "masonry":
+                    next_btn.text = "加载下一页内容"
+                    next_btn.icon = ft.Icons.EXPAND_MORE
+                if append and masonry_gallery is not None:
+                    next_btn.update()
+                    btn.update()
+                else:
+                    request_update(page)
 
         page.run_thread(worker)
 
@@ -142,9 +225,7 @@ def create_view(page: ft.Page) -> ft.Control:
 
     def on_next(e):
         if state["next_url"]:
-            state["page_num"] += 1
-            page_label.value = f"第 {state['page_num']} 页"
-            load(page_url=state["next_url"])
+            load(page_url=state["next_url"], append=True)
 
     query.on_submit = on_search
     btn.on_click = on_search
@@ -159,12 +240,18 @@ def create_view(page: ft.Page) -> ft.Control:
         padding=16,
     )
 
+    pagination_controls = (
+        [next_btn]
+        if view_mode == "masonry"
+        else [prev_btn, page_label, next_btn]
+    )
+
     return ft.Column(
         controls=[
             ft.Row([query, btn, status], spacing=12),
             result_content,
             ft.Divider(),
-            ft.Row([prev_btn, page_label, next_btn], alignment=ft.MainAxisAlignment.CENTER, spacing=20),
+            ft.Row(pagination_controls, alignment=ft.MainAxisAlignment.CENTER, spacing=20),
         ],
         spacing=12,
         expand=True,

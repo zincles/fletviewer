@@ -30,7 +30,7 @@ APP_CONFIG_DEFAULTS = {
     "theme_color": "adaptive",
     "image_viewer_mode": "paged",
     "gallery_grid_columns": 5,
-    "gallery_view_mode": "waterfall",
+    "gallery_view_mode": "card",
     "show_gallery_page_count": True,
     "show_gallery_info": True,
     "debug_show_cover_dimensions": False,
@@ -44,7 +44,7 @@ APP_CONFIG_DEFAULTS = {
 IMAGE_VIEWER_MODES = {"paged", "vertical"}
 THEME_MODES = {"system", "light", "dark"}
 THEME_COLORS = {"adaptive", "teal", "blue", "green", "rose", "amber", "violet"}
-GALLERY_VIEW_MODES = {"list", "waterfall"}
+GALLERY_VIEW_MODES = {"card", "list", "masonry"}
 CONFIG_DEFAULTS = {
     "eh": {k: "" for k in EH_CONFIG_KEYS},
     "app": dict(APP_CONFIG_DEFAULTS),
@@ -185,9 +185,11 @@ def get_gallery_grid_columns() -> int:
 
 
 def get_gallery_view_mode() -> str:
-    """读取画廊浏览模式，并对非法值回退到瀑布流。"""
-    mode = str(load_app_config().get("gallery_view_mode", "waterfall"))
-    return mode if mode in GALLERY_VIEW_MODES else "waterfall"
+    """读取画廊浏览模式；旧 waterfall 值兼容为等高卡片模式。"""
+    mode = str(load_app_config().get("gallery_view_mode", "card"))
+    if mode == "waterfall":
+        return "card"
+    return mode if mode in GALLERY_VIEW_MODES else "card"
 
 
 def should_show_gallery_page_count() -> bool:

@@ -4,6 +4,7 @@ from typing import Callable
 import flet as ft
 
 from app.controls.async_image import async_image
+from app.controls.masonry_gallery import MasonryGallery, MasonryItem
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.gallery_type_colors import gallery_type_color, gallery_type_foreground
@@ -37,7 +38,6 @@ LANGUAGE_CODES = {
     "thai": "TH",
     "vietnamese": "VI",
 }
-
 
 def _language_code(language: str | None) -> str:
     """把 provider 语言名转换为卡片角标使用的两字母代码。"""
@@ -163,7 +163,7 @@ def _openable_card(page: ft.Page, comic: Comic, card: ft.Control) -> ft.Control:
 def make_gallery_card(page: ft.Page, comic: Comic, *, mode: str | None = None) -> ft.Control:
     """按浏览模式创建纯封面瀑布流卡片或详细列表卡片。"""
     view_mode = mode or get_gallery_view_mode()
-    if view_mode == "waterfall":
+    if view_mode in {"card", "masonry"}:
         return _openable_card(page, comic, ft.Card(content=_gallery_cover(page, comic)))
 
     show_page_count = should_show_gallery_page_count()
@@ -225,18 +225,38 @@ def create_gallery_cards_view(
         refresh_btn = ft.Button("刷新", icon=ft.Icons.REFRESH)
         prev_btn = ft.IconButton(ft.Icons.ARROW_BACK, tooltip="上一页", disabled=True)
         next_btn = ft.IconButton(ft.Icons.ARROW_FORWARD, tooltip="下一页", disabled=True)
+        load_more_btn = ft.Button("加载下一页内容", icon=ft.Icons.EXPAND_MORE, disabled=True)
         page_label = ft.Text("第 1 页", size=14, weight=ft.FontWeight.W_500)
 
-        state = {"current_url": None, "prev_url": None, "next_url": None, "page_num": 1, "comics": []}
+        state = {
+            "current_url": None,
+            "prev_url": None,
+            "next_url": None,
+            "page_num": 1,
+            "comics": [],
+            "cards": [],
+            "comic_ids": set(),
+            "requested_urls": set(),
+            "loading": False,
+        }
         view_mode = get_gallery_view_mode()
         column_state = {"value": runs_count_for_width(page.width, min_columns=2, max_columns=10)}
+        masonry_gallery = MasonryGallery(column_count=column_state["value"], spacing=grid_spacing)
 
         pagination_bar = ft.Container(
-            content=ft.Row(
-                [prev_btn, page_label, next_btn],
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=6,
-                tight=True,
+            content=(
+                ft.Row(
+                    [load_more_btn],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    tight=True,
+                )
+                if view_mode == "masonry"
+                else ft.Row(
+                    [prev_btn, page_label, next_btn],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=6,
+                    tight=True,
+                )
             ),
             padding=ft.Padding(6, 6, 6, 6),
             bgcolor=ft.Colors.with_opacity(0.88, ft.Colors.SURFACE_CONTAINER_HIGH),
@@ -255,10 +275,22 @@ def create_gallery_cards_view(
             if status_text.value:
                 controls.append(ft.Container(content=status_text, padding=ft.Padding(4, 2, 4, 2)))
             if view_mode == "list":
-                controls.extend(make_gallery_card(page, comic, mode="list") for comic in state["comics"])
+                controls.extend(state["cards"])
+            elif view_mode == "masonry":
+                masonry_gallery.set_items(
+                    [
+                        MasonryItem(
+                            card,
+                            comic.cover_aspect_ratio,
+                            key=comic.id,
+                        )
+                        for comic, card in zip(state["comics"], state["cards"])
+                    ]
+                )
+                controls.append(masonry_gallery)
             else:
                 columns = max(1, int(column_state["value"] or 1))
-                cards = [make_gallery_card(page, comic, mode="waterfall") for comic in state["comics"]]
+                cards = state["cards"]
                 for start in range(0, len(cards), columns):
                     chunk = cards[start:start + columns]
                     cells = [ft.Container(content=card, expand=1, aspect_ratio=0.72) for card in chunk]
@@ -272,7 +304,10 @@ def create_gallery_cards_view(
             new_count = runs_count_for_width(page.width, min_columns=2, max_columns=10)
             if column_state["value"] != new_count:
                 column_state["value"] = new_count
-                rebuild_gallery_rows()
+                if view_mode == "masonry":
+                    masonry_gallery.set_column_count(new_count)
+                else:
+                    rebuild_gallery_rows()
                 page.update()
 
         add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
@@ -286,14 +321,30 @@ def create_gallery_cards_view(
 
         list_view.on_scroll = on_grid_scroll
 
-        def load(page_url=None):
-            log_debug("画廊列表", f"{title} 开始加载 page_url={page_url}")
+        def load(page_url=None, *, append: bool = False):
+            request_key = page_url or "__first__"
+            if state["loading"] or (append and request_key in state["requested_urls"]):
+                return
+            state["loading"] = True
+            state["requested_urls"].add(request_key)
+            set_reading_loading = getattr(page, "fletviewer_set_reading_loading", None)
+            if callable(set_reading_loading):
+                set_reading_loading(f"gallery:{title}", True)
+            log_debug("画廊列表", f"{title} 开始加载 page_url={page_url} append={append}")
             refresh_btn.disabled = True
-            prev_btn.disabled = True
+            prev_btn.disabled = True if not append else prev_btn.disabled
             next_btn.disabled = True
-            status_text.value = "加载中..."
-            state["comics"] = []
-            rebuild_gallery_rows()
+            load_more_btn.disabled = True
+            status_text.value = "" if append else "加载中..."
+            if append and view_mode == "masonry":
+                load_more_btn.text = "加载中..."
+                load_more_btn.icon = ft.Icons.HOURGLASS_TOP
+            if not append:
+                state["comics"] = []
+                state["cards"] = []
+                state["comic_ids"] = set()
+                state["requested_urls"] = {request_key}
+                rebuild_gallery_rows()
             page.update()
 
             def worker():
@@ -311,26 +362,57 @@ def create_gallery_cards_view(
                     with Timer("gallery", f"{title} load_fn page_url={page_url}"):
                         result = load_fn(client, page_url)
                     log_debug("画廊列表", f"{title} 加载完成 count={len(result.comics)} prev={bool(result.prev_url)} next={bool(result.next_url)}")
-                    state["comics"] = list(result.comics)
+                    incoming = [comic for comic in result.comics if comic.id not in state["comic_ids"]]
+                    if append:
+                        state["comics"].extend(incoming)
+                        state["cards"].extend(make_gallery_card(page, comic, mode=view_mode) for comic in incoming)
+                        state["page_num"] = int(state["page_num"] or 1) + 1
+                    else:
+                        state["comics"] = incoming
+                        state["cards"] = [make_gallery_card(page, comic, mode=view_mode) for comic in incoming]
+                        state["page_num"] = 1
+                    state["comic_ids"].update(comic.id for comic in incoming)
                     state["current_url"] = page_url
                     state["prev_url"] = result.prev_url
                     state["next_url"] = result.next_url
                     prev_btn.disabled = result.prev_url is None
                     next_btn.disabled = result.next_url is None
+                    load_more_btn.disabled = result.next_url is None
                     status_text.value = ""
-                    rebuild_gallery_rows()
+                    page_label.value = f"已加载 {state['page_num']} 页" if state["page_num"] > 1 else "第 1 页"
+                    if append and view_mode == "masonry":
+                        masonry_gallery.append_batch(
+                            [
+                                MasonryItem(card, comic.cover_aspect_ratio, key=comic.id)
+                                for comic, card in zip(incoming, state["cards"][-len(incoming):] if incoming else [])
+                            ],
+                            update=True,
+                        )
+                    else:
+                        rebuild_gallery_rows()
                 except Exception as ex:
+                    state["requested_urls"].discard(request_key)
                     status_text.value = f"错误: {ex}"
                     show_error_toast(page, f"{title}加载失败", ex)
                     log_exception("画廊列表", f"{title} 加载失败: {ex}")
                 finally:
+                    state["loading"] = False
+                    if callable(set_reading_loading):
+                        set_reading_loading(f"gallery:{title}", False)
                     refresh_btn.disabled = False
-                    request_update(page)
+                    load_more_btn.text = "加载下一页内容"
+                    load_more_btn.icon = ft.Icons.EXPAND_MORE
+                    if append and view_mode == "masonry":
+                        pagination_bar.update()
+                        if getattr(refresh_btn, "page", None) is not None:
+                            refresh_btn.update()
+                    else:
+                        request_update(page)
 
             page.run_thread(worker)
 
         def on_refresh(e):
-            load(state["current_url"])
+            load()
 
         set_refresh_action = getattr(page, "fletviewer_set_reading_refresh_action", None)
         if callable(set_refresh_action):
@@ -344,13 +426,12 @@ def create_gallery_cards_view(
 
         def on_next(e):
             if state["next_url"]:
-                state["page_num"] = int(state["page_num"] or 1) + 1
-                page_label.value = f"第 {state['page_num']} 页"
-                load(state["next_url"])
+                load(state["next_url"], append=True)
 
         refresh_btn.on_click = on_refresh
         prev_btn.on_click = on_prev
         next_btn.on_click = on_next
+        load_more_btn.on_click = on_next
 
         load()
         return list_view

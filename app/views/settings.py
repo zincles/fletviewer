@@ -147,8 +147,9 @@ def create_view(page: ft.Page) -> ft.Control:
     gallery_columns_value = ft.Text(f"{get_gallery_grid_columns()} 列", size=14, weight=ft.FontWeight.W_500)
     gallery_view_mode_segments = ft.SegmentedButton(
         segments=[
-            ft.Segment(value="waterfall", label="瀑布流", icon=ft.Icons.GRID_VIEW),
+            ft.Segment(value="card", label="卡片", icon=ft.Icons.GRID_VIEW),
             ft.Segment(value="list", label="列表", icon=ft.Icons.VIEW_LIST),
+            ft.Segment(value="masonry", label="瀑布流", icon=ft.Icons.VIEW_QUILT),
         ],
         selected=[get_gallery_view_mode()],
         show_selected_icon=False,
@@ -196,7 +197,7 @@ def create_view(page: ft.Page) -> ft.Control:
             "theme_color": theme_color_dropdown.value or "adaptive",
             "image_viewer_mode": viewer_mode_dropdown.value or "paged",
             "gallery_grid_columns": grid_columns,
-            "gallery_view_mode": (gallery_view_mode_segments.selected or ["waterfall"])[0],
+            "gallery_view_mode": (gallery_view_mode_segments.selected or ["card"])[0],
             "show_gallery_page_count": show_gallery_page_count_switch.value,
             "show_gallery_info": show_gallery_info_switch.value,
             "debug_show_cover_dimensions": debug_cover_dimensions_switch.value,
@@ -293,8 +294,8 @@ def create_view(page: ft.Page) -> ft.Control:
 
     def on_gallery_view_mode_change(e):
         event_data = getattr(e, "data", None) or getattr(getattr(e, "control", None), "selected", None)
-        mode = _selected_segment_value(event_data, "waterfall")
-        gallery_view_mode_segments.selected = [mode if mode in {"waterfall", "list"} else "waterfall"]
+        mode = _selected_segment_value(event_data, "card")
+        gallery_view_mode_segments.selected = [mode if mode in {"card", "list", "masonry"} else "card"]
         apply_app_settings(
             reason="gallery_view_mode_changed",
             target=display_status,
@@ -459,7 +460,7 @@ def create_view(page: ft.Page) -> ft.Control:
                 ft.Text(f"当前设备: {_platform_label(page)}", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
                 ft.Text("画廊浏览模式", size=14, weight=ft.FontWeight.W_500),
                 gallery_view_mode_segments,
-                ft.Text("瀑布流列数", size=14, weight=ft.FontWeight.W_500),
+                ft.Text("卡片/瀑布流列数", size=14, weight=ft.FontWeight.W_500),
                 ft.Row([gallery_columns_slider, gallery_columns_value], spacing=12, wrap=True),
                 show_gallery_page_count_switch,
                 show_gallery_info_switch,
