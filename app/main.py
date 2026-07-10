@@ -31,6 +31,8 @@ from app.views.gallery_detail import create_view as gallery_detail_view
 from app.views.image_viewer import create_view as image_viewer_view
 from app.views.search import create_view as search_view
 from app.views.settings import create_view as settings_view
+from app.views.history import create_view as history_view
+from app.history import record_gallery_history
 
 PAGES = [
     ("主页", "最新画廊", ft.Icons.HOME, home_view),
@@ -39,12 +41,12 @@ PAGES = [
     ("排行榜", "EH 排行榜", ft.Icons.LEADERBOARD, leaderboard_view),
     ("收藏", "收藏夹画廊（需登录）", ft.Icons.BOOKMARK, favorites_view),
     ("本地画廊", "已下载 Archive", ft.Icons.FOLDER, local_galleries_view),
-    ("历史", "浏览历史", ft.Icons.HISTORY, None),
+    ("历史", "浏览历史", ft.Icons.HISTORY, history_view),
     ("下载", "下载任务", ft.Icons.DOWNLOAD, downloads_view),
     ("调试", "小图任务", ft.Icons.BUG_REPORT, debug_view),
     ("设置", "应用设置", ft.Icons.SETTINGS, settings_view),
 ]
-READING_PAGE_LABELS = {"主页", "订阅", "热门", "排行榜", "收藏"}
+READING_PAGE_LABELS = {"主页", "订阅", "热门", "排行榜", "收藏", "历史"}
 READING_PAGE_INDEXES = [idx for idx, (label, _subtitle, _icon, _view_fn) in enumerate(PAGES) if label in READING_PAGE_LABELS]
 
 def _is_linux_desktop(page: ft.Page) -> bool:
@@ -488,6 +490,11 @@ def main(page: ft.Page):
 
     def open_gallery_detail(comic):
         log_debug("nav", f"open gallery detail {comic.id}")
+        try:
+            record_gallery_history(comic)
+            view_cache.pop("page:6", None)
+        except Exception as ex:
+            log_debug("history", f"record gallery failed {comic.id}: {ex}")
         detail_container = animated_scale_container(ft.Container(expand=True))
         route = f"/gallery/{len(page.views)}"
         detail_actions: dict[str, object] = {}

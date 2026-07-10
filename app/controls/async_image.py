@@ -43,6 +43,9 @@ class _AsyncImage(ft.Container):
         fit: ft.BoxFit,
         cache_width: int | None,
         cache_height: int | None,
+        border_radius: int | float | ft.BorderRadius | None,
+        anti_alias: bool,
+        fade_in_duration_ms: int,
     ) -> None:
         super().__init__(
             content=image_placeholder(width, height, loading=True),
@@ -55,6 +58,9 @@ class _AsyncImage(ft.Container):
         self._fit = fit
         self._cache_width = cache_width
         self._cache_height = cache_height
+        self._border_radius = border_radius
+        self._anti_alias = anti_alias
+        self._fade_in_duration_ms = max(0, int(fade_in_duration_ms))
         self._mounted = False
         self._loading = False
         self._loaded = False
@@ -100,6 +106,16 @@ class _AsyncImage(ft.Container):
                 fit=self._fit,
                 cache_width=self._cache_width,
                 cache_height=self._cache_height,
+                border_radius=self._border_radius,
+                anti_alias=self._anti_alias,
+                fade_in_animation=(
+                    ft.Animation(
+                        duration=ft.Duration(milliseconds=self._fade_in_duration_ms),
+                        curve=ft.AnimationCurve.EASE_OUT,
+                    )
+                    if self._fade_in_duration_ms
+                    else None
+                ),
                 error_content=image_placeholder(),
             )
             self._loaded = True
@@ -130,6 +146,9 @@ def async_image(
     fit: ft.BoxFit = ft.BoxFit.COVER,
     cache_width: int | None = None,
     cache_height: int | None = None,
+    border_radius: int | float | ft.BorderRadius | None = None,
+    anti_alias: bool = False,
+    fade_in_duration_ms: int = 180,
 ) -> ft.Control:
     """创建异步图片控件：先显示占位，再通过 ImageFetcherService 获取图片。"""
     if not should_load_images():
@@ -147,4 +166,7 @@ def async_image(
         fit=fit,
         cache_width=cache_width,
         cache_height=cache_height,
+        border_radius=border_radius,
+        anti_alias=anti_alias,
+        fade_in_duration_ms=fade_in_duration_ms,
     )

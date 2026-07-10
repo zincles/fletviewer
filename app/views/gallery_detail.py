@@ -24,8 +24,8 @@ THUMBNAIL_TILE_HEIGHT = 150
 THUMBNAIL_GRID_SPACING = 6
 DETAIL_SECTION_RADIUS = 20
 DETAIL_SECTION_PADDING = 16
-COVER_FLEX = 1
-META_FLEX = 1
+COVER_FLEX = 2
+META_FLEX = 3
 COVER_ASPECT_RATIO = 280 / 360
 
 
@@ -202,12 +202,21 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
     thumbs_status = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
     download_status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
     cover_box = ft.Container(
-        content=async_image(page, comic.cover, expand=True, fit=ft.BoxFit.COVER, cache_width=520),
+        content=async_image(
+            page,
+            comic.cover,
+            expand=True,
+            fit=ft.BoxFit.CONTAIN,
+            cache_width=520,
+            border_radius=16,
+            anti_alias=True,
+            fade_in_duration_ms=240,
+        ),
         expand=COVER_FLEX,
         aspect_ratio=COVER_ASPECT_RATIO,
         border_radius=16,
         clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+        bgcolor=ft.Colors.TRANSPARENT,
     )
     title_box = ft.Container(
         content=ft.Column(
@@ -620,7 +629,16 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
 
             title.value = details.title or comic.title
             if details.cover:
-                cover_box.content = async_image(page, details.cover, expand=True, fit=ft.BoxFit.COVER, cache_width=520)
+                cover_box.content = async_image(
+                    page,
+                    details.cover,
+                    expand=True,
+                    fit=ft.BoxFit.CONTAIN,
+                    cache_width=520,
+                    border_radius=16,
+                    anti_alias=True,
+                    fade_in_duration_ms=240,
+                )
 
             update_info_panel(details)
             tags_wrap.controls = _make_tag_controls(details.tags) or [ft.Text("暂无标签", size=14, color=ft.Colors.ON_SURFACE_VARIANT)]
