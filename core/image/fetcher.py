@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 import uuid
@@ -82,6 +83,7 @@ class ImageFetcherService:
         self._max_workers = max_workers
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="image-fetch")
         self._lock = threading.Lock()
+        self._url_locks = tuple(threading.RLock() for _ in range(64))
         self._in_flight: dict[str, Future] = {}
         self._state_lock = threading.Lock()
         self._task_states: dict[str, ImageFetchTaskState] = {}
@@ -99,8 +101,12 @@ class ImageFetcherService:
         return ImageFetchSnapshot(active=active, queued=queued, recent=recent, max_workers=self._max_workers)
 
     def fetch(self, url: str, *, kind: str = "unknown") -> ImageFetchResult:
+        return self.fetch_async(url, kind=kind).result()
+
+    def fetch_async(self, url: str, *, kind: str = "unknown") -> Future[ImageFetchResult]:
         normalized = url.strip()
         self._debug(f"request {normalized}")
+        submitted = False
         with self._lock:
             future = self._in_flight.get(normalized)
             if future is None:
@@ -108,14 +114,17 @@ class ImageFetcherService:
                 task_key = self._new_task(normalized, kind)
                 future = self._executor.submit(self._fetch_impl, normalized, kind, task_key)
                 self._in_flight[normalized] = future
+                submitted = True
             else:
                 self._debug(f"join in-flight {normalized}")
-        try:
-            return future.result()
-        finally:
-            with self._lock:
-                if self._in_flight.get(normalized) is future:
-                    self._in_flight.pop(normalized, None)
+        if submitted:
+            future.add_done_callback(lambda completed, key=normalized: self._forget_in_flight(key, completed))
+        return future
+
+    def _forget_in_flight(self, normalized: str, future: Future[ImageFetchResult]) -> None:
+        with self._lock:
+            if self._in_flight.get(normalized) is future:
+                self._in_flight.pop(normalized, None)
 
     def fetch_gallery_page(
         self,
@@ -146,6 +155,10 @@ class ImageFetcherService:
         return result
 
     def _fetch_impl(self, url: str, kind: str, task_key: str | None = None) -> ImageFetchResult:
+        with self._url_lock(url):
+            return self._fetch_impl_locked(url, kind, task_key)
+
+    def _fetch_impl_locked(self, url: str, kind: str, task_key: str | None = None) -> ImageFetchResult:
         if task_key:
             self._update_task(task_key, status="running", started_at=time.time())
         cached_path = self._cache.get_cached_path(url)
@@ -235,10 +248,17 @@ class ImageFetcherService:
         filename = self._cache.filename_for_url(url, mime=mime)
         path = self._cache.cached_path_for_url(url, mime=mime)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path = self._temporary_path(path)
         with self._timer("cache write", str(path)):
-            tmp_path.write_bytes(data)
-            tmp_path.replace(path)
+            try:
+                tmp_path.write_bytes(data)
+                try:
+                    tmp_path.replace(path)
+                except PermissionError:
+                    if not path.exists():
+                        raise
+            finally:
+                tmp_path.unlink(missing_ok=True)
 
         old_filename = self._cache.get_cached_filename(url)
         if old_filename and old_filename != filename:
@@ -251,22 +271,39 @@ class ImageFetcherService:
         total = int(response.headers.get("Content-Length") or 0)
         if task_key:
             self._update_task(task_key, bytes_total=total)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path = self._temporary_path(path)
         bytes_done = 0
+        chunks: list[bytes] = []
         with self._timer("cache write", str(path)):
-            with open(tmp_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8 * 1024):
-                    if not chunk:
-                        continue
-                    f.write(chunk)
-                    bytes_done += len(chunk)
-                    if task_key:
-                        self._update_task(task_key, bytes_done=bytes_done)
-            tmp_path.replace(path)
-        data = path.read_bytes()
+            try:
+                with open(tmp_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8 * 1024):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        chunks.append(chunk)
+                        bytes_done += len(chunk)
+                        if task_key:
+                            self._update_task(task_key, bytes_done=bytes_done)
+                try:
+                    tmp_path.replace(path)
+                except PermissionError:
+                    if not path.exists():
+                        raise
+            finally:
+                tmp_path.unlink(missing_ok=True)
+        data = b"".join(chunks)
         if task_key:
             self._update_task(task_key, bytes_done=len(data), bytes_total=total or len(data))
         return data
+
+    @staticmethod
+    def _temporary_path(path: Path) -> Path:
+        return path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+
+    def _url_lock(self, url: str) -> threading.RLock:
+        digest = hashlib.sha256(url.encode("utf-8")).digest()
+        return self._url_locks[int.from_bytes(digest[:2], "big") % len(self._url_locks)]
 
     @staticmethod
     def _parse_sprite_crop(url: str) -> tuple[str, int, int, int, int] | None:

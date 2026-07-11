@@ -19,6 +19,7 @@ from app.debug_log import format_duration_ms, log_debug
 from app.local_gallery_manager import local_gallery_manager
 from app.storage import should_use_linux_builtin_title_bar
 from app.theme import apply_app_theme, refresh_adaptive_theme_on_brightness_change
+from app.ui_update import request_update
 from app.views.downloads import create_view as downloads_view
 from app.views.debug import create_view as debug_view
 from app.views.home import create_view as home_view
@@ -260,8 +261,7 @@ def main(page: ft.Page):
         indicator = reading_loading_indicator_ref.get("value")
         if indicator is not None:
             indicator.visible = bool(reading_loading_sources)
-            if getattr(indicator, "page", None) is not None:
-                indicator.update()
+            request_update(page)
 
     page.fletviewer_set_reading_loading = set_reading_loading
 

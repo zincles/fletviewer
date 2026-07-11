@@ -1,5 +1,6 @@
 import base64
 import time
+from concurrent.futures import Future
 
 import flet as ft
 
@@ -7,6 +8,7 @@ from app.debug_log import log_debug, log_exception, log_image_served
 from app.image_fetcher import image_fetcher
 from app.storage import should_load_images
 from app.ui_update import request_update
+from core.image.fetcher import ImageFetchResult
 
 
 def image_src_for_page(page: ft.Page, data: bytes, mime: str) -> bytes | str:
@@ -75,7 +77,8 @@ class _AsyncImage(ft.Container):
         self._loading = True
         token = self._load_token
         try:
-            self._page.run_thread(lambda: self._load(token))
+            future = image_fetcher.fetch_async(self._url)
+            future.add_done_callback(lambda completed: self._schedule_apply(token, completed))
         except Exception as ex:
             self._loading = False
             log_exception("async_image", f"start failed url={self._url}: {ex}")
@@ -90,12 +93,32 @@ class _AsyncImage(ft.Container):
         generation_matches = self._content_generation is None or current_generation == self._content_generation
         return self._mounted and token == self._load_token and generation_matches
 
-    def _load(self, token: int) -> None:
+    def _can_schedule(self) -> bool:
+        session = getattr(self._page, "session", None)
+        return session is not None and getattr(session, "connection", None) is not None
+
+    def _schedule_apply(self, token: int, future: Future[ImageFetchResult]) -> None:
+        if not self._is_active(token) or not self._can_schedule():
+            self._loading = False
+            return
+        try:
+            self._page.run_thread(lambda: self._apply_result(token, future))
+        except AttributeError as ex:
+            # The Flet session can disconnect between the check and run_thread().
+            if not self._can_schedule():
+                self._loading = False
+                return
+            log_exception("async_image", f"apply scheduling failed url={self._url}: {ex}")
+        except Exception as ex:
+            self._loading = False
+            log_exception("async_image", f"apply scheduling failed url={self._url}: {ex}")
+
+    def _apply_result(self, token: int, future: Future[ImageFetchResult]) -> None:
         started_at = time.perf_counter()
         try:
             if not self._is_active(token):
                 return
-            result = image_fetcher.fetch(self._url)
+            result = future.result()
             if not self._is_active(token):
                 return
             self.content = ft.Image(

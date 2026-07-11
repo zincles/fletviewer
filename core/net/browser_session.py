@@ -158,33 +158,30 @@ class BrowserSessionService:
     def get(self, url: str, **kwargs) -> requests.Response:
         self.configure_from_storage()
         quiet_image = is_image_request_url(url)
-        with self._lock:
-            if quiet_image:
+        if quiet_image:
+            resp = self.session.get(url, **kwargs)
+        else:
+            with self._timer(f"GET {url}"):
                 resp = self.session.get(url, **kwargs)
-            else:
-                with self._timer(f"GET {url}"):
-                    resp = self.session.get(url, **kwargs)
-            if kwargs.get("stream"):
-                self._debug(f"GET 流式完成 status={resp.status_code} final_url={resp.url}")
-            elif not quiet_image or resp.status_code >= 400:
-                self._debug(f"GET 完成 status={resp.status_code} bytes={len(resp.content)} final_url={resp.url}")
-            return resp
+        if kwargs.get("stream"):
+            self._debug(f"GET 流式完成 status={resp.status_code} final_url={resp.url}")
+        elif not quiet_image or resp.status_code >= 400:
+            self._debug(f"GET 完成 status={resp.status_code} bytes={len(resp.content)} final_url={resp.url}")
+        return resp
 
     def post(self, url: str, **kwargs) -> requests.Response:
         self.configure_from_storage()
-        with self._lock:
-            with self._timer(f"POST {url}"):
-                resp = self.session.post(url, **kwargs)
-                self._debug(f"POST 完成 status={resp.status_code} bytes={len(resp.content)} final_url={resp.url}")
-            return resp
+        with self._timer(f"POST {url}"):
+            resp = self.session.post(url, **kwargs)
+            self._debug(f"POST 完成 status={resp.status_code} bytes={len(resp.content)} final_url={resp.url}")
+        return resp
 
     def head(self, url: str, **kwargs) -> requests.Response:
         self.configure_from_storage()
-        with self._lock:
-            with self._timer(f"HEAD {url}"):
-                resp = self.session.head(url, **kwargs)
-                self._debug(f"HEAD 完成 status={resp.status_code} final_url={resp.url}")
-            return resp
+        with self._timer(f"HEAD {url}"):
+            resp = self.session.head(url, **kwargs)
+            self._debug(f"HEAD 完成 status={resp.status_code} final_url={resp.url}")
+        return resp
 
     def _clear_eh_cookies_locked(self) -> None:
         for domain in (".e-hentai.org", ".exhentai.org"):

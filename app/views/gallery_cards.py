@@ -402,12 +402,7 @@ def create_gallery_cards_view(
                     refresh_btn.disabled = False
                     load_more_btn.text = "加载下一页内容"
                     load_more_btn.icon = ft.Icons.EXPAND_MORE
-                    if append and view_mode == "masonry":
-                        pagination_bar.update()
-                        if getattr(refresh_btn, "page", None) is not None:
-                            refresh_btn.update()
-                    else:
-                        request_update(page)
+                    request_update(page)
 
             page.run_thread(worker)
 
