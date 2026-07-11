@@ -30,7 +30,7 @@ APP_CONFIG_DEFAULTS = {
     "theme_color": "adaptive",
     "image_viewer_mode": "paged",
     "gallery_grid_columns": 5,
-    "gallery_view_mode": "card",
+    "gallery_view_mode": "masonry",
     "show_gallery_page_count": True,
     "show_gallery_info": True,
     "debug_show_cover_dimensions": False,
@@ -186,10 +186,10 @@ def get_gallery_grid_columns() -> int:
 
 def get_gallery_view_mode() -> str:
     """读取画廊浏览模式；旧 waterfall 值兼容为等高卡片模式。"""
-    mode = str(load_app_config().get("gallery_view_mode", "card"))
+    mode = str(load_app_config().get("gallery_view_mode", "masonry"))
     if mode == "waterfall":
         return "card"
-    return mode if mode in GALLERY_VIEW_MODES else "card"
+    return mode if mode in GALLERY_VIEW_MODES else "masonry"
 
 
 def should_show_gallery_page_count() -> bool:

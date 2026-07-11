@@ -235,7 +235,7 @@ def create_view(page: ft.Page) -> ft.Control:
             "theme_color": theme_color_dropdown.value or "adaptive",
             "image_viewer_mode": viewer_mode_dropdown.value or "paged",
             "gallery_grid_columns": grid_columns,
-            "gallery_view_mode": (gallery_view_mode_segments.selected or ["card"])[0],
+            "gallery_view_mode": (gallery_view_mode_segments.selected or ["masonry"])[0],
             "show_gallery_page_count": show_gallery_page_count_switch.value,
             "show_gallery_info": show_gallery_info_switch.value,
             "debug_show_cover_dimensions": debug_cover_dimensions_switch.value,
@@ -333,7 +333,7 @@ def create_view(page: ft.Page) -> ft.Control:
     def on_gallery_view_mode_change(e):
         event_data = getattr(e, "data", None) or getattr(getattr(e, "control", None), "selected", None)
         mode = _selected_segment_value(event_data, "card")
-        gallery_view_mode_segments.selected = [mode if mode in {"card", "list", "masonry"} else "card"]
+        gallery_view_mode_segments.selected = [mode if mode in {"card", "list", "masonry"} else "masonry"]
         apply_app_settings(
             reason="gallery_view_mode_changed",
             target=display_status,
