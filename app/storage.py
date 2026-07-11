@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 ROOT_DIR = Path(os.environ.get("FLETVIEWER_HOME", "FletViewer"))
+TEMP_DIR = Path(os.environ.get("FLET_APP_STORAGE_TEMP") or ROOT_DIR / "Temp")
 CONFIG_DIR = ROOT_DIR / "Config"
 EH_CONFIG_PATH = CONFIG_DIR / "EHArchieve.json"
 APP_CONFIG_PATH = CONFIG_DIR / "AppConfig.json"
@@ -55,6 +56,11 @@ def ensure_dirs():
     """确保基础目录存在，并移除旧 Config/Cache 目录。"""
     ROOT_DIR.mkdir(parents=True, exist_ok=True)
     _remove_legacy_dirs()
+
+
+def ensure_temp_dirs() -> None:
+    """确保可随系统缓存清理的临时目录存在。"""
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _remove_legacy_dirs() -> None:

@@ -163,7 +163,7 @@ for comic in comics:
     column = min(range(column_count), key=column_heights.__getitem__)
     columns[column].controls.append(
         ft.Container(
-            content=make_gallery_card(page, comic, mode="waterfall"),
+            content=make_gallery_card(page, comic, mode="masonry"),
             aspect_ratio=ratio,
         )
     )

@@ -18,6 +18,7 @@ from app.browser_session import browser_session
 from app.debug_log import format_duration_ms, log_debug
 from app.local_gallery_manager import local_gallery_manager
 from app.storage import should_use_linux_builtin_title_bar
+from app.storage import CACHE_FILES_DIR, DOWNLOADS_DIR, ROOT_DIR, TEMP_DIR
 from app.theme import apply_app_theme, refresh_adaptive_theme_on_brightness_change
 from app.ui_update import request_update
 from app.views.downloads import create_view as downloads_view
@@ -124,6 +125,13 @@ def _should_use_safe_area(page: ft.Page) -> bool:
 
 def main(page: ft.Page):
     """Flet 应用主入口，负责全局导航、页面缓存和二级页面切换。"""
+    print("[storage] platform:", page.platform)
+    print("[storage] data:", ROOT_DIR.resolve())
+    print("[storage] cache:", CACHE_FILES_DIR.resolve())
+    print("[storage] downloads:", DOWNLOADS_DIR.resolve())
+    print("[storage] temp:", TEMP_DIR.resolve())
+    print("[storage] FLET_APP_STORAGE_DATA:", os.environ.get("FLET_APP_STORAGE_DATA") or "<unset>")
+    print("[storage] FLET_APP_STORAGE_TEMP:", os.environ.get("FLET_APP_STORAGE_TEMP") or "<unset>")
     page.title = "FletViewer"
     apply_app_theme(page)
     page.fletviewer_apply_theme = lambda update=True: apply_app_theme(page, update=update)

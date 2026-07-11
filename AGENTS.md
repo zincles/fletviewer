@@ -119,6 +119,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 
 ## Android 构建
 
+- 平台存储拆分尚未落地：当前配置、数据库、缓存和下载路径仍处于迁移前/过渡状态，目标为 Data、Cache、Downloads、Temp 四域；详细决策、迁移步骤和验收矩阵以 `TODO.md` 为准。完成 Windows/Android 覆盖升级与“清除缓存”真机验证前，不要把计划路径当成稳定接口，也不要新增依赖旧 `FletViewer/` 相对根目录的业务代码。
 - Flet 0.85.3 配套 Flutter 3.41.7；不要用 scoop/winget 装 Flutter，版本不匹配或源不存在。
 - 不要用 Puro；Flet CLI 调用的 `flutter` 子进程不会自动拿到 Puro 环境。
 - 推荐让 `flet build apk` 自动下载配套 Flutter 到 `C:\Users\<用户名>\flutter\3.41.7\`；PATH 上不要有其他 Flutter 干扰。
