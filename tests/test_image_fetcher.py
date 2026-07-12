@@ -70,6 +70,123 @@ class _MemoryCache:
 
 
 class ImageFetcherAsyncTests(unittest.TestCase):
+    def test_gallery_page_fetch_and_cache_maintenance_do_not_deadlock(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        class Response:
+            headers = {"Content-Length": "5", "Content-Type": "image/jpeg"}
+
+            def raise_for_status(self) -> None:
+                pass
+
+            def iter_content(self, chunk_size: int):
+                started.set()
+                release.wait(timeout=2)
+                yield b"image"
+
+            def close(self) -> None:
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = _MemoryCache(Path(tmp))
+            service = ImageFetcherService(cache=cache, get_response=lambda *_args: Response(), max_workers=1)
+            cancel_event = threading.Event()
+            result: list[object] = []
+
+            def fetch_page() -> None:
+                try:
+                    result.append(service.fetch_gallery_page(
+                        provider="eh",
+                        gid="1",
+                        token="token",
+                        page_idx=0,
+                        resolve_url=lambda: "https://example.test/image.jpg",
+                        cancel_event=cancel_event,
+                    ))
+                except Exception as ex:
+                    result.append(ex)
+
+            fetch_thread = threading.Thread(target=fetch_page)
+            fetch_thread.start()
+            self.assertTrue(started.wait(timeout=1))
+            maintenance = threading.Thread(target=service.run_cache_maintenance, args=(lambda: None,))
+            maintenance.start()
+            release.set()
+            fetch_thread.join(timeout=1)
+            maintenance.join(timeout=1)
+
+            self.assertFalse(fetch_thread.is_alive())
+            self.assertFalse(maintenance.is_alive())
+            self.assertIsInstance(result[0], ImageFetchCancelled)
+
+    def test_cache_maintenance_cancels_active_write_before_clearing(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        cleared = threading.Event()
+
+        class Response:
+            headers = {"Content-Length": "8", "Content-Type": "image/jpeg"}
+
+            def raise_for_status(self) -> None:
+                pass
+
+            def iter_content(self, chunk_size: int):
+                yield b"first"
+                started.set()
+                release.wait(timeout=2)
+                yield b"last"
+
+            def close(self) -> None:
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = _MemoryCache(Path(tmp))
+            service = ImageFetcherService(cache=cache, get_response=lambda *_args: Response(), max_workers=1)
+            future = service.fetch_async("https://example.test/image.jpg")
+            self.assertTrue(started.wait(timeout=1))
+
+            def clear() -> None:
+                self.assertFalse(list(cache.root.glob("*.tmp")))
+                for path in cache.root.iterdir():
+                    path.unlink()
+                cache.entries.clear()
+                cleared.set()
+
+            maintenance = threading.Thread(target=service.run_cache_maintenance, args=(clear,))
+            maintenance.start()
+            time.sleep(0.02)
+            self.assertFalse(cleared.is_set())
+            release.set()
+            maintenance.join(timeout=1)
+
+            self.assertFalse(maintenance.is_alive())
+            self.assertTrue(cleared.is_set())
+            with self.assertRaises(ImageFetchCancelled):
+                future.result(timeout=1)
+            self.assertEqual(list(cache.root.iterdir()), [])
+            self.assertEqual(cache.entries, {})
+
+    def test_gallery_page_cache_hit_does_not_reference_missing_cancel_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cached = root / "page.jpg"
+            cached.write_bytes(b"page")
+            cache = _MemoryCache(root)
+            cache.get_gallery_page_cached_path = lambda *_args: cached
+            service = ImageFetcherService(cache=cache, get_response=lambda *_args: None, max_workers=1)
+
+            result = service.fetch_gallery_page(
+                provider="eh",
+                gid="1",
+                token="token",
+                page_idx=0,
+                resolve_url=lambda: "unused",
+            )
+
+            self.assertEqual(result.data, b"page")
+            self.assertTrue(result.from_cache)
+
     def test_coordinator_accepts_already_completed_future_without_deadlock(self) -> None:
         service = Mock()
         future = Future()
@@ -352,7 +469,7 @@ class ImageFetcherAsyncTests(unittest.TestCase):
         release = threading.Event()
         calls = 0
 
-        def blocked_fetch(url: str, kind: str, task_key: str | None = None):
+        def blocked_fetch(url: str, kind: str, task_key: str | None = None, cancel_event=None):
             nonlocal calls
             calls += 1
             started.set()
@@ -387,7 +504,7 @@ class ImageFetcherAsyncTests(unittest.TestCase):
             )
             calls = 0
 
-            def completed_fetch(url: str, kind: str, task_key: str | None = None):
+            def completed_fetch(url: str, kind: str, task_key: str | None = None, cancel_event=None):
                 nonlocal calls
                 calls += 1
                 return calls
@@ -406,7 +523,7 @@ class ImageFetcherAsyncTests(unittest.TestCase):
             )
             calls = 0
 
-            def failed_fetch(url: str, kind: str, task_key: str | None = None):
+            def failed_fetch(url: str, kind: str, task_key: str | None = None, cancel_event=None):
                 nonlocal calls
                 calls += 1
                 raise RuntimeError("failed")

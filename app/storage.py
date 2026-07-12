@@ -48,11 +48,13 @@ APP_CONFIG_DEFAULTS = {
     "enable_login": True,
     "load_images": True,
     "show_error_toasts": True,
+    "show_task_debug_overlay": True,
     "render_gallery_cards": True,
     "theme_mode": "system",
     "theme_color": "adaptive",
     "image_viewer_mode": "paged",
     "gallery_grid_columns": 5,
+    "gallery_detail_preview_rows": 3,
     "gallery_view_mode": "masonry",
     "show_gallery_page_count": True,
     "show_gallery_info": True,
@@ -194,6 +196,11 @@ def should_show_error_toasts() -> bool:
     return bool(load_app_config().get("show_error_toasts", True))
 
 
+def should_show_task_debug_overlay() -> bool:
+    """返回是否显示右上角任务调试悬浮窗。"""
+    return bool(load_app_config().get("show_task_debug_overlay", True))
+
+
 def get_theme_mode() -> str:
     """读取界面明暗模式，并对非法值回退到跟随系统。"""
     mode = str(load_app_config().get("theme_mode", "system"))
@@ -228,6 +235,18 @@ def get_gallery_grid_columns() -> int:
     except (TypeError, ValueError):
         value = 5
     return max(2, min(10, value))
+
+
+def get_gallery_detail_preview_rows() -> int | None:
+    """读取详情页初始缩略图行数；None 表示显示全部。"""
+    value = load_app_config().get("gallery_detail_preview_rows", 3)
+    if value == "all":
+        return None
+    try:
+        rows = int(value)
+    except (TypeError, ValueError):
+        rows = 3
+    return rows if rows in {2, 3, 4} else 3
 
 
 def get_gallery_view_mode() -> str:

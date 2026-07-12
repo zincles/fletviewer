@@ -149,6 +149,10 @@ def create_view(page: ft.Page) -> ft.Control:
         label="显示错误提示",
         value=bool(app_cfg.get("show_error_toasts", True)),
     )
+    show_task_debug_overlay_switch = ft.Switch(
+        label="显示任务调试悬浮窗",
+        value=bool(app_cfg.get("show_task_debug_overlay", True)),
+    )
     render_cards_switch = ft.Switch(
         label="使用JSON而非解析画廊",
         value=not bool(app_cfg.get("render_gallery_cards", True)),
@@ -223,6 +227,18 @@ def create_view(page: ft.Page) -> ft.Control:
         label="{value} 列",
         width=320,
     )
+    gallery_detail_preview_rows_dropdown = ft.Dropdown(
+        label="详情页预览行数",
+        value=str(app_cfg.get("gallery_detail_preview_rows", 3)),
+        options=[
+            ft.DropdownOption(key="2", text="2 行"),
+            ft.DropdownOption(key="3", text="3 行"),
+            ft.DropdownOption(key="4", text="4 行"),
+            ft.DropdownOption(key="all", text="全部"),
+        ],
+        width=220,
+        dense=True,
+    )
     show_gallery_page_count_switch = ft.Switch(
         label="列表模式显示页数",
         value=bool(app_cfg.get("show_gallery_page_count", True)),
@@ -271,11 +287,13 @@ def create_view(page: ft.Page) -> ft.Control:
             "enable_login": enable_login_switch.value,
             "load_images": load_images_switch.value,
             "show_error_toasts": show_error_toasts_switch.value,
+            "show_task_debug_overlay": show_task_debug_overlay_switch.value,
             "render_gallery_cards": not render_cards_switch.value,
             "theme_mode": (theme_mode_segments.selected or ["system"])[0],
             "theme_color": theme_color_dropdown.value or "adaptive",
             "image_viewer_mode": viewer_mode_dropdown.value or "paged",
             "gallery_grid_columns": grid_columns,
+            "gallery_detail_preview_rows": gallery_detail_preview_rows_dropdown.value or "3",
             "gallery_view_mode": (gallery_view_mode_segments.selected or ["masonry"])[0],
             "show_gallery_page_count": show_gallery_page_count_switch.value,
             "show_gallery_info": show_gallery_info_switch.value,
@@ -372,6 +390,12 @@ def create_view(page: ft.Page) -> ft.Control:
 
     gallery_columns_slider.on_change = on_gallery_columns_change
     gallery_columns_slider.on_change_end = on_gallery_columns_change_end
+    gallery_detail_preview_rows_dropdown.on_select = lambda e: apply_app_settings(
+        reason="gallery_detail_preview_rows_changed",
+        target=display_status,
+        message="详情页预览行数已更新",
+        invalidate_gallery=True,
+    )
 
     def on_gallery_view_mode_change(e):
         event_data = getattr(e, "data", None) or getattr(getattr(e, "control", None), "selected", None)
@@ -419,6 +443,20 @@ def create_view(page: ft.Page) -> ft.Control:
         target=debug_status,
         message="错误提示设置已更新",
     )
+
+    def on_task_debug_overlay_change(e):
+        apply_app_settings(
+            reason="task_debug_overlay_visibility_changed",
+            target=debug_status,
+            message="任务调试悬浮窗设置已更新",
+            update=False,
+        )
+        set_visible = getattr(page, "fletviewer_set_task_debug_overlay_visible", None)
+        if callable(set_visible):
+            set_visible(bool(show_task_debug_overlay_switch.value), update=False)
+        page.update()
+
+    show_task_debug_overlay_switch.on_change = on_task_debug_overlay_change
     render_cards_switch.on_change = lambda e: apply_app_settings(
         reason="debug_display_setting_changed",
         target=debug_status,
@@ -495,7 +533,9 @@ def create_view(page: ft.Page) -> ft.Control:
 
         def worker():
             try:
-                clear_image_cache()
+                from app.image_fetcher import image_fetcher
+
+                image_fetcher.run_cache_maintenance(clear_image_cache)
                 stats = get_image_cache_stats()
                 image_cache_size.value = f"{_format_bytes(stats.bytes_used)} · {stats.file_count} 个文件"
                 _invalidate_gallery_views(page, "image_cache_cleared")
@@ -583,6 +623,7 @@ def create_view(page: ft.Page) -> ft.Control:
                 gallery_view_mode_segments,
                 ft.Text("卡片/瀑布流列数", size=14, weight=ft.FontWeight.W_500),
                 ft.Row([gallery_columns_slider, gallery_columns_value], spacing=12, wrap=True),
+                gallery_detail_preview_rows_dropdown,
                 show_gallery_page_count_switch,
                 show_gallery_info_switch,
                 display_status,
@@ -716,6 +757,7 @@ def create_view(page: ft.Page) -> ft.Control:
                 ),
                 load_images_switch,
                 show_error_toasts_switch,
+                show_task_debug_overlay_switch,
                 render_cards_switch,
                 ft.Text("封面调试覆盖", size=16, weight=ft.FontWeight.W_500),
                 ft.Text(
@@ -898,6 +940,27 @@ def create_view(page: ft.Page) -> ft.Control:
             spacing=6,
         )
 
+    narrow_scroll_state = {"pixels": 0.0, "hidden": False}
+
+    def on_narrow_scroll(e):
+        pixels = max(0.0, float(getattr(e, "pixels", 0) or 0))
+        previous = narrow_scroll_state["pixels"]
+        narrow_scroll_state["pixels"] = pixels
+        if pixels <= 8:
+            visible = True
+        elif pixels > previous + 6:
+            visible = False
+        elif pixels < previous - 6:
+            visible = True
+        else:
+            return
+        if narrow_scroll_state["hidden"] == (not visible):
+            return
+        narrow_scroll_state["hidden"] = not visible
+        set_visible = getattr(page, "fletviewer_set_bottom_nav_visible", None)
+        if callable(set_visible):
+            set_visible(visible)
+
     narrow_layout = ft.Column(
         [
             ft.Text("设置", size=28, weight=ft.FontWeight.BOLD),
@@ -909,10 +972,12 @@ def create_view(page: ft.Page) -> ft.Control:
                 )
                 for group_title, categories in settings_categories
             ],
+            ft.Container(height=86),
         ],
         spacing=18,
         expand=True,
         scroll=ft.ScrollMode.AUTO,
+        on_scroll=on_narrow_scroll,
     )
 
     wide_menu_controls: list[ft.Control] = [

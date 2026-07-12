@@ -137,10 +137,11 @@ def log_exception(area: str, message: str) -> None:
 class Timer:
     """简单耗时日志上下文管理器。"""
 
-    def __init__(self, area: str, message: str):
+    def __init__(self, area: str, message: str, *, expected_exceptions: tuple[type[BaseException], ...] = ()):
         """记录日志区域和计时说明。"""
         self.area = area
         self.message = message
+        self.expected_exceptions = expected_exceptions
         self.started_at = 0.0
 
     def __enter__(self):
@@ -151,6 +152,7 @@ class Timer:
     def __exit__(self, exc_type, exc, tb):
         """结束计时并输出 END/ERROR 日志。"""
         elapsed_ms = (time.perf_counter() - self.started_at) * 1000
-        status = "ERROR " if exc_type else ""
+        expected = exc_type is not None and issubclass(exc_type, self.expected_exceptions)
+        status = "CANCEL " if expected else "ERROR " if exc_type else ""
         log_debug(self.area, f"{status}{self.message} 耗时={format_duration_ms(elapsed_ms)}")
         return False

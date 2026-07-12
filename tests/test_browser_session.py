@@ -1,4 +1,6 @@
 import unittest
+import threading
+from unittest.mock import Mock
 
 from core.net.browser_session import BrowserSessionService
 
@@ -41,6 +43,43 @@ class BrowserSessionProxyTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             service.configure_proxy_from_storage()
+
+    def test_eh_client_requests_use_service_entrypoint(self):
+        service = self._service({"proxy_mode": "disabled"})
+        response = Mock(status_code=200)
+        service.get = Mock(return_value=response)
+        client = service.get_eh_client(require_login=False)
+
+        result = client._session.get("https://e-hentai.org/")
+
+        self.assertIs(result, response)
+        service.get.assert_called_once_with("https://e-hentai.org/")
+
+    def test_guest_requests_remain_concurrent_after_initial_configuration(self):
+        service = self._service({"proxy_mode": "disabled", "enable_login": False})
+        entered = 0
+        both_entered = threading.Event()
+        release = threading.Event()
+        lock = threading.Lock()
+
+        def get(*_args, **_kwargs):
+            nonlocal entered
+            with lock:
+                entered += 1
+                if entered == 2:
+                    both_entered.set()
+            release.wait(timeout=2)
+            return Mock(status_code=200, content=b"", url="https://example.test/image.jpg")
+
+        service.session.get = get
+        threads = [threading.Thread(target=service.get, args=("https://example.test/image.jpg",)) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        self.assertTrue(both_entered.wait(timeout=1))
+        release.set()
+        for thread in threads:
+            thread.join(timeout=1)
+            self.assertFalse(thread.is_alive())
 
 
 if __name__ == "__main__":

@@ -161,10 +161,6 @@ class _AsyncImage(ft.Container):
         generation_matches = self._content_generation is None or current_generation == self._content_generation
         return self._mounted and token == self._load_token and generation_matches
 
-    def _can_schedule(self) -> bool:
-        session = getattr(self._page, "session", None)
-        return session is not None and getattr(session, "connection", None) is not None
-
     def _schedule_apply(
         self,
         token: int,
@@ -174,18 +170,18 @@ class _AsyncImage(ft.Container):
         if future is None:
             future = subscription
             subscription = getattr(self, "_subscription", None)
-        if not self._is_active(token) or not self._can_schedule():
+        if not self._is_active(token):
             self._clear_if_current(subscription)
             return
         if subscription is None:
+            self._loading = False
+            self._progress_ring = None
+            image_progress_pump(self._page).unregister(self)
+            log_debug("异步图像", f"完成回调缺少订阅 URL={self._url}")
             return
         try:
             self._page.run_thread(lambda: self._apply_result(token, subscription, future))
         except AttributeError as ex:
-            # The Flet session can disconnect between the check and run_thread().
-            if not self._can_schedule():
-                self._clear_if_current(subscription)
-                return
             self._clear_if_current(subscription)
             log_exception("异步图像", f"调度结果应用失败 URL={self._url}：{ex}")
         except Exception as ex:
@@ -201,9 +197,10 @@ class _AsyncImage(ft.Container):
         except ImageFetchCancelled:
             if self._is_active(token) and self._subscription is subscription:
                 self.content = self._action_content(ft.Icons.DOWNLOAD_OUTLINED, "加载图像", self._start_load)
-        except Exception:
+        except Exception as ex:
             if self._is_active(token) and self._subscription is subscription:
                 self.content = self._action_content(ft.Icons.REFRESH, "重试图像加载", self._start_load)
+                log_exception("异步图像", f"加载失败 URL={self._url} 任务={subscription.task_key}：{ex}")
         else:
             if not self._is_active(token) or self._subscription is not subscription:
                 self._clear_if_current(subscription)

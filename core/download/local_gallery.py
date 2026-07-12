@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import threading
 import zipfile
@@ -24,6 +25,10 @@ from core.notification import Notification
 
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 _MAX_COVER_BYTES = 64 * 1024 * 1024
+
+
+def _natural_key(value: str) -> list[int | str]:
+    return [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", value)]
 
 
 @dataclass
@@ -72,8 +77,9 @@ class LocalGalleryManager:
             title = tag_data.get("gallery_details", {}).get("title") or tag_data.get("title") or "未命名"
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             gallery_dir = self.archive_dir / self._eh_archive_folder_name(gid, token, title)
-            if self._is_committed_gallery(gallery_dir, task.id):
-                self._upsert_gallery(gallery_dir, self._read_gallery_metadata(gallery_dir))
+            committed_dir = self._find_committed_gallery(task.id)
+            if committed_dir is not None:
+                self._upsert_gallery(committed_dir, self._read_gallery_metadata(committed_dir))
                 archive_source.unlink(missing_ok=True)
                 self._download_manager.mark_consumed(task.id)
                 return
@@ -157,15 +163,17 @@ class LocalGalleryManager:
 
     def _extract_cover_from_zip(self, zip_path: Path, output_dir: Path) -> str:
         with zipfile.ZipFile(zip_path) as zf:
-            names = sorted(name for name in zf.namelist() if self._is_image_member(name))
-            if not names:
+            images = sorted(
+                (info for info in zf.infolist() if not info.is_dir() and self._is_image_member(info.filename)),
+                key=lambda info: _natural_key(info.filename),
+            )
+            if not images:
                 return ""
-            first = names[0]
-            info = zf.getinfo(first)
+            info = images[0]
             if info.file_size > _MAX_COVER_BYTES:
                 raise ValueError(f"封面过大，拒绝解压: {info.file_size} bytes")
-            data = zf.read(first)
-            ext = Path(first).suffix.lower()
+            data = zf.read(info)
+            ext = Path(info.filename).suffix.lower()
             if ext == ".jpeg":
                 ext = ".jpg"
             cover_filename = f"thumb{ext}"
@@ -250,6 +258,14 @@ class LocalGalleryManager:
             return self._read_gallery_metadata(gallery_dir).get("download_task_id") == task_id
         except Exception:
             return False
+
+    def _find_committed_gallery(self, task_id: str) -> Path | None:
+        if not self.archive_dir.exists():
+            return None
+        for entry in self.archive_dir.iterdir():
+            if entry.is_dir() and not entry.name.startswith(".") and self._is_committed_gallery(entry, task_id):
+                return entry
+        return None
 
     def _unique_path(self, path: Path) -> Path:
         if not path.exists():

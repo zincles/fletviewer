@@ -9,7 +9,7 @@ import flet as ft
 
 from app.controls.async_image import image_placeholder, image_src_for_page
 from app.debug_log import Timer, log_debug, log_exception
-from app.image_fetcher import image_fetcher
+from app.image_fetcher import ImageFetchCancelled, image_fetcher
 from app.storage import get_image_viewer_mode, get_storage_layout, should_load_images
 from app.toast import show_error_toast
 from app.ui_update import request_update
@@ -36,12 +36,27 @@ class ViewerImageResult:
     from_cache: bool = False
 
 
-LoadImage = Callable[[ImageViewerItem, int], ViewerImageResult]
+LoadImage = Callable[[ImageViewerItem, int, threading.Event], ViewerImageResult]
 VERTICAL_ESTIMATED_WIDTH = 900
 VERTICAL_DEFAULT_RATIO = 0.7
 VERTICAL_SPACING = 12
 VERTICAL_WINDOW_PAGES = 2
 VERTICAL_SCROLL_BUFFER = 1200
+
+
+class _ViewerContainer(ft.Container):
+    def __init__(self):
+        super().__init__(expand=True)
+        self.on_mount: Callable[[], None] | None = None
+        self.on_unmount: Callable[[], None] | None = None
+
+    def did_mount(self) -> None:
+        if self.on_mount:
+            self.on_mount()
+
+    def will_unmount(self) -> None:
+        if self.on_unmount:
+            self.on_unmount()
 
 
 def _suffix_for_mime(mime: str) -> str:
@@ -100,13 +115,14 @@ def create_view(
         "vertical_generation": 0,
         "overlay_generation": 0,
         "last_overlay_activity": 0.0,
+        "alive": False,
     }
     if state["mode"] not in ("paged", "vertical"):
         state["mode"] = "paged"
 
     title = ft.Text("", size=18, weight=ft.FontWeight.W_500, selectable=True)
     status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
-    body = ft.Container(expand=True)
+    body = _ViewerContainer()
     image_box = ft.Container(content=image_placeholder(), expand=True, alignment=ft.Alignment(0, 0))
     prev_btn = ft.IconButton(icon=ft.Icons.CHEVRON_LEFT, tooltip="上一张")
     next_btn = ft.IconButton(icon=ft.Icons.CHEVRON_RIGHT, tooltip="下一张")
@@ -145,6 +161,8 @@ def create_view(
     vertical_urls: dict[int, str] = {}
     vertical_paths: dict[int, Path | None] = {}
     vertical_data: dict[int, tuple[bytes, str]] = {}
+    vertical_jobs: dict[int, tuple[int, threading.Event]] = {}
+    paged_cancel_event: threading.Event | None = None
 
     offsets: list[int] = []
     total = 0
@@ -159,9 +177,11 @@ def create_view(
         with Timer("图像查看器", f"解析图像 索引={idx}"):
             return resolve_image_url(item, idx) if resolve_image_url else item.url
 
-    def fetch_item_image(item: ImageViewerItem, idx: int):
+    def fetch_item_image(item: ImageViewerItem, idx: int, cancel_event: threading.Event):
+        if cancel_event.is_set():
+            raise ImageFetchCancelled("图像加载已取消")
         if load_image is not None:
-            return load_image(item, idx)
+            return load_image(item, idx, cancel_event)
         provider = item.detail.get("provider")
         gid = item.detail.get("gid")
         token = item.detail.get("token")
@@ -174,9 +194,10 @@ def create_view(
                 page_idx=int(page_idx),
                 kind=str(item.detail.get("kind") or "original"),
                 resolve_url=lambda: resolve_item_url(item, idx),
+                cancel_event=cancel_event,
             )
         url = resolve_item_url(item, idx)
-        return image_fetcher.fetch(url)
+        return image_fetcher.fetch_async(url, cancel_event=cancel_event, deduplicate=False).result()
 
     def update_nav():
         prev_btn.disabled = state["index"] <= 0
@@ -196,7 +217,7 @@ def create_view(
 
         def worker():
             time.sleep(3)
-            if generation != state["overlay_generation"]:
+            if not state["alive"] or generation != state["overlay_generation"]:
                 return
             top_overlay_container.opacity = 0
             top_overlay_container.offset = (0, -1.4)
@@ -216,6 +237,13 @@ def create_view(
         schedule_overlay_hide()
 
     def load_current():
+        nonlocal paged_cancel_event
+        if not state["alive"]:
+            return
+        if paged_cancel_event is not None:
+            paged_cancel_event.set()
+        paged_cancel_event = threading.Event()
+        cancel_event = paged_cancel_event
         state["paged_generation"] += 1
         generation = state["paged_generation"]
         if not items:
@@ -252,30 +280,38 @@ def create_view(
 
         def worker():
             try:
-                log_debug("图像查看器", f"加载图像 索引={state['index']}")
-                with Timer("图像查看器", f"获取图像 索引={state['index']}"):
-                    result = fetch_item_image(item, state["index"])
-                if generation != state["paged_generation"] or state["mode"] != "paged":
+                log_debug("图像查看器", f"加载图像 索引={state_index}")
+                with Timer("图像查看器", f"获取图像 索引={state_index}", expected_exceptions=(ImageFetchCancelled,)):
+                    result = fetch_item_image(item, state_index, cancel_event)
+                if not state["alive"] or cancel_event.is_set() or generation != state["paged_generation"] or state["mode"] != "paged":
                     return
                 state["current_url"] = result.url or item.url
                 state["current_path"] = result.path
                 state["current_data"] = result.data
                 state["current_mime"] = result.mime
-                with Timer("图像查看器", f"构建图像控件 索引={state['index']}"):
+                with Timer("图像查看器", f"构建图像控件 索引={state_index}"):
                     image_box.content = ft.Image(
                         src=image_src_for_page(page, result.data, result.mime),
+                        width=float("inf"),
+                        height=float("inf"),
                         fit=ft.BoxFit.CONTAIN,
                         expand=True,
                     )
                 status.value = f"{pos}  {len(result.data)} bytes  {'cache' if result.from_cache else 'network'}"
-                log_debug("图像查看器", f"图像加载完成 索引={state['index']} 字节数={len(result.data)}")
+                log_debug("图像查看器", f"图像加载完成 索引={state_index} 字节数={len(result.data)}")
+            except ImageFetchCancelled:
+                return
             except Exception as ex:
+                if not state["alive"] or cancel_event.is_set() or generation != state["paged_generation"]:
+                    return
                 status.value = f"错误: {ex}"
                 show_error_toast(page, "图片加载失败", ex)
-                log_exception("图像查看器", f"图像加载失败 索引={state['index']}：{ex}")
+                log_exception("图像查看器", f"图像加载失败 索引={state_index}：{ex}")
             finally:
-                request_update(page)
+                if state["alive"] and generation == state["paged_generation"]:
+                    request_update(page)
 
+        state_index = state["index"]
         page.run_thread(worker)
 
     def move(delta: int):
@@ -389,8 +425,16 @@ def create_view(
         return visible
 
     def load_vertical_index(idx: int):
-        if idx in vertical_loaded or idx in vertical_loading or not should_load_images():
+        if not state["alive"] or idx in vertical_loaded or not should_load_images():
             return
+        existing_job = vertical_jobs.get(idx)
+        if existing_job is not None and existing_job[0] == state["vertical_generation"]:
+            return
+        if existing_job is not None:
+            existing_job[1].set()
+        cancel_event = threading.Event()
+        generation = state["vertical_generation"]
+        vertical_jobs[idx] = (generation, cancel_event)
         vertical_loading.add(idx)
         vertical_cards[idx].content = ft.Column(
             controls=[
@@ -401,14 +445,13 @@ def create_view(
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
-        generation = state["vertical_generation"]
         item = items[idx]
 
         def worker():
             try:
                 log_debug("图像查看器", f"垂直模式加载图像 索引={idx}")
-                result = fetch_item_image(item, idx)
-                if generation != state["vertical_generation"] or state["mode"] != "vertical":
+                result = fetch_item_image(item, idx, cancel_event)
+                if not state["alive"] or cancel_event.is_set() or generation != state["vertical_generation"] or state["mode"] != "vertical":
                     return
                 vertical_urls[idx] = result.url or item.url
                 vertical_paths[idx] = result.path
@@ -437,12 +480,19 @@ def create_view(
                     state["current_mime"] = result.mime
                 status.value = f"垂直浏览 {state['index'] + 1}/{len(items)}，窗口内加载 {len(vertical_loaded)} 张"
                 log_debug("图像查看器", f"垂直模式图像加载完成 索引={idx} 字节数={len(result.data)}")
+            except ImageFetchCancelled:
+                return
             except Exception as ex:
+                if not state["alive"] or cancel_event.is_set() or generation != state["vertical_generation"]:
+                    return
                 vertical_cards[idx].content = ft.Text(f"#{idx + 1} 加载失败: {ex}", color=ft.Colors.ERROR)
                 log_exception("图像查看器", f"垂直模式图像加载失败 索引={idx}：{ex}")
             finally:
-                vertical_loading.discard(idx)
-                request_update(page)
+                if vertical_jobs.get(idx) == (generation, cancel_event):
+                    vertical_jobs.pop(idx, None)
+                    vertical_loading.discard(idx)
+                if state["alive"] and generation == state["vertical_generation"]:
+                    request_update(page)
 
         page.run_thread(worker)
 
@@ -456,10 +506,14 @@ def create_view(
                 vertical_paths.pop(idx, None)
                 vertical_urls.pop(idx, None)
                 reset_vertical_card(idx)
+        for idx, (generation, cancel_event) in list(vertical_jobs.items()):
+            if idx not in keep and generation == state["vertical_generation"]:
+                cancel_event.set()
         for idx in sorted(keep):
             load_vertical_index(idx)
         status.value = f"垂直浏览 {state['index'] + 1}/{len(items)}，窗口 {min(keep) + 1 if keep else 0}-{max(keep) + 1 if keep else 0}"
-        page.update()
+        if state["alive"]:
+            page.update()
 
     def on_vertical_scroll(e):
         show_overlay()
@@ -476,8 +530,9 @@ def create_view(
     def render_paged():
         state["mode"] = "paged"
         state["vertical_generation"] += 1
+        for _, cancel_event in vertical_jobs.values():
+            cancel_event.set()
         vertical_loaded.clear()
-        vertical_loading.clear()
         vertical_data.clear()
         vertical_paths.clear()
         vertical_urls.clear()
@@ -506,8 +561,11 @@ def create_view(
         load_current()
 
     def render_vertical(scroll_to_index: int | None = None):
+        nonlocal paged_cancel_event
         state["mode"] = "vertical"
         state["paged_generation"] += 1
+        if paged_cancel_event is not None:
+            paged_cancel_event.set()
         state["vertical_generation"] += 1
         update_mode_button()
         show_overlay(force=True)
@@ -533,7 +591,8 @@ def create_view(
             return
 
         vertical_loaded.clear()
-        vertical_loading.clear()
+        for _, cancel_event in vertical_jobs.values():
+            cancel_event.set()
         vertical_data.clear()
         vertical_paths.clear()
         vertical_urls.clear()
@@ -561,6 +620,7 @@ def create_view(
         page.update()
 
         target = state["index"] if scroll_to_index is None else max(0, min(scroll_to_index, len(items) - 1))
+        generation = state["vertical_generation"]
         state["index"] = target
         page_counter.value = f"{target + 1}/{len(items)}"
         title.value = current_item().title or f"{target + 1}/{len(items)}"
@@ -568,6 +628,8 @@ def create_view(
 
         def scroll_worker():
             time.sleep(0.1)
+            if not state["alive"] or generation != state["vertical_generation"]:
+                return
             try:
                 list_view.scroll_to(offset=offsets[target] if offsets else 0, duration=0)
             except Exception as ex:
@@ -584,14 +646,40 @@ def create_view(
 
     prev_btn.on_click = lambda e: move(-1)
     next_btn.on_click = lambda e: move(1)
-    back_overlay_btn.on_click = lambda e: (show_overlay(), on_back())
+    def stop_viewer():
+        nonlocal paged_cancel_event
+        if not state["alive"]:
+            return
+        state["alive"] = False
+        state["paged_generation"] += 1
+        state["vertical_generation"] += 1
+        state["overlay_generation"] += 1
+        if paged_cancel_event is not None:
+            paged_cancel_event.set()
+        for _, cancel_event in vertical_jobs.values():
+            cancel_event.set()
+        vertical_data.clear()
+        state["current_data"] = None
+
+    def handle_back(e=None):
+        stop_viewer()
+        on_back()
+
+    back_overlay_btn.on_click = handle_back
     download_btn.on_click = download_current
     detail_btn.on_click = show_detail
     mode_btn.on_click = toggle_mode
 
-    if state["mode"] == "vertical":
-        render_vertical(scroll_to_index=index)
-    else:
-        render_paged()
+    def mount_viewer():
+        if state["alive"]:
+            return
+        state["alive"] = True
+        if state["mode"] == "vertical":
+            render_vertical(scroll_to_index=state["index"])
+        else:
+            render_paged()
+
+    body.on_mount = mount_viewer
+    body.on_unmount = stop_viewer
 
     return body

@@ -1,5 +1,7 @@
 import tempfile
+import threading
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -155,6 +157,74 @@ class DownloadManagerLifecycleTests(unittest.TestCase):
                 self.assertEqual(restored.final_file_path.parent.resolve(), task.task_file_path.parent.resolve())
             finally:
                 recovered.shutdown()
+
+    def test_start_task_does_not_submit_duplicate_worker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = self._manager(Path(temp_dir))
+            manager.initialize()
+            executor = Mock()
+            future = Future()
+            executor.submit.return_value = future
+            manager._executor = executor
+            task = manager.create_task("https://example.invalid/archive.zip", "archive.zip")
+
+            manager.start_task(task.id)
+            manager.start_task(task.id)
+
+            executor.submit.assert_called_once()
+            future.cancel()
+            manager.shutdown(wait=False, cancel_futures=True)
+
+    def test_running_delete_waits_for_worker_before_removing_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = self._manager(Path(temp_dir))
+            manager.initialize()
+            executor = Mock()
+            future = Future()
+            executor.submit.return_value = future
+            manager._executor = executor
+            task = manager.create_task("https://example.invalid/archive.zip", "archive.zip")
+            manager.start_task(task.id)
+
+            manager.delete_task(task.id)
+
+            self.assertTrue(task.temp_dir_path.exists())
+            self.assertIsNotNone(manager.get_task(task.id))
+            future.set_result(None)
+            self.assertFalse(task.temp_dir_path.exists())
+            self.assertIsNone(manager.get_task(task.id))
+            manager.shutdown(wait=False, cancel_futures=True)
+
+    def test_download_response_is_closed(self):
+        class Response:
+            status_code = 200
+            url = "https://example.invalid/archive.zip"
+            headers = {"Content-Length": "4"}
+
+            def __init__(self):
+                self.closed = False
+
+            def iter_content(self, chunk_size):
+                yield b"data"
+
+            def close(self):
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            response = Response()
+            manager = DownloadManager(
+                downloading_dir=Path(temp_dir) / "Downloading",
+                data_db=AppDataDB(Path(temp_dir) / "data.db"),
+                ensure_dirs=lambda: None,
+                stream_get=lambda *_args, **_kwargs: response,
+            )
+            task = manager.create_task("https://example.invalid/archive.zip", "archive.zip")
+
+            manager._download_impl(task.id)
+
+            self.assertTrue(response.closed)
+            self.assertEqual(manager.get_task(task.id).status, "completed")
+            manager.shutdown()
 
 
 if __name__ == "__main__":

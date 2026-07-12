@@ -5,7 +5,7 @@ import shutil
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,6 +119,8 @@ class DownloadManager:
         self._lock = threading.RLock()
         self._executor: ThreadPoolExecutor | None = None
         self._tasks: dict[str, DownloadTask] = {}
+        self._futures: dict[str, Future] = {}
+        self._delete_after_stop: set[str] = set()
         self._cancel_requested: set[str] = set()
         self._completion_handlers: list[Callable[[DownloadTask], None]] = []
         self._loaded = False
@@ -173,7 +175,8 @@ class DownloadManager:
         if not task:
             return
         with self._lock:
-            if task.status == "running":
+            current_future = self._futures.get(task_id)
+            if task.status == "running" or (current_future is not None and not current_future.done()):
                 return
             self._cancel_requested.discard(task_id)
             task.status = "queued"
@@ -182,7 +185,9 @@ class DownloadManager:
             self._save_task_locked(task)
             if self._executor is None:
                 raise RuntimeError("下载管理器尚未初始化")
-            self._executor.submit(self._download_impl, task_id)
+            future = self._executor.submit(self._download_impl, task_id)
+            self._futures[task_id] = future
+            future.add_done_callback(lambda completed, current_id=task_id: self._forget_future(current_id, completed))
 
     def cancel_task(self, task_id: str) -> None:
         self.initialize()
@@ -202,12 +207,19 @@ class DownloadManager:
 
     def delete_task(self, task_id: str) -> None:
         self.initialize()
+        task_to_delete: DownloadTask | None = None
         with self._lock:
-            task = self._tasks.pop(task_id, None)
-            self._cancel_requested.add(task_id)
-            if task:
-                shutil.rmtree(task.temp_dir_path, ignore_errors=True)
+            task = self._tasks.get(task_id)
+            future = self._futures.get(task_id)
+            if task is not None and future is not None and not future.done():
+                self._cancel_requested.add(task_id)
+                self._delete_after_stop.add(task_id)
+                return
+            task_to_delete = self._tasks.pop(task_id, None)
+            self._cancel_requested.discard(task_id)
             self._delete_task_locked(task_id)
+        if task_to_delete is not None:
+            shutil.rmtree(task_to_delete.temp_dir_path, ignore_errors=True)
 
     def list_tasks(self) -> list[DownloadTask]:
         self.initialize()
@@ -309,52 +321,60 @@ class DownloadManager:
                 task.bytes_done = offset
                 self._save_task_locked(task)
 
+            if self._cancel_if_requested(task):
+                return
             with self._timer("GET 流式请求", task.url):
                 response = self._stream_get(task.url, headers=headers, stream=True, timeout=60)
-            if offset > 0 and response.status_code == 200:
-                offset = 0
-                mode = "wb"
-            elif response.status_code == 206:
-                mode = "ab"
-            elif response.status_code == 200:
-                mode = "wb"
-            else:
-                response.raise_for_status()
-                mode = "wb"
+            try:
+                if offset > 0 and response.status_code == 200:
+                    offset = 0
+                    mode = "wb"
+                elif response.status_code == 206:
+                    mode = "ab"
+                elif response.status_code == 200:
+                    mode = "wb"
+                else:
+                    response.raise_for_status()
+                    mode = "wb"
 
-            total_header = int(response.headers.get("Content-Length") or 0)
-            if total_header:
-                task.bytes_total = total_header + offset
-            task.filename = _parse_filename_from_response(response, task.filename)
-            task.resume.accept_ranges = response.headers.get("Accept-Ranges", "")
-            task.resume.supported = task.resume.accept_ranges.lower() == "bytes" or response.status_code == 206
-            task.resume.etag = response.headers.get("ETag", "")
-            task.resume.last_modified = response.headers.get("Last-Modified", "")
-            with self._lock:
-                task.updated_at = now_iso()
-                self._save_task_locked(task)
+                try:
+                    total_header = max(0, int(response.headers.get("Content-Length") or 0))
+                except (TypeError, ValueError):
+                    total_header = 0
+                if total_header:
+                    task.bytes_total = total_header + offset
+                task.filename = _parse_filename_from_response(response, task.filename)
+                task.resume.accept_ranges = response.headers.get("Accept-Ranges", "")
+                task.resume.supported = task.resume.accept_ranges.lower() == "bytes" or response.status_code == 206
+                task.resume.etag = response.headers.get("ETag", "")
+                task.resume.last_modified = response.headers.get("Last-Modified", "")
+                with self._lock:
+                    task.updated_at = now_iso()
+                    self._save_task_locked(task)
 
-            last_save = time.monotonic()
-            with open(part_path, mode + ("" if "b" in mode else "b")) as f:
-                for chunk in response.iter_content(chunk_size=1024 * 512):
-                    if not chunk:
-                        continue
-                    if task_id in self._cancel_requested:
-                        with self._lock:
-                            task.status = "cancelled"
-                            task.updated_at = now_iso()
-                            self._save_task_locked(task)
-                        return
-                    f.write(chunk)
-                    offset += len(chunk)
-                    task.bytes_done = offset
-                    now = time.monotonic()
-                    if now - last_save >= 2:
-                        last_save = now
-                        with self._lock:
-                            task.updated_at = now_iso()
-                            self._save_task_locked(task)
+                last_save = time.monotonic()
+                with open(part_path, mode + ("" if "b" in mode else "b")) as f:
+                    for chunk in response.iter_content(chunk_size=1024 * 512):
+                        if self._cancel_if_requested(task):
+                            return
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        offset += len(chunk)
+                        task.bytes_done = offset
+                        now = time.monotonic()
+                        if now - last_save >= 2:
+                            last_save = now
+                            with self._lock:
+                                task.updated_at = now_iso()
+                                self._save_task_locked(task)
+            finally:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
 
+            if self._cancel_if_requested(task):
+                return
             if final_path.exists():
                 final_path.unlink()
             part_path.replace(final_path)
@@ -370,12 +390,37 @@ class DownloadManager:
             self._notify(Notification("下载完成", task.filename, "download.completed", {"task_id": task.id}))
         except Exception as ex:
             with self._lock:
+                if task_id not in self._tasks:
+                    return
                 task.status = "failed"
                 task.error = str(ex)
                 task.updated_at = now_iso()
                 self._save_task_locked(task)
             self._exception(f"下载失败 {task_id}：{ex}")
             self._notify(Notification("下载失败", task.filename, "download.failed", {"task_id": task.id}))
+
+    def _cancel_if_requested(self, task: DownloadTask) -> bool:
+        with self._lock:
+            if task.id not in self._cancel_requested:
+                return False
+            if task.id in self._tasks:
+                task.status = "cancelled"
+                task.updated_at = now_iso()
+                self._save_task_locked(task)
+            return True
+
+    def _forget_future(self, task_id: str, future: Future) -> None:
+        task_to_delete: DownloadTask | None = None
+        with self._lock:
+            if self._futures.get(task_id) is future:
+                self._futures.pop(task_id, None)
+            if task_id in self._delete_after_stop:
+                self._delete_after_stop.discard(task_id)
+                task_to_delete = self._tasks.pop(task_id, None)
+                self._cancel_requested.discard(task_id)
+                self._delete_task_locked(task_id)
+        if task_to_delete is not None:
+            shutil.rmtree(task_to_delete.temp_dir_path, ignore_errors=True)
 
     def _notify_completed(self, task: DownloadTask) -> None:
         with self._lock:

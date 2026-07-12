@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
@@ -195,6 +196,12 @@ class ImageFetcherService:
         self._max_workers = max_workers
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="image-fetch")
         self._lock = threading.Lock()
+        self._maintenance_call_lock = threading.Lock()
+        self._maintenance = threading.Condition()
+        self._maintenance_active = False
+        self._active_workers = 0
+        self._worker_local = threading.local()
+        self._cancel_events: dict[str, threading.Event] = {}
         self._url_locks = tuple(threading.RLock() for _ in range(64))
         self._in_flight: dict[str, Future] = {}
         self._state_lock = threading.Lock()
@@ -231,10 +238,9 @@ class ImageFetcherService:
             if future is None:
                 self._debug(f"提交图像获取任务 {normalized}")
                 task_key = self._new_task(normalized, kind)
-                if cancel_event is None:
-                    future = self._executor.submit(self._fetch_impl, normalized, kind, task_key)
-                else:
-                    future = self._executor.submit(self._fetch_impl, normalized, kind, task_key, cancel_event)
+                cancel_event = cancel_event or threading.Event()
+                self._cancel_events[task_key] = cancel_event
+                future = self._executor.submit(self._fetch_impl, normalized, kind, task_key, cancel_event)
                 if deduplicate:
                     self._in_flight[normalized] = future
                 submitted = True
@@ -255,9 +261,14 @@ class ImageFetcherService:
     ) -> tuple[str, Future[ImageFetchResult]]:
         normalized = url.strip()
         task_key = self._new_task(normalized, kind)
+        cancel_event = cancel_event or threading.Event()
         try:
+            with self._lock:
+                self._cancel_events[task_key] = cancel_event
             future = self._executor.submit(self._fetch_impl, normalized, kind, task_key, cancel_event)
         except Exception as ex:
+            with self._lock:
+                self._cancel_events.pop(task_key, None)
             self._finish_task(task_key, status="failed", error=str(ex))
             raise
         future.add_done_callback(lambda completed, key=normalized: self._observe_completion(key, completed))
@@ -286,6 +297,27 @@ class ImageFetcherService:
         except Exception as ex:
             self._log_exception("图像", f"后台图像获取失败 URL={normalized}：{ex}")
 
+    def run_cache_maintenance(self, callback: Callable[[], None]) -> None:
+        """停止缓存 worker，在独占窗口内执行缓存维护。"""
+        with self._maintenance_call_lock:
+            with self._maintenance:
+                self._maintenance_active = True
+                with self._lock:
+                    cancel_events = list(self._cancel_events.values())
+                for event in cancel_events:
+                    event.set()
+                while self._active_workers:
+                    self._maintenance.wait()
+            try:
+                callback()
+            finally:
+                with self._maintenance:
+                    self._maintenance_active = False
+                    self._maintenance.notify_all()
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        self._executor.shutdown(wait=wait, cancel_futures=True)
+
     def fetch_gallery_page(
         self,
         *,
@@ -295,38 +327,76 @@ class ImageFetcherService:
         page_idx: int,
         resolve_url: Callable[[], str],
         kind: str = "original",
+        cancel_event: threading.Event | None = None,
     ) -> ImageFetchResult:
-        cached_path = self._cache.get_gallery_page_cached_path(provider, gid, token, page_idx)
-        if cached_path is not None:
-            with self._timer("读取缓存", str(cached_path)):
-                data = cached_path.read_bytes()
+        with self._cache_worker():
             self._raise_if_cancelled(cancel_event)
-            mime = self._guess_mime(cached_path)
-            self._debug(f"画廊页面缓存命中 provider={provider} gid={gid} 索引={page_idx} 字节数={len(data)}")
-            return ImageFetchResult(url="", path=cached_path, data=data, mime=mime, from_cache=True)
+            cached_path = self._cache.get_gallery_page_cached_path(provider, gid, token, page_idx)
+            if cached_path is not None:
+                with self._timer("读取缓存", str(cached_path)):
+                    data = cached_path.read_bytes()
+                self._raise_if_cancelled(cancel_event)
+                mime = self._guess_mime(cached_path)
+                self._debug(f"画廊页面缓存命中 provider={provider} gid={gid} 索引={page_idx} 字节数={len(data)}")
+                return ImageFetchResult(url="", path=cached_path, data=data, mime=mime, from_cache=True)
 
-        cached_filename = self._cache.get_gallery_page_cached_filename(provider, gid, token, page_idx)
-        if cached_filename:
-            self._debug(f"已修复画廊失效索引 provider={provider} gid={gid} 索引={page_idx} 文件名={cached_filename}")
-            self._cache.repair_gallery_page_entry(provider, gid, token, page_idx)
+            cached_filename = self._cache.get_gallery_page_cached_filename(provider, gid, token, page_idx)
+            if cached_filename:
+                self._debug(f"已修复画廊失效索引 provider={provider} gid={gid} 索引={page_idx} 文件名={cached_filename}")
+                self._cache.repair_gallery_page_entry(provider, gid, token, page_idx)
 
         url = resolve_url()
-        result = self.fetch(url, kind=kind)
-        self._cache.put_gallery_page_cached_filename(provider, gid, token, page_idx, result.path.name, kind=kind)
+        self._raise_if_cancelled(cancel_event)
+        result = self.fetch_async(url, kind=kind, cancel_event=cancel_event, deduplicate=False).result()
+        self._raise_if_cancelled(cancel_event)
+        with self._cache_worker():
+            self._raise_if_cancelled(cancel_event)
+            if result.path.exists():
+                self._cache.put_gallery_page_cached_filename(provider, gid, token, page_idx, result.path.name, kind=kind)
         return result
 
     def _fetch_impl(self, url: str, kind: str, task_key: str | None = None, cancel_event: threading.Event | None = None) -> ImageFetchResult:
-        with self._url_lock(url):
+        try:
+            with self._cache_worker():
+                with self._url_lock(url):
+                    try:
+                        return self._fetch_impl_locked(url, kind, task_key, cancel_event)
+                    except ImageFetchCancelled:
+                        if task_key:
+                            self._finish_task(task_key, status="cancelled")
+                        raise
+                    except Exception as ex:
+                        if task_key:
+                            self._finish_task(task_key, status="failed", error=str(ex))
+                        raise
+        finally:
+            if task_key:
+                with self._lock:
+                    self._cancel_events.pop(task_key, None)
+
+    @contextmanager
+    def _cache_worker(self):
+        depth = getattr(self._worker_local, "depth", 0)
+        if depth:
+            self._worker_local.depth = depth + 1
             try:
-                return self._fetch_impl_locked(url, kind, task_key, cancel_event)
-            except ImageFetchCancelled:
-                if task_key:
-                    self._finish_task(task_key, status="cancelled")
-                raise
-            except Exception as ex:
-                if task_key:
-                    self._finish_task(task_key, status="failed", error=str(ex))
-                raise
+                yield
+            finally:
+                self._worker_local.depth -= 1
+            return
+        with self._maintenance:
+            while self._maintenance_active:
+                self._maintenance.wait()
+            self._active_workers += 1
+        self._worker_local.depth = 1
+        try:
+            yield
+        finally:
+            self._worker_local.depth = 0
+            with self._maintenance:
+                self._active_workers -= 1
+                if not self._active_workers:
+                    self._maintenance.notify_all()
 
     def _fetch_impl_locked(self, url: str, kind: str, task_key: str | None = None, cancel_event: threading.Event | None = None) -> ImageFetchResult:
         self._raise_if_cancelled(cancel_event)

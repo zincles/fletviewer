@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import contextmanager
 from typing import Callable
 from urllib.parse import urlsplit
 
@@ -46,10 +47,14 @@ class BrowserSessionService:
             }
         )
         self._lock = threading.RLock()
+        self._request_idle = threading.Condition(self._lock)
+        self._active_requests = 0
         self._cookie_signature: tuple[str, str, str, str] | None = None
+        self._login_configured: bool | None = None
         self._verified_at = 0.0
         self._verified_ok = False
         self._proxy_signature: tuple[str, str] | None = None
+        self._client_session = _BrowserSessionFacade(self)
         self.verify_ttl_seconds = 300
 
     def configure_proxy_from_storage(self) -> None:
@@ -60,6 +65,8 @@ class BrowserSessionService:
         with self._lock:
             if signature == self._proxy_signature:
                 return
+            while self._active_requests:
+                self._request_idle.wait()
             if mode == "system":
                 self.session.proxies.clear()
                 self.session.trust_env = True
@@ -110,8 +117,11 @@ class BrowserSessionService:
             self._verified_at = 0.0
             self._verified_ok = False
             if not enabled:
+                while self._active_requests:
+                    self._request_idle.wait()
                 self._clear_eh_cookies_locked()
                 self._cookie_signature = None
+                self._login_configured = False
                 self._debug("EH 登录开关=关，已清理 Cookie")
                 return False
         if verify:
@@ -122,8 +132,13 @@ class BrowserSessionService:
         self.configure_proxy_from_storage()
         if not self.login_enabled():
             with self._lock:
+                if self._login_configured is False:
+                    return False
+                while self._active_requests:
+                    self._request_idle.wait()
                 self._clear_eh_cookies_locked()
                 self._cookie_signature = None
+                self._login_configured = False
                 self._verified_at = 0.0
                 self._verified_ok = False
             self._debug("EH 登录开关=关，当前使用游客会话")
@@ -132,17 +147,29 @@ class BrowserSessionService:
         cfg = self._load_eh_config()
         signature = tuple(cfg.get(k, "") for k in EH_COOKIE_KEYS)
         if not signature[0] or not signature[1]:
+            with self._lock:
+                if self._cookie_signature is not None:
+                    while self._active_requests:
+                        self._request_idle.wait()
+                    self._clear_eh_cookies_locked()
+                self._cookie_signature = None
+                self._login_configured = True
+                self._verified_at = 0.0
+                self._verified_ok = False
             self._debug("EH 登录开关=开，但缺少 ipb_member_id/ipb_pass_hash")
             return False
 
         with self._lock:
             if signature == self._cookie_signature:
                 return True
+            while self._active_requests:
+                self._request_idle.wait()
             for domain in (".e-hentai.org", ".exhentai.org"):
                 for key, value in zip(EH_COOKIE_KEYS, signature):
                     if value:
                         self.session.cookies.set(key, value, domain=domain)
             self._cookie_signature = signature
+            self._login_configured = True
             self._verified_at = 0.0
             self._verified_ok = False
             self._debug(f"已从配置载入 EH Cookie has_cookie={self.has_eh_cookie()}")
@@ -175,7 +202,7 @@ class BrowserSessionService:
         else:
             self.configure_from_storage()
         self._debug(f"创建 EH 客户端 要求登录={require_login} 登录开关={self.login_enabled()} 已有Cookie={self.has_eh_cookie()}")
-        return EHentaiClient(domain=domain, session=self.session, log_debug=self._log_debug)
+        return EHentaiClient(domain=domain, session=self._client_session, log_debug=self._log_debug)
 
     def get_session(self) -> requests.Session:
         self.configure_from_storage()
@@ -192,13 +219,13 @@ class BrowserSessionService:
         return "代理已关闭"
 
     def get(self, url: str, **kwargs) -> requests.Response:
-        self.configure_from_storage()
         quiet_image = is_image_request_url(url)
-        if quiet_image:
-            resp = self.session.get(url, **kwargs)
-        else:
-            with self._timer(f"GET {url}"):
+        with self._request_lease():
+            if quiet_image:
                 resp = self.session.get(url, **kwargs)
+            else:
+                with self._timer(f"GET {url}"):
+                    resp = self.session.get(url, **kwargs)
         if kwargs.get("stream"):
             self._debug(f"GET 流式完成 状态码={resp.status_code} 最终URL={resp.url}")
         elif not quiet_image or resp.status_code >= 400:
@@ -206,16 +233,16 @@ class BrowserSessionService:
         return resp
 
     def post(self, url: str, **kwargs) -> requests.Response:
-        self.configure_from_storage()
-        with self._timer(f"POST {url}"):
-            resp = self.session.post(url, **kwargs)
+        with self._request_lease():
+            with self._timer(f"POST {url}"):
+                resp = self.session.post(url, **kwargs)
         self._debug(f"POST 完成 状态码={resp.status_code} 字节数={len(resp.content)} 最终URL={resp.url}")
         return resp
 
     def head(self, url: str, **kwargs) -> requests.Response:
-        self.configure_from_storage()
-        with self._timer(f"HEAD {url}"):
-            resp = self.session.head(url, **kwargs)
+        with self._request_lease():
+            with self._timer(f"HEAD {url}"):
+                resp = self.session.head(url, **kwargs)
         self._debug(f"HEAD 完成 状态码={resp.status_code} 最终URL={resp.url}")
         return resp
 
@@ -226,6 +253,19 @@ class BrowserSessionService:
                     self.session.cookies.clear(domain=domain, path="/", name=key)
                 except KeyError:
                     pass
+
+    @contextmanager
+    def _request_lease(self):
+        with self._lock:
+            self.configure_from_storage()
+            self._active_requests += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._active_requests -= 1
+                if not self._active_requests:
+                    self._request_idle.notify_all()
 
     def _debug(self, message: str) -> None:
         self._log_debug("浏览器会话", message)
@@ -243,3 +283,27 @@ class _NullTimer:
 
     def __exit__(self, *_args):
         return False
+
+
+class _BrowserSessionFacade:
+    """让 provider 复用统一请求入口，同时保留 requests.Session 常用接口。"""
+
+    def __init__(self, service: BrowserSessionService):
+        self._service = service
+
+    @property
+    def headers(self):
+        return self._service.session.headers
+
+    @property
+    def cookies(self):
+        return self._service.session.cookies
+
+    def get(self, url: str, **kwargs) -> requests.Response:
+        return self._service.get(url, **kwargs)
+
+    def post(self, url: str, **kwargs) -> requests.Response:
+        return self._service.post(url, **kwargs)
+
+    def head(self, url: str, **kwargs) -> requests.Response:
+        return self._service.head(url, **kwargs)

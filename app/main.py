@@ -26,7 +26,7 @@ from app.debug_log import configure_logging, format_duration_ms, log_debug, log_
 from app.local_gallery_manager import local_gallery_manager
 from app.navigation import AppNavigator
 from app.notifications import Notification, notifier
-from app.storage import should_use_linux_builtin_title_bar
+from app.storage import should_show_task_debug_overlay, should_use_linux_builtin_title_bar
 from app.theme import apply_app_theme, refresh_adaptive_theme_on_brightness_change
 from app.ui_update import request_update
 from app.views.downloads import create_view as downloads_view
@@ -184,6 +184,7 @@ def main(page: ft.Page):
     active_page_label = {"value": "主页"}
     top_search_hint_ref: dict[str, ft.Text | None] = {"value": None}
     bottom_nav_state = {"value": "阅读"}
+    bottom_nav_visibility_action = {"value": None}
     bottom_nav_segments: dict[str, ft.Container] = {}
     bottom_nav_indicator_ref: dict[str, ft.Container | None] = {"value": None}
     bottom_nav_indexes = {"阅读": 0, "本地": 1, "下载": 2, "设置": 3}
@@ -198,6 +199,9 @@ def main(page: ft.Page):
     bottom_nav_for_page = {"本地画廊": "本地", "下载": "下载", "设置": "设置"}
 
     def set_bottom_nav(value: str):
+        show_bottom_nav = bottom_nav_visibility_action.get("value")
+        if callable(show_bottom_nav):
+            show_bottom_nav(True, update=False)
         bottom_nav_state["value"] = value
         indicator = bottom_nav_indicator_ref.get("value")
         if indicator is not None:
@@ -928,6 +932,32 @@ def main(page: ft.Page):
             offset=ft.Offset(0, 6),
         ),
     )
+    bottom_nav_host = ft.Container(
+        content=bottom_nav,
+        left=0,
+        right=0,
+        bottom=12,
+        alignment=ft.Alignment(0, 1),
+        offset=ft.Offset(0, 0),
+        opacity=1,
+        animate_offset=ft.Animation(180, ft.AnimationCurve.EASE_OUT_CUBIC),
+        animate_opacity=ft.Animation(140, ft.AnimationCurve.EASE_OUT),
+    )
+    bottom_nav_visible = {"value": True}
+
+    def set_bottom_nav_visible(visible: bool, *, update: bool = True) -> None:
+        visible = bool(visible)
+        if bottom_nav_visible["value"] == visible:
+            return
+        bottom_nav_visible["value"] = visible
+        bottom_nav_host.offset = ft.Offset(0, 0) if visible else ft.Offset(0, 1.45)
+        bottom_nav_host.opacity = 1 if visible else 0
+        bottom_nav_host.ignore_interactions = not visible
+        if update:
+            request_update(page)
+
+    bottom_nav_visibility_action["value"] = set_bottom_nav_visible
+    page.fletviewer_set_bottom_nav_visible = set_bottom_nav_visible
 
     def on_root_tabs_change(e):
         if root_tabs_syncing["value"]:
@@ -1110,7 +1140,18 @@ def main(page: ft.Page):
 
     page.fletviewer_open_task_debug = open_task_debug_view
     task_debug_overlay = TaskDebugOverlay(page)
-    page.overlay.append(task_debug_overlay)
+
+    def set_task_debug_overlay_visible(visible: bool, *, update: bool = True) -> None:
+        mounted = task_debug_overlay in page.overlay
+        if visible and not mounted:
+            page.overlay.append(task_debug_overlay)
+        elif not visible and mounted:
+            page.overlay.remove(task_debug_overlay)
+        if update and visible != mounted:
+            request_update(page)
+
+    page.fletviewer_set_task_debug_overlay_visible = set_task_debug_overlay_visible
+    set_task_debug_overlay_visible(should_show_task_debug_overlay(), update=False)
 
     body = ft.Stack(
         controls=[
@@ -1120,13 +1161,7 @@ def main(page: ft.Page):
                 ],
                 expand=True,
             ),
-            ft.Container(
-                content=bottom_nav,
-                left=0,
-                right=0,
-                bottom=12,
-                alignment=ft.Alignment(0, 1),
-            ),
+            bottom_nav_host,
         ],
         expand=True,
     )

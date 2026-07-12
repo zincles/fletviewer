@@ -91,6 +91,36 @@ def _section(title: str, tasks: list[ImageFetchTaskState], empty: str) -> ft.Con
     )
 
 
+def _shared_section(entries: list[dict]) -> ft.Control:
+    rows = [
+        ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(
+                        f"任务 {entry['task_key']} · 订阅 {entry['subscribers']} · "
+                        f"{'取消中' if entry['cancelling'] else '已完成待清理' if entry['done'] else '等待/运行中'}",
+                        size=12,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    ft.Text(entry["url"], size=12, selectable=True, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                ],
+                spacing=4,
+            ),
+            border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            border_radius=8,
+            padding=8,
+        )
+        for entry in entries
+    ]
+    return ft.Column(
+        [
+            ft.Text(f"共享图像订阅 ({len(entries)})", size=18, weight=ft.FontWeight.BOLD),
+            *(rows or [ft.Text("当前没有共享图像订阅", size=13, color=ft.Colors.ON_SURFACE_VARIANT)]),
+        ],
+        spacing=8,
+    )
+
+
 class _TaskDebugView(ft.Container):
     def __init__(self, page: ft.Page):
         super().__init__(expand=True)
@@ -134,14 +164,22 @@ class _TaskDebugView(ft.Container):
             entries = image_load_coordinator.debug_entries()
             failed = [task for task in snapshot.recent if task.status == "failed"]
             subscribers = sum(entry["subscribers"] for entry in entries)
+            if not snapshot.active and not snapshot.queued and not entries:
+                diagnosis = "任务层空闲；若图片仍在转圈，请检查异步图像结果应用日志"
+            elif entries and not snapshot.active and not snapshot.queued:
+                diagnosis = "存在共享订阅但没有活动 fetcher 任务；检查已完成 Future 的回调清理"
+            else:
+                diagnosis = "任务正在 fetcher 中运行；可按 age、进度和 URL 定位网络或缓存卡点"
             self._status.value = (
                 f"图像 fetcher：活跃={len(snapshot.active)} 排队={len(snapshot.queued)} 最近={len(snapshot.recent)} "
-                f"最近失败={len(failed)} 共享任务={len(entries)} 订阅={subscribers} worker={snapshot.max_workers}"
+                f"最近失败={len(failed)} 共享任务={len(entries)} 订阅={subscribers} worker={snapshot.max_workers}\n"
+                f"诊断：{diagnosis}"
             )
             self._auto_status.value = f"自动刷新中 · {time.strftime('%H:%M:%S')}"
             self._content.controls = [
                 _section("正在下载", snapshot.active, "当前没有正在下载的小图任务"),
                 _section("排队中", snapshot.queued, "当前没有排队的小图任务"),
+                _shared_section(entries),
                 _section("最近完成/失败", snapshot.recent[:30], "暂无最近任务"),
             ]
             if update:

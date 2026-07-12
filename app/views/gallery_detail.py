@@ -10,17 +10,13 @@ from app.debug_log import Timer, log_debug, log_exception
 from app.download_manager import download_manager, now_iso
 from app.gallery_cache import get_eh_gallery_cache, put_eh_gallery_cache
 from app.gallery_type_colors import gallery_type_color, gallery_type_foreground
-from app.grid_layout import runs_count_for_width
-from app.storage import should_render_gallery_cards
+from app.storage import get_gallery_detail_preview_rows, get_gallery_grid_columns, should_render_gallery_cards
 from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
 from core.provider.ehgrabber import EH_MAX_GALLERY_PAGES, Comic, Comment, ThumbnailItem
 from app.views.image_viewer import ImageViewerItem
 
 
-THUMBNAIL_BATCH_SIZE = 12
-THUMBNAIL_PLACEHOLDER_LIMIT = 20
-THUMBNAIL_TILE_HEIGHT = 150
 THUMBNAIL_GRID_SPACING = 6
 DETAIL_SECTION_RADIUS = 20
 DETAIL_SECTION_PADDING = 16
@@ -36,13 +32,14 @@ def _to_jsonable(value):
     return value
 
 
-def _thumbnail_placeholder_count(page_count: int) -> int:
-    """根据列表页数准备骨架，但无论输入是否异常都不超过 20 个。"""
+def _thumbnail_preview_count(page_count: int, columns: int, rows: int | None) -> int:
+    """按用户列数和预览行数计算首批缩略图数量。"""
     try:
         count = int(page_count or 0)
     except (TypeError, ValueError):
         return 0
-    return min(max(0, count), THUMBNAIL_PLACEHOLDER_LIMIT)
+    count = max(0, count)
+    return count if rows is None else min(count, max(1, columns) * rows)
 
 
 def _tag_pill(text: str) -> ft.Control:
@@ -205,6 +202,8 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
         content=async_image(
             page,
             comic.cover,
+            width=float("inf"),
+            height=float("inf"),
             expand=True,
             fit=ft.BoxFit.CONTAIN,
             cache_width=520,
@@ -278,7 +277,8 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
         alignment=ft.MainAxisAlignment.START,
         tight=True,
     )
-    thumb_columns = {"value": runs_count_for_width(page.width, min_columns=3, max_columns=12)}
+    thumb_columns = {"value": get_gallery_grid_columns()}
+    preview_rows = get_gallery_detail_preview_rows()
     thumb_controls: list[ft.Control] = []
     thumbs_grid = ft.Column(spacing=THUMBNAIL_GRID_SPACING)
     comments_column = ft.Column(spacing=8)
@@ -343,26 +343,29 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
             cells = [ft.Container(content=control, expand=1) for control in chunk]
             if len(cells) < columns:
                 cells.extend(ft.Container(expand=1) for _ in range(columns - len(cells)))
-            rows.append(ft.Row(cells, spacing=THUMBNAIL_GRID_SPACING, height=THUMBNAIL_TILE_HEIGHT))
+            rows.append(ft.Row(cells, spacing=THUMBNAIL_GRID_SPACING))
         thumbs_grid.controls = rows
 
     def show_thumbnail_placeholders() -> None:
         """在详情 fetch 完成前，用列表页数预渲染有限数量的缩略图骨架。"""
-        placeholder_count = _thumbnail_placeholder_count(comic.max_page)
+        placeholder_rows = preview_rows if preview_rows is not None else 3
+        placeholder_count = _thumbnail_preview_count(comic.max_page, thumb_columns["value"], placeholder_rows)
         try:
             listed_page_count = int(comic.max_page or 0)
         except (TypeError, ValueError):
             listed_page_count = 0
         thumb_controls[:] = [
             ft.Container(
-                content=image_placeholder(height=THUMBNAIL_TILE_HEIGHT, loading=True),
-                height=THUMBNAIL_TILE_HEIGHT,
+                content=image_placeholder(loading=True),
+                aspect_ratio=COVER_ASPECT_RATIO,
                 border_radius=6,
                 clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
             )
             for _ in range(placeholder_count)
         ]
-        if listed_page_count > EH_MAX_GALLERY_PAGES:
+        if preview_rows is None:
+            thumbs_status.value = "正在获取全部缩略图..."
+        elif listed_page_count > EH_MAX_GALLERY_PAGES:
             thumbs_status.value = f"页数待详情确认 · 预渲染 {placeholder_count} 个占位"
         elif placeholder_count:
             thumbs_status.value = f"预计 {listed_page_count} 页 · 预渲染 {placeholder_count} 个占位"
@@ -379,11 +382,7 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
         )
 
     def update_thumb_grid_columns(e=None):
-        new_count = runs_count_for_width(page.width, min_columns=3, max_columns=12)
         rebuild_hero_layout()
-        if thumb_columns["value"] != new_count:
-            thumb_columns["value"] = new_count
-            rebuild_thumb_grid()
         page.update()
 
     add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
@@ -484,7 +483,8 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
     def render_thumb_batch():
         viewer_items = thumb_state["items"]
         start = thumb_state["loaded"]
-        end = min(len(viewer_items), start + THUMBNAIL_BATCH_SIZE)
+        batch_size = len(viewer_items) if preview_rows is None else thumb_columns["value"] * preview_rows
+        end = min(len(viewer_items), start + batch_size)
         make_thumb_fn = thumb_state.get("make_thumb")
         if not callable(make_thumb_fn):
             return
@@ -632,6 +632,8 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
                 cover_box.content = async_image(
                     page,
                     details.cover,
+                    width=float("inf"),
+                    height=float("inf"),
                     expand=True,
                     fit=ft.BoxFit.CONTAIN,
                     cache_width=520,
@@ -700,7 +702,8 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
             def make_thumb(idx: int, thumb: str) -> ft.Control:
                 item = viewer_items[idx]
                 box = ft.Container(
-                    content=async_image(page, thumb, width=float("inf"), height=150, fit=ft.BoxFit.COVER, cache_width=220),
+                    content=async_image(page, thumb, width=float("inf"), height=float("inf"), fit=ft.BoxFit.COVER, cache_width=220),
+                    aspect_ratio=COVER_ASPECT_RATIO,
                     border_radius=6,
                     clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
                 )

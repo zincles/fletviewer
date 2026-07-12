@@ -87,6 +87,34 @@ class LocalGalleryRecoveryTests(unittest.TestCase):
             self.assertEqual([path for path in manager.archive_dir.iterdir() if path.is_dir()], committed)
             self.assertFalse(task.final_file_path.exists())
 
+    def test_repeated_completion_reuses_uniquely_named_gallery(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            downloads = Mock()
+            with zipfile.ZipFile(root / "source.zip", "w") as archive:
+                archive.writestr("10.jpg", b"ten")
+                archive.writestr("2.jpg", b"two")
+            task = self._task(root, (root / "source.zip").read_bytes())
+            manager = self._manager(root, downloads)
+            base_dir = manager.archive_dir / manager._eh_archive_folder_name("1", "abc", "Gallery")
+            base_dir.mkdir(parents=True)
+            (base_dir / "occupied.txt").write_text("occupied", encoding="utf-8")
+
+            manager.handle_download_completed(task)
+            committed = manager._find_committed_gallery(task.id)
+            self.assertIsNotNone(committed)
+            self.assertNotEqual(committed, base_dir)
+            self.assertEqual((committed / "thumb.jpg").read_bytes(), b"two")
+
+            task.final_file_path.write_bytes((root / "source.zip").read_bytes())
+            manager.handle_download_completed(task)
+
+            committed_dirs = [
+                path for path in manager.archive_dir.iterdir()
+                if path.is_dir() and manager._is_committed_gallery(path, task.id)
+            ]
+            self.assertEqual(committed_dirs, [committed])
+
     def test_corrupt_gallery_json_is_quarantined_without_deleting_archive(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

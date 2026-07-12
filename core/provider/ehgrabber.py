@@ -213,13 +213,14 @@ class EHentaiClient:
         self.domain = domain
         self._session = session or requests.Session()
         self._log_debug = log_debug or (lambda _area, _message: None)
-        self._session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-        })
+        if session is None:
+            self._session.headers.update({
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            })
 
         # API 凭证（从画廊页面提取）
         self.api_key: Optional[str] = None
@@ -399,6 +400,7 @@ class EHentaiClient:
 
         soup = BeautifulSoup(body, "lxml")
         galleries: list[Comic] = []
+        parse_failures: list[str] = []
 
         # --- Compact mode: table.itg.gltc ---
         # 结构: td.gl1c.glcat (分类), td.gl2c (封面/星级/时间), td.gl3c.glname (标题/链接/标签), td.gl4c.glhide (上传者/页数)
@@ -486,7 +488,8 @@ class EHentaiClient:
                         cover_width=cover_width,
                         cover_height=cover_height,
                     ))
-                except Exception:
+                except Exception as ex:
+                    parse_failures.append(f"Compact: {type(ex).__name__}: {ex}")
                     continue
 
         # --- Thumbnail mode: div.gl1t ---
@@ -552,7 +555,8 @@ class EHentaiClient:
                         cover_width=cover_width,
                         cover_height=cover_height,
                     ))
-                except Exception:
+                except Exception as ex:
+                    parse_failures.append(f"Thumbnail: {type(ex).__name__}: {ex}")
                     continue
 
         # --- Extended mode: table.itg.glte ---
@@ -613,7 +617,8 @@ class EHentaiClient:
                             cover_width=cover_width,
                             cover_height=cover_height,
                         ))
-                    except Exception:
+                    except Exception as ex:
+                        parse_failures.append(f"Extended: {type(ex).__name__}: {ex}")
                         continue
 
         # --- Minimal mode: table.itg.gltm ---
@@ -663,7 +668,8 @@ class EHentaiClient:
                             cover_width=cover_width,
                             cover_height=cover_height,
                         ))
-                    except Exception:
+                    except Exception as ex:
+                        parse_failures.append(f"Minimal: {type(ex).__name__}: {ex}")
                         continue
 
         # 翻页
@@ -677,6 +683,8 @@ class EHentaiClient:
         if prev_url and not prev_url.startswith("http"):
             prev_url = self.base_url + prev_url
 
+        if parse_failures:
+            self._log_debug("EH解析", f"画廊列表跳过异常条目 数量={len(parse_failures)} 首个错误={parse_failures[0]}")
         self._log_debug("EH解析", f"画廊列表解析完成 URL={url} 已登录={self.is_logged} 数量={len(galleries)} 有上一页={bool(prev_url)} 有下一页={bool(next_url)}")
         return SearchResult(comics=galleries, next_url=next_url, prev_url=prev_url)
 
@@ -895,9 +903,9 @@ class EHentaiClient:
     # 评论解析
     # -----------------------------------------------------------------------
 
-    @staticmethod
-    def _parse_comments(soup: BeautifulSoup) -> list[Comment]:
+    def _parse_comments(self, soup: BeautifulSoup) -> list[Comment]:
         comments: list[Comment] = []
+        failures: list[str] = []
         for c in soup.select("div.c1"):
             try:
                 name_el = c.select_one("div.c3 > a")
@@ -944,8 +952,11 @@ class EHentaiClient:
                     score=score,
                     vote_status=vote_status,
                 ))
-            except Exception:
+            except Exception as ex:
+                failures.append(f"{type(ex).__name__}: {ex}")
                 continue
+        if failures:
+            self._log_debug("EH解析", f"评论解析跳过异常条目 数量={len(failures)} 首个错误={failures[0]}")
         return comments
 
     # -----------------------------------------------------------------------

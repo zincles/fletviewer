@@ -6,10 +6,6 @@ from app.controls.async_image import _AsyncImage
 
 
 class _DisconnectedPage:
-    class Session:
-        connection = None
-
-    session = Session()
     fletviewer_content_generation = 1
 
     def run_thread(self, handler):
@@ -17,7 +13,25 @@ class _DisconnectedPage:
 
 
 class AsyncImageLifecycleTests(unittest.TestCase):
-    def test_completed_fetch_is_discarded_after_session_disconnect(self) -> None:
+    def test_completed_fetch_uses_scheduler_even_without_private_session_connection(self) -> None:
+        control = object.__new__(_AsyncImage)
+        page = Mock(spec=["run_thread"])
+        control._page = page
+        control._url = "https://example.test/image.jpg"
+        control._mounted = True
+        control._loading = True
+        control._load_token = 1
+        control._content_generation = None
+        subscription = Mock()
+        control._subscription = subscription
+        future = Future()
+        future.set_result(None)
+
+        control._schedule_apply(1, subscription, future)
+
+        page.run_thread.assert_called_once()
+
+    def test_completed_fetch_attempts_public_scheduler_without_private_connection_check(self) -> None:
         control = object.__new__(_AsyncImage)
         control._page = _DisconnectedPage()
         control._url = "https://example.test/image.jpg"
@@ -28,9 +42,11 @@ class AsyncImageLifecycleTests(unittest.TestCase):
         future = Future()
         future.set_result(None)
 
-        control._schedule_apply(0, future)
+        with patch("app.controls.async_image.image_progress_pump") as progress_pump:
+            control._schedule_apply(0, future)
 
         self.assertFalse(control._loading)
+        progress_pump.return_value.unregister.assert_called_once_with(control)
 
     def test_old_generation_cannot_clear_current_subscription(self) -> None:
         control = object.__new__(_AsyncImage)

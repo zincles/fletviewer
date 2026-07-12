@@ -7,6 +7,18 @@ from core.storage import AppStoragePaths, StorageLayout
 
 
 class StorageDirectoryTests(unittest.TestCase):
+    def test_gallery_detail_preview_rows_validation(self):
+        original = storage.load_app_config
+        try:
+            storage.load_app_config = lambda: {"gallery_detail_preview_rows": "all"}
+            self.assertIsNone(storage.get_gallery_detail_preview_rows())
+            storage.load_app_config = lambda: {"gallery_detail_preview_rows": "4"}
+            self.assertEqual(storage.get_gallery_detail_preview_rows(), 4)
+            storage.load_app_config = lambda: {"gallery_detail_preview_rows": "invalid"}
+            self.assertEqual(storage.get_gallery_detail_preview_rows(), 3)
+        finally:
+            storage.load_app_config = original
+
     def test_directory_initialization_never_removes_legacy_data(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "FletViewer"
