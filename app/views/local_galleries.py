@@ -49,12 +49,48 @@ def _cover_control(page: ft.Page, gallery: LocalGallery) -> ft.Control:
                 return ft.Image(
                     src=image_src_for_page(page, path.read_bytes(), _mime_for_path(path)),
                     width=float("inf"),
-                    height=220,
+                    height=float("inf"),
                     fit=ft.BoxFit.COVER,
                 )
             except Exception:
-                return image_placeholder(width=float("inf"), height=220)
-    return image_placeholder(width=float("inf"), height=220)
+                return image_placeholder(width=float("inf"), height=float("inf"))
+    return image_placeholder(width=float("inf"), height=float("inf"))
+
+
+def _gallery_details(gallery: LocalGallery) -> dict:
+    value = gallery.metadata.get("gallery")
+    return value if isinstance(value, dict) else {}
+
+
+def _meta_pill(text: str, icon: str | None = None) -> ft.Control:
+    controls = [ft.Icon(icon, size=14)] if icon else []
+    controls.append(ft.Text(text, size=12, weight=ft.FontWeight.W_500))
+    return ft.Container(
+        content=ft.Row(controls, spacing=5, tight=True),
+        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+        border_radius=999,
+        padding=ft.Padding(10, 5, 10, 5),
+    )
+
+
+def _info_item(label: str, value: object, *, selectable: bool = False) -> ft.Control:
+    return ft.Column(
+        [
+            ft.Text(label, size=11, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text(str(value or "-"), size=14, selectable=selectable),
+        ],
+        spacing=2,
+    )
+
+
+def _tag_controls(tags: object) -> list[ft.Control]:
+    if not isinstance(tags, dict):
+        return []
+    controls = []
+    for namespace, values in tags.items():
+        for value in values if isinstance(values, list) else []:
+            controls.append(_meta_pill(f"{namespace}: {value}"))
+    return controls
 
 
 def _format_bytes(value: int) -> str:
@@ -88,25 +124,39 @@ def _gallery_card(page: ft.Page, gallery: LocalGallery, open_detail) -> ft.Contr
     metadata = gallery.metadata
     source = metadata.get("source", {})
     archive = metadata.get("archive", {})
+    details = _gallery_details(gallery)
     title = _gallery_title(gallery)
-    card = ft.Card(
+    category = str(details.get("category") or details.get("type") or "本地")
+    language = str(details.get("language") or details.get("language_detail") or "")
+    pages = details.get("pages") or details.get("max_page") or "?"
+    cover = ft.Stack(
+        [
+            _cover_control(page, gallery),
+            ft.Container(content=ft.Text(category, size=11, color=ft.Colors.WHITE), bgcolor=ft.Colors.with_opacity(0.72, ft.Colors.BLACK), border_radius=999, padding=ft.Padding(8, 3, 8, 3), left=8, top=8),
+            ft.Container(content=ft.Icon(ft.Icons.DOWNLOAD_DONE, size=16, color=ft.Colors.WHITE), bgcolor=ft.Colors.with_opacity(0.72, ft.Colors.GREEN), border_radius=999, padding=6, right=8, top=8),
+        ],
+        expand=True,
+    )
+    card = ft.Container(
         content=ft.Container(
             content=ft.Column(
                 [
                     ft.Container(
-                        content=_cover_control(page, gallery),
-                        height=220,
-                        border_radius=8,
+                        content=cover,
+                        height=260,
+                        border_radius=16,
                         clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
                     ),
-                    ft.Text(title, size=14, weight=ft.FontWeight.BOLD, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Text(f"[{source.get('gid', '')}] {archive.get('title', '')}", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
-                    ft.Text(gallery.dir_path.name, size=11, color=ft.Colors.ON_SURFACE_VARIANT, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(title, size=14, weight=ft.FontWeight.W_600, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(f"{language or '未知语言'} · {pages} 页 · {_format_bytes(archive.get('bytes_total', 0))}", size=11, color=ft.Colors.ON_SURFACE_VARIANT, max_lines=1),
                 ],
                 spacing=8,
             ),
             padding=8,
-        )
+        ),
+        bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+        border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+        border_radius=18,
     )
     return ft.GestureDetector(content=card, mouse_cursor=ft.MouseCursor.CLICK, on_tap=lambda e: open_detail(gallery))
 
@@ -135,8 +185,8 @@ def create_view(page: ft.Page) -> ft.Control:
     if callable(add_resize_handler):
         add_resize_handler(update_grid_columns)
 
-    def show_list(update: bool = True):
-        galleries = local_gallery_manager.scan_local_galleries(force=True)
+    def show_list(update: bool = True, *, force: bool = False):
+        galleries = local_gallery_manager.scan_local_galleries(force=force)
         status.value = f"共 {len(galleries)} 个本地画廊"
         grid.controls = [_gallery_card(page, gallery, show_detail) for gallery in galleries]
         if not galleries:
@@ -152,6 +202,9 @@ def create_view(page: ft.Page) -> ft.Control:
 
     def show_detail(gallery: LocalGallery):
         archive_path = _archive_path(gallery)
+        details = _gallery_details(gallery)
+        source = gallery.metadata.get("source", {})
+        archive = gallery.metadata.get("archive", {})
         metadata_text = ft.Text(json.dumps(gallery.metadata, ensure_ascii=False, indent=2), size=12, selectable=True)
 
         def open_zip_reader(e):
@@ -163,52 +216,71 @@ def create_view(page: ft.Page) -> ft.Control:
             content.content = local_zip_viewer(page, archive_path, _gallery_title(gallery), lambda: show_detail(gallery))
             page.update()
 
+        summary = ft.Wrap(
+            [
+                _meta_pill(str(details.get("category") or details.get("type") or "本地")),
+                _meta_pill(f"{details.get('pages') or details.get('max_page') or '?'} 页", ft.Icons.IMAGE_OUTLINED),
+                _meta_pill(str(details.get("language") or details.get("language_detail") or "未知语言"), ft.Icons.LANGUAGE),
+                _meta_pill(f"评分 {details.get('rating') or details.get('rating_average') or '-'}", ft.Icons.STAR_OUTLINE),
+            ],
+            spacing=8,
+            run_spacing=8,
+        )
+        hero = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Container(content=_cover_control(page, gallery), width=280, height=390, border_radius=16, clip_behavior=ft.ClipBehavior.ANTI_ALIAS),
+                    ft.Column(
+                        [
+                            ft.Text(_gallery_title(gallery), size=28, weight=ft.FontWeight.W_600, selectable=True),
+                            ft.Text(str(details.get("uploader") or "未知上传者"), size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+                            summary,
+                            ft.FilledButton("开始阅读", icon=ft.Icons.MENU_BOOK, disabled=archive_path is None, on_click=open_zip_reader),
+                        ],
+                        spacing=16,
+                        expand=True,
+                    ),
+                ],
+                spacing=24,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
+            bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+            border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            border_radius=20,
+            padding=20,
+        )
         detail_controls = [
                 ft.Row(
                     [
                         ft.Button("返回", icon=ft.Icons.ARROW_BACK, on_click=lambda e: show_list()),
-                        ft.Button("阅读 ZIP", icon=ft.Icons.MENU_BOOK, disabled=archive_path is None, on_click=open_zip_reader),
-                        ft.Text(_gallery_title(gallery), size=22, weight=ft.FontWeight.BOLD, expand=True, selectable=True),
                     ],
                     spacing=12,
                 ),
-                ft.Row(
-                    [
+                hero,
+                ft.ExpansionTile(
+                    title=ft.Text("本地与归档信息", weight=ft.FontWeight.W_500),
+                    controls=[
                         ft.Container(
-                            content=_cover_control(page, gallery),
-                            width=260,
-                            height=360,
-                            border_radius=8,
-                            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                        ),
-                        ft.Column(
+                            content=ft.Column(
                             [
-                                ft.Text(f"目录: {gallery.dir_path}", selectable=True),
-                                ft.Text(f"归档: {_zip_summary(archive_path)}", selectable=True),
-                                ft.Text(f"来源: {gallery.metadata.get('source', {}).get('gallery_url', '')}", selectable=True),
-                                ft.Text(f"创建: {gallery.metadata.get('created_at', '')}"),
+                                _info_item("目录", gallery.dir_path, selectable=True),
+                                _info_item("归档", _zip_summary(archive_path), selectable=True),
+                                _info_item("来源", source.get("gallery_url", ""), selectable=True),
+                                _info_item("GID / Token", f"{source.get('gid', '')} / {source.get('token', '')}", selectable=True),
+                                _info_item("创建时间", gallery.metadata.get("created_at", "")),
                             ],
                             spacing=10,
-                            expand=True,
+                            ),
+                            padding=ft.Padding(16, 0, 16, 16),
                         ),
                     ],
-                    spacing=20,
-                    vertical_alignment=ft.CrossAxisAlignment.START,
                 ),
         ]
+        tags = _tag_controls(details.get("tags"))
+        if tags:
+            detail_controls.append(ft.ExpansionTile(title=ft.Text("标签", weight=ft.FontWeight.W_500), controls=[ft.Container(content=ft.Wrap(tags, spacing=8, run_spacing=8), padding=16)]))
         if show_raw_json:
-            detail_controls.extend(
-                [
-                    ft.Text("gallery.json", size=18, weight=ft.FontWeight.BOLD),
-                    ft.Container(
-                        content=ft.Column([metadata_text], scroll=ft.ScrollMode.AUTO),
-                        height=420,
-                        border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-                        border_radius=8,
-                        padding=16,
-                    ),
-                ]
-            )
+            detail_controls.append(ft.ExpansionTile(title=ft.Text("gallery.json"), controls=[ft.Container(content=metadata_text, padding=16)]))
         content.content = ft.Column(
             detail_controls,
             spacing=12,
@@ -222,7 +294,7 @@ def create_view(page: ft.Page) -> ft.Control:
         if callable(render_label):
             render_label("下载")
 
-    refresh_btn = ft.Button("刷新", icon=ft.Icons.REFRESH, on_click=lambda e: show_list())
+    refresh_btn = ft.Button("刷新", icon=ft.Icons.REFRESH, on_click=lambda e: show_list(force=True))
     downloads_btn = ft.Button("下载", icon=ft.Icons.DOWNLOAD, on_click=open_downloads)
     root = ft.Column(
         [

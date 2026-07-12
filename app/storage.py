@@ -1,6 +1,10 @@
 import json
 import os
+from datetime import datetime
 from pathlib import Path
+
+from core.atomic_file import atomic_write_json
+from core.storage import AppStoragePaths, StorageLayout
 
 ROOT_DIR = Path(os.environ.get("FLETVIEWER_HOME", "FletViewer"))
 TEMP_DIR = Path(os.environ.get("FLET_APP_STORAGE_TEMP") or ROOT_DIR / "Temp")
@@ -20,6 +24,24 @@ IMAGE_CACHE_DIR = ROOT_DIR / "Data" / "ImageCache"
 IMAGE_CACHE_FILES_DIR = IMAGE_CACHE_DIR / "files"
 IMAGE_CACHE_DB_PATH = CACHE_DB_PATH
 IMAGE_CACHE_LEGACY_INDEX_PATH = IMAGE_CACHE_DIR / "index.json"
+
+_storage_layout = StorageLayout(
+    paths=AppStoragePaths(
+        data=ROOT_DIR,
+        cache=ROOT_DIR,
+        downloads=DOWNLOADS_DIR,
+        temp=TEMP_DIR,
+    ),
+    config_file=CONFIG_PATH,
+    data_db=DATA_DB_PATH,
+    cache_db=CACHE_DB_PATH,
+    cache_files=CACHE_FILES_DIR,
+    downloading_dir=DOWNLOADING_DIR,
+    eh_archive_dir=EH_ARCHIVE_DIR,
+    debug_log_file=TEMP_DIR / "debug_log.md",
+    import_staging_dir=TEMP_DIR / "import",
+    export_staging_dir=TEMP_DIR / "export",
+)
 
 EH_CONFIG_KEYS = ("ipb_member_id", "ipb_pass_hash", "igneous", "star")
 APP_CONFIG_DEFAULTS = {
@@ -41,6 +63,8 @@ APP_CONFIG_DEFAULTS = {
     "image_grid_target_width": 220,
     "linux_builtin_title_bar": False,
     "linux_prefer_wayland_window_backend": False,
+    "proxy_mode": "disabled",
+    "proxy_url": "",
 }
 IMAGE_VIEWER_MODES = {"paged", "vertical"}
 THEME_MODES = {"system", "light", "dark"}
@@ -52,67 +76,83 @@ CONFIG_DEFAULTS = {
 }
 
 
+def configure_storage(layout: StorageLayout) -> None:
+    """设置本次启动使用的存储布局；必须在存储服务初始化前调用。"""
+    global _storage_layout
+    _storage_layout = layout
+
+
+def get_storage_layout() -> StorageLayout:
+    return _storage_layout
+
+
 def ensure_dirs():
-    """确保基础目录存在，并移除旧 Config/Cache 目录。"""
-    ROOT_DIR.mkdir(parents=True, exist_ok=True)
-    _remove_legacy_dirs()
+    """确保基础目录存在。旧布局只能由显式迁移流程处理。"""
+    get_storage_layout().paths.data.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_temp_dirs() -> None:
     """确保可随系统缓存清理的临时目录存在。"""
-    TEMP_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _remove_legacy_dirs() -> None:
-    import shutil
-
-    shutil.rmtree(IMAGE_CACHE_DIR, ignore_errors=True)
-    shutil.rmtree(GALLERY_CACHE_DIR, ignore_errors=True)
-    shutil.rmtree(LEGACY_DATA_DIR, ignore_errors=True)
-    shutil.rmtree(CONFIG_DIR, ignore_errors=True)
+    get_storage_layout().paths.temp.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_download_dirs():
     """确保下载系统需要的目录存在。"""
-    ensure_dirs()
-    DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    DOWNLOADING_DIR.mkdir(parents=True, exist_ok=True)
-    EH_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    layout = get_storage_layout()
+    layout.paths.downloads.mkdir(parents=True, exist_ok=True)
+    layout.downloading_dir.mkdir(parents=True, exist_ok=True)
+    layout.eh_archive_dir.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_gallery_cache_dirs():
     """确保画廊详情缓存目录存在。"""
-    ensure_dirs()
-    GALLERY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    get_storage_layout().paths.cache.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_image_cache_dirs():
     """确保图片缓存目录存在。"""
-    ensure_dirs()
-    CACHE_FILES_DIR.mkdir(parents=True, exist_ok=True)
+    layout = get_storage_layout()
+    layout.paths.cache.mkdir(parents=True, exist_ok=True)
+    layout.cache_files.mkdir(parents=True, exist_ok=True)
 
 
 def _load_config() -> dict:
-    ensure_dirs()
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            data = json.load(f)
+    config_path = get_storage_layout().config_file
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, UnicodeError, TypeError, ValueError):
+            _quarantine_config(config_path)
+            return {"eh": dict(CONFIG_DEFAULTS["eh"]), "app": dict(CONFIG_DEFAULTS["app"])}
         if isinstance(data, dict):
-            return {
-                "eh": {**CONFIG_DEFAULTS["eh"], **dict(data.get("eh") or {})},
-                "app": {**CONFIG_DEFAULTS["app"], **dict(data.get("app") or {})},
-            }
+            try:
+                return {
+                    "eh": {**CONFIG_DEFAULTS["eh"], **dict(data.get("eh") or {})},
+                    "app": {**CONFIG_DEFAULTS["app"], **dict(data.get("app") or {})},
+                }
+            except (TypeError, ValueError):
+                _quarantine_config(config_path)
+        else:
+            _quarantine_config(config_path)
     return {"eh": dict(CONFIG_DEFAULTS["eh"]), "app": dict(CONFIG_DEFAULTS["app"])}
+
+
+def _quarantine_config(config_path: Path) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    target = config_path.with_name(f"{config_path.name}.corrupt-{stamp}")
+    config_path.replace(target)
+    return target
 
 
 def _save_config(data: dict) -> None:
     ensure_dirs()
+    config_path = get_storage_layout().config_file
     payload = {
         "eh": {**CONFIG_DEFAULTS["eh"], **dict(data.get("eh") or {})},
         "app": {**CONFIG_DEFAULTS["app"], **dict(data.get("app") or {})},
     }
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=4, ensure_ascii=False)
+    atomic_write_json(config_path, payload)
 
 
 def load_eh_config() -> dict:

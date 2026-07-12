@@ -7,13 +7,12 @@ from app.debug_log import log_exception
 from app.gallery_cache import clear_gallery_cache
 from app.gallery_type_colors import GALLERY_TYPE_COLORS, GALLERY_TYPE_LABELS, gallery_type_foreground
 from app.image_cache import clear_image_cache, get_image_cache_stats
+from app.notifications import Notification, notifier
 from app.storage import (
-    CACHE_DB_PATH,
-    CACHE_FILES_DIR,
-    CONFIG_PATH,
     get_image_viewer_mode,
     get_gallery_grid_columns,
     get_gallery_view_mode,
+    get_storage_layout,
     get_theme_color,
     get_theme_mode,
     load_app_config,
@@ -30,6 +29,29 @@ COOKIE_FIELDS = [
     ("igneous", "igneous", "igneous（exhentai 可选）", False),
     ("star", "star", "star（可选）", False),
 ]
+
+
+def _settings_status_card(label: str, value: str, icon) -> ft.Control:
+    return ft.Container(
+        content=ft.Row(
+            [
+                ft.Icon(icon, color=ft.Colors.PRIMARY),
+                ft.Column(
+                    [
+                        ft.Text(label, size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                        ft.Text(value, size=14, weight=ft.FontWeight.W_500),
+                    ],
+                    spacing=2,
+                    expand=True,
+                ),
+            ],
+            spacing=12,
+        ),
+        bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+        border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+        border_radius=16,
+        padding=16,
+    )
 
 GALLERY_VIEW_CACHE_KEYS = ["page:0", "page:1", "page:2", "page:3", "page:4", "page:5", "search"]
 
@@ -217,6 +239,25 @@ def create_view(page: ft.Page) -> ft.Control:
         label="在Linux端优先使用Wayland绘制窗体",
         value=bool(app_cfg.get("linux_prefer_wayland_window_backend", False)),
     )
+    proxy_mode_dropdown = ft.Dropdown(
+        label="代理模式",
+        value=str(app_cfg.get("proxy_mode") or "disabled"),
+        options=[
+            ft.DropdownOption(key="disabled", text="关闭代理"),
+            ft.DropdownOption(key="system", text="跟随系统环境"),
+            ft.DropdownOption(key="manual", text="手动 HTTP 代理"),
+        ],
+        width=260,
+        dense=True,
+    )
+    proxy_url_field = ft.TextField(
+        label="HTTP 代理地址",
+        value=str(app_cfg.get("proxy_url") or ""),
+        hint_text="http://127.0.0.1:7890",
+        width=420,
+        dense=True,
+    )
+    proxy_status = ft.Text(browser_session.proxy_status_text(), size=14, color=ft.Colors.ON_SURFACE_VARIANT)
 
     def current_app_config() -> dict:
         try:
@@ -244,6 +285,8 @@ def create_view(page: ft.Page) -> ft.Control:
             "debug_force_gallery_update": debug_force_update_switch.value,
             "linux_builtin_title_bar": linux_title_bar_switch.value,
             "linux_prefer_wayland_window_backend": linux_wayland_backend_switch.value,
+            "proxy_mode": proxy_mode_dropdown.value or "disabled",
+            "proxy_url": (proxy_url_field.value or "").strip(),
         }
 
     def _selected_segment_value(event_data, fallback: str) -> str:
@@ -435,7 +478,7 @@ def create_view(page: ft.Page) -> ft.Control:
             return
         save_eh_config(data)
         apply_login_mode("eh_config_saved")
-        status.value = f"已保存到 {CONFIG_PATH}"
+        status.value = f"已保存到 {get_storage_layout().config_file}"
         status.color = ft.Colors.PRIMARY
         page.update()
 
@@ -484,6 +527,21 @@ def create_view(page: ft.Page) -> ft.Control:
 
     def on_test_toast(e):
         show_toast(page, "这是一条测试用小提示")
+
+    def on_test_notification(e):
+        notifier.send(Notification("FletViewer 测试通知", "当前使用 print backend。", "notification.test"))
+        show_toast(page, "测试通知已发送到 print backend")
+
+    def apply_proxy(e):
+        try:
+            save_app_config(current_app_config())
+            browser_session.configure_proxy_from_storage()
+            proxy_status.value = browser_session.proxy_status_text()
+            proxy_status.color = ft.Colors.PRIMARY
+        except Exception as ex:
+            proxy_status.value = f"代理配置错误: {ex}"
+            proxy_status.color = ft.Colors.ERROR
+        page.update()
 
     account_page = ft.Container(
         padding=ft.Padding(0, 16, 0, 0),
@@ -552,17 +610,90 @@ def create_view(page: ft.Page) -> ft.Control:
         ),
     )
 
+    storage_layout = get_storage_layout()
+    storage_error = getattr(page, "fletviewer_storage_error", None)
     storage_page = ft.Container(
         padding=ft.Padding(0, 16, 0, 0),
         content=ft.Column(
             controls=[
                 ft.Text("存储", size=20, weight=ft.FontWeight.W_500),
-                ft.Text(f"配置文件: {CONFIG_PATH}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
-                ft.Text(f"缓存 DB: {CACHE_DB_PATH}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
-                ft.Text(f"缓存文件目录: {CACHE_FILES_DIR}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Text(
+                    "Data 和 Downloads 是持久数据；Cache 和 Temp 可被清理并自动重建。",
+                    size=14,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                ft.Text(
+                    f"状态: {'受限模式 · ' + storage_error if storage_error else '可用'}",
+                    color=ft.Colors.ERROR if storage_error else ft.Colors.PRIMARY,
+                    selectable=True,
+                ),
+                ft.Text(f"配置文件: {storage_layout.config_file}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Text(f"数据 DB: {storage_layout.data_db}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Text(f"缓存 DB: {storage_layout.cache_db}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Text(f"缓存文件目录: {storage_layout.cache_files}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Text(f"下载目录: {storage_layout.paths.downloads}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Text(f"临时目录: {storage_layout.paths.temp}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Divider(),
+                ft.Text("缓存维护", size=16, weight=ft.FontWeight.W_500),
+                ft.Row(
+                    [
+                        clear_image_cache_button,
+                        image_cache_size,
+                        ft.OutlinedButton("清除画廊缓存", icon=ft.Icons.DELETE_OUTLINE, on_click=on_clear_gallery_cache),
+                    ],
+                    spacing=12,
+                    wrap=True,
+                ),
             ],
             spacing=16,
             scroll=ft.ScrollMode.AUTO,
+        ),
+    )
+
+    notification_page = ft.Container(
+        padding=ft.Padding(0, 16, 0, 0),
+        content=ft.Column(
+            [
+                ft.Text("通知", size=20, weight=ft.FontWeight.W_500),
+                ft.Text("当前默认 backend 直接输出到终端。业务层已使用统一通知接口，后续可替换为系统通知、浏览器通知或远程 backend。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+                _settings_status_card("当前 backend", "PrintNotificationBackend", ft.Icons.TERMINAL),
+                ft.OutlinedButton("发送测试通知", icon=ft.Icons.NOTIFICATIONS_ACTIVE, on_click=on_test_notification),
+            ],
+            spacing=16,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+    )
+
+    network_page = ft.Container(
+        padding=ft.Padding(0, 16, 0, 0),
+        content=ft.Column(
+            [
+                ft.Text("网络与代理", size=20, weight=ft.FontWeight.W_500),
+                ft.Text("EH/Snatcher、图片和 Archive 下载共享同一个 browser_session，因此这里的代理会同时作用于三条链路。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+                ft.Row([proxy_mode_dropdown, proxy_url_field], spacing=12, wrap=True),
+                ft.FilledButton("保存并应用代理", icon=ft.Icons.ROUTER, on_click=apply_proxy),
+                proxy_status,
+            ],
+            spacing=16,
+        ),
+    )
+
+    downloads_local_page = ft.Container(
+        padding=ft.Padding(0, 16, 0, 0),
+        content=ft.Column(
+            [
+                ft.Text("下载与本地画廊", size=20, weight=ft.FontWeight.W_500),
+                ft.Text("下载任务使用 task.json 灾备；Archive 完成后通过 staging 安全归档。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+                ft.Row(
+                    [
+                        ft.FilledButton("打开下载", icon=ft.Icons.DOWNLOAD, on_click=lambda e: open_page("下载")),
+                        ft.OutlinedButton("打开本地画廊", icon=ft.Icons.FOLDER, on_click=lambda e: open_page("本地画廊")),
+                    ],
+                    spacing=12,
+                    wrap=True,
+                ),
+            ],
+            spacing=16,
         ),
     )
 
@@ -642,17 +773,6 @@ def create_view(page: ft.Page) -> ft.Control:
                     spacing=12,
                     wrap=True,
                 ),
-                ft.Divider(),
-                ft.Text("缓存操作", size=16, weight=ft.FontWeight.W_500),
-                ft.Row(
-                    [
-                        clear_image_cache_button,
-                        image_cache_size,
-                        ft.OutlinedButton("清除所有画廊缓存", icon=ft.Icons.DELETE_OUTLINE, on_click=on_clear_gallery_cache),
-                    ],
-                    spacing=12,
-                    wrap=True,
-                ),
             ],
             spacing=16,
             scroll=ft.ScrollMode.AUTO,
@@ -723,7 +843,7 @@ def create_view(page: ft.Page) -> ft.Control:
     return ft.Column(
         [
             ft.Text("设置", size=28, weight=ft.FontWeight.BOLD),
-            ft.Text("按类别管理账户、显示、平台、存储和调试入口。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Text("按使用场景管理账户、阅读、网络、下载、通知、存储与平台能力。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
             settings_group(
                 "常规",
                 [
@@ -744,21 +864,47 @@ def create_view(page: ft.Page) -> ft.Control:
                 ],
             ),
             settings_group(
-                "系统",
+                "连接与内容",
                 [
                     settings_tile(
-                        "linux-window",
-                        "Linux 窗口",
-                        "Linux 桌面端标题栏和窗口后端设置。",
-                        ft.Icons.DESKTOP_WINDOWS,
-                        linux_window_page,
+                        "network",
+                        "网络与代理",
+                        "统一传输层、代理和连接状态。",
+                        ft.Icons.ROUTER,
+                        network_page,
                     ),
                     settings_tile(
+                        "downloads-local",
+                        "下载与本地画廊",
+                        "下载任务、Archive 归档和本地阅读入口。",
+                        ft.Icons.DOWNLOAD_FOR_OFFLINE,
+                        downloads_local_page,
+                    ),
+                    settings_tile(
+                        "notifications",
+                        "通知",
+                        "下载、归档和存储事件的通知 backend。",
+                        ft.Icons.NOTIFICATIONS,
+                        notification_page,
+                    ),
+                ],
+            ),
+            settings_group(
+                "系统与维护",
+                [
+                    settings_tile(
                         "storage",
-                        "存储",
-                        "配置文件、缓存数据库和缓存目录位置。",
+                        "存储与维护",
+                        "四域路径、存储状态和缓存清理。",
                         ft.Icons.STORAGE,
                         storage_page,
+                    ),
+                    settings_tile(
+                        "linux-window",
+                        "平台与窗口",
+                        "Linux 标题栏、窗口后端和平台能力。",
+                        ft.Icons.DESKTOP_WINDOWS,
+                        linux_window_page,
                     ),
                 ],
             ),

@@ -6,10 +6,14 @@ import mimetypes
 import shutil
 import sqlite3
 import threading
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+from typing import Iterator
+
+from core.sqlite_recovery import run_with_corruption_recovery
 
 
 @dataclass(frozen=True)
@@ -82,7 +86,10 @@ class ImageCacheDB:
         if not filename:
             return None
         path = self.path_for_filename(filename)
-        return path if path.exists() else None
+        if self._is_usable_cache_file(path):
+            return path
+        self.drop_cached_filename(url)
+        return None
 
     def put_cached_filename(self, url: str, filename: str, *, kind: str = "unknown") -> None:
         normalized = self.normalize_url(url)
@@ -108,7 +115,7 @@ class ImageCacheDB:
         filename = self.get_cached_filename(url)
         if not filename:
             return False
-        if self.path_for_filename(filename).exists():
+        if self._is_usable_cache_file(self.path_for_filename(filename)):
             return False
         self.drop_cached_filename(url)
         return True
@@ -129,7 +136,10 @@ class ImageCacheDB:
         if not filename:
             return None
         path = self.path_for_filename(filename)
-        return path if path.exists() else None
+        if self._is_usable_cache_file(path):
+            return path
+        self.drop_gallery_page_cached_filename(provider, gid, token, page_idx)
+        return None
 
     def put_gallery_page_cached_filename(
         self,
@@ -175,7 +185,7 @@ class ImageCacheDB:
         filename = self.get_gallery_page_cached_filename(provider, gid, token, page_idx)
         if not filename:
             return False
-        if self.path_for_filename(filename).exists():
+        if self._is_usable_cache_file(self.path_for_filename(filename)):
             return False
         self.drop_gallery_page_cached_filename(provider, gid, token, page_idx)
         return True
@@ -186,9 +196,17 @@ class ImageCacheDB:
             self._initialized = False
             self.ensure_dirs()
             self._init_db_locked()
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
+                conn.execute("PRAGMA busy_timeout=10000")
                 conn.execute("DELETE FROM image_url_cache")
                 conn.execute("DELETE FROM gallery_page_cache")
+                conn.commit()
+
+    def _is_usable_cache_file(self, path: Path) -> bool:
+        try:
+            return path.is_file() and path.stat().st_size > 0
+        except OSError:
+            return False
 
     def stats(self) -> ImageCacheStats:
         """Return the physical image files currently present in the cache."""
@@ -207,19 +225,29 @@ class ImageCacheDB:
                     continue
         return ImageCacheStats(file_count=file_count, bytes_used=bytes_used)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
             if not self._initialized:
                 self.ensure_dirs()
-                self._init_db_locked()
+                run_with_corruption_recovery(self.db_path, self._init_db_locked)
                 self._migrate_legacy_index_locked()
                 self._initialized = True
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db_locked(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
+            conn.execute("PRAGMA busy_timeout=10000")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(
                 """
@@ -245,6 +273,7 @@ class ImageCacheDB:
                 )
                 """
             )
+            conn.commit()
 
     def _migrate_legacy_index_locked(self) -> None:
         if not self.legacy_index_path.exists():
@@ -259,7 +288,8 @@ class ImageCacheDB:
             self.legacy_index_path.rename(migrated_path)
             return
         created = _now_iso()
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
+            conn.execute("PRAGMA busy_timeout=10000")
             for url, filename in data.items():
                 filename = str(filename)
                 if not self.path_for_filename(filename).exists():
@@ -271,6 +301,7 @@ class ImageCacheDB:
                     """,
                     (self.normalize_url(str(url)), filename, created),
                 )
+            conn.commit()
         target = migrated_path
         counter = 1
         while target.exists():

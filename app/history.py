@@ -1,13 +1,18 @@
 import dataclasses
 
-from app.storage import DATA_DB_PATH, ensure_dirs
+from app.lazy import LazyProxy
+from app.storage import ensure_dirs, get_storage_layout
 from core.data.data_db import AppDataDB
 from core.data.history import HistoryEntry, HistoryRepository
 from core.download.manager import now_iso
 from core.provider.ehgrabber import Comic, EHentaiClient
 
 
-history_repository = HistoryRepository(AppDataDB(DATA_DB_PATH, ensure_dirs=ensure_dirs))
+def _create_history_repository() -> HistoryRepository:
+    return HistoryRepository(AppDataDB(get_storage_layout().data_db, ensure_dirs=ensure_dirs))
+
+
+history_repository = LazyProxy(_create_history_repository)
 
 
 def record_gallery_history(comic: Comic) -> HistoryEntry:

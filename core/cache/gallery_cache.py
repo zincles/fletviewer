@@ -3,13 +3,15 @@ from __future__ import annotations
 import dataclasses
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 from urllib.parse import urlsplit
 
 from core.provider.ehgrabber import Comment, ComicDetails, EHentaiClient, GalleryVersion, ThumbnailItem, ThumbnailsResult
+from core.sqlite_recovery import run_with_corruption_recovery
 
 
 GALLERY_CACHE_SCHEMA_VERSION = 2
@@ -113,8 +115,10 @@ class EHGalleryCache:
     def _ensure(self) -> None:
         if self._ensure_dirs:
             self._ensure_dirs()
-        else:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        run_with_corruption_recovery(self.db_path, self._ensure_once)
+
+    def _ensure_once(self) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -133,10 +137,19 @@ class EHGalleryCache:
                 """
             )
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _debug(self, message: str) -> None:
         self._log_debug("gallery_cache", message)

@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import unquote, urlsplit
 
+from core.atomic_file import atomic_write_json
+from core.notification import Notification
 
 TASK_STATUSES = {"queued", "running", "completed", "failed", "cancelled", "consumed"}
 
@@ -103,6 +105,7 @@ class DownloadManager:
         stream_get: Callable[..., object],
         log_exception: Callable[[str, str], None] | None = None,
         timer_factory: Callable[[str, str], object] | None = None,
+        notify: Callable[[Notification], None] | None = None,
         max_workers: int = 1,
     ):
         self.downloading_dir = downloading_dir
@@ -111,8 +114,10 @@ class DownloadManager:
         self._stream_get = stream_get
         self._log_exception = log_exception or (lambda _area, _message: None)
         self._timer_factory = timer_factory or _NullTimer
+        self._notify = notify or (lambda _notification: None)
+        self._max_workers = max_workers
         self._lock = threading.RLock()
-        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="fletviewer-download")
+        self._executor: ThreadPoolExecutor | None = None
         self._tasks: dict[str, DownloadTask] = {}
         self._cancel_requested: set[str] = set()
         self._completion_handlers: list[Callable[[DownloadTask], None]] = []
@@ -120,11 +125,23 @@ class DownloadManager:
 
     def initialize(self) -> None:
         with self._lock:
-            if self._loaded:
-                return
-            self._ensure_dirs()
-            self._load_tasks_from_disk()
-            self._loaded = True
+            if not self._loaded:
+                self._ensure_dirs()
+                self._load_tasks_from_disk()
+                self._loaded = True
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(
+                    max_workers=self._max_workers,
+                    thread_name_prefix="fletviewer-download",
+                )
+
+    def shutdown(self, *, wait: bool = True, cancel_futures: bool = False) -> None:
+        """停止下载线程池；之后调用 initialize() 可重新创建。"""
+        with self._lock:
+            executor = self._executor
+            self._executor = None
+        if executor is not None:
+            executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
     def create_task(self, url: str, filename: str, *, tags: list[str] | None = None, tag_data: dict | None = None, headers: dict[str, str] | None = None) -> DownloadTask:
         self.initialize()
@@ -163,7 +180,9 @@ class DownloadManager:
             task.error = None
             task.updated_at = now_iso()
             self._save_task_locked(task)
-        self._executor.submit(self._download_impl, task_id)
+            if self._executor is None:
+                raise RuntimeError("DownloadManager is not initialized")
+            self._executor.submit(self._download_impl, task_id)
 
     def cancel_task(self, task_id: str) -> None:
         self.initialize()
@@ -234,9 +253,41 @@ class DownloadManager:
                 self._tasks[task.id] = task
             except Exception as ex:
                 self._exception(f"load task failed from data.db: {ex}")
+        self._recover_task_snapshots()
         for task in list(self._tasks.values()):
             if task.status == "completed":
                 self._notify_completed(task)
+
+    def _recover_task_snapshots(self) -> None:
+        if not self.downloading_dir.exists():
+            return
+        for task_file in self.downloading_dir.glob("*/task.json"):
+            try:
+                data = json.loads(task_file.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("task.json root must be an object")
+                task = DownloadTask.from_dict(data)
+                expected_dir = task_file.parent.resolve()
+                if task.id != task_file.parent.name:
+                    raise ValueError("task id does not match snapshot directory")
+                task.temp_dir = expected_dir.as_posix()
+                task.part_path = (expected_dir / "payload.part").as_posix()
+                task.final_path = (expected_dir / "payload.zip").as_posix()
+                if task.id in self._tasks:
+                    continue
+                if task.status == "running":
+                    task.status = "failed"
+                    task.error = "应用退出时任务仍在运行，请重试"
+                    task.updated_at = now_iso()
+                self._tasks[task.id] = task
+                self._save_task_locked(task)
+            except (json.JSONDecodeError, UnicodeError, TypeError, ValueError) as ex:
+                target = task_file.with_name(f"task.json.corrupt-{uuid.uuid4().hex}")
+                try:
+                    task_file.replace(target)
+                except OSError:
+                    pass
+                self._exception(f"load task snapshot failed {task_file}: {ex}")
 
     def _download_impl(self, task_id: str) -> None:
         task = self.get_task(task_id)
@@ -316,6 +367,7 @@ class DownloadManager:
                 task.updated_at = task.completed_at
                 self._save_task_locked(task)
             self._notify_completed(task)
+            self._notify(Notification("下载完成", task.filename, "download.completed", {"task_id": task.id}))
         except Exception as ex:
             with self._lock:
                 task.status = "failed"
@@ -323,6 +375,7 @@ class DownloadManager:
                 task.updated_at = now_iso()
                 self._save_task_locked(task)
             self._exception(f"download failed {task_id}: {ex}")
+            self._notify(Notification("下载失败", task.filename, "download.failed", {"task_id": task.id}))
 
     def _notify_completed(self, task: DownloadTask) -> None:
         with self._lock:
@@ -335,6 +388,8 @@ class DownloadManager:
 
     def _save_task_locked(self, task: DownloadTask) -> None:
         task.temp_dir_path.mkdir(parents=True, exist_ok=True)
+        payload = task.to_dict()
+        atomic_write_json(task.task_file_path, payload)
         with self.data_db.connect() as conn:
             conn.execute(
                 """
@@ -351,7 +406,7 @@ class DownloadManager:
                 """,
                 (
                     task.id,
-                    json.dumps(task.to_dict(), ensure_ascii=False),
+                    json.dumps(payload, ensure_ascii=False),
                     task.status,
                     task.tag_data.get("provider", ""),
                     task.tag_data.get("gallery_url", task.url),

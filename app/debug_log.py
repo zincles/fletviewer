@@ -3,22 +3,29 @@ import os
 import sys
 import time
 import traceback
+from pathlib import Path
 
-from app.storage import TEMP_DIR
+from app.storage import get_storage_layout
 
 
 _QUIET_AREAS = {"image"}
 _CACHE_KEYWORDS = ("cache", "缓存", "gallery_cache", "命中", "cache read", "cache write")
 _WEB_KEYWORDS = ("GET", "POST", "HEAD", "抓取", "请求", "浏览器会话", "EH解析", "network fetched")
-DEBUG_LOG_PATH = TEMP_DIR / "debug_log.md"
 _LOGGER = logging.getLogger("fletviewer")
 
 
-def _setup_logger() -> None:
-    """配置标准库 logging：终端和临时目录日志文件双写。"""
+def _close_handlers() -> None:
+    """移除并关闭现有 handler，避免切换日志路径时遗留文件句柄。"""
+    for handler in tuple(_LOGGER.handlers):
+        _LOGGER.removeHandler(handler)
+        handler.close()
+
+
+def _configure_console_logging() -> None:
+    """配置无文件副作用的默认控制台日志。"""
     _LOGGER.setLevel(logging.DEBUG)
-    _LOGGER.handlers.clear()
     _LOGGER.propagate = False
+    _close_handlers()
     formatter = logging.Formatter("%(message)s")
 
     console_handler = logging.StreamHandler(sys.stdout)
@@ -26,9 +33,15 @@ def _setup_logger() -> None:
     console_handler.setFormatter(formatter)
     _LOGGER.addHandler(console_handler)
 
+
+def configure_logging(path: Path | None = None) -> Path | None:
+    """显式启用文件日志；应在存储路径解析和迁移完成后调用。"""
+    log_path = Path(path) if path is not None else get_storage_layout().debug_log_file
+    _configure_console_logging()
+    formatter = logging.Formatter("%(message)s")
     try:
-        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(DEBUG_LOG_PATH, mode="w", encoding="utf-8")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
         _LOGGER.addHandler(file_handler)
@@ -37,10 +50,11 @@ def _setup_logger() -> None:
         _LOGGER.info("Started at %s", time.strftime("%Y-%m-%d %H:%M:%S"))
         _LOGGER.info("")
     except Exception:
-        pass
+        return None
+    return log_path
 
 
-_setup_logger()
+_configure_console_logging()
 
 
 def _write_log_line(line: str) -> None:

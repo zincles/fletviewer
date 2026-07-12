@@ -49,7 +49,32 @@ class BrowserSessionService:
         self._cookie_signature: tuple[str, str, str, str] | None = None
         self._verified_at = 0.0
         self._verified_ok = False
+        self._proxy_signature: tuple[str, str] | None = None
         self.verify_ttl_seconds = 300
+
+    def configure_proxy_from_storage(self) -> None:
+        config = self._load_app_config()
+        mode = str(config.get("proxy_mode") or "disabled")
+        proxy_url = str(config.get("proxy_url") or "").strip()
+        signature = (mode, proxy_url)
+        with self._lock:
+            if signature == self._proxy_signature:
+                return
+            if mode == "system":
+                self.session.proxies.clear()
+                self.session.trust_env = True
+            elif mode == "manual":
+                parsed = urlsplit(proxy_url)
+                if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                    raise ValueError("代理地址必须是有效的 http:// 或 https:// URL")
+                self.session.trust_env = False
+                self.session.proxies = {"http": proxy_url, "https": proxy_url}
+            else:
+                mode = "disabled"
+                self.session.proxies.clear()
+                self.session.trust_env = False
+            self._proxy_signature = (mode, proxy_url if mode == "manual" else "")
+            self._debug(f"代理配置已应用 mode={mode}")
 
     def login_enabled(self) -> bool:
         return bool(self._load_app_config().get("enable_login", True))
@@ -94,6 +119,7 @@ class BrowserSessionService:
         return self.configure_from_storage()
 
     def configure_from_storage(self) -> bool:
+        self.configure_proxy_from_storage()
         if not self.login_enabled():
             with self._lock:
                 self._clear_eh_cookies_locked()
@@ -154,6 +180,16 @@ class BrowserSessionService:
     def get_session(self) -> requests.Session:
         self.configure_from_storage()
         return self.session
+
+    def proxy_status_text(self) -> str:
+        self.configure_proxy_from_storage()
+        mode = self._proxy_signature[0] if self._proxy_signature else "disabled"
+        if mode == "manual":
+            parsed = urlsplit(self._proxy_signature[1])
+            return f"手动代理 · {parsed.hostname}:{parsed.port or 80}"
+        if mode == "system":
+            return "跟随系统环境代理"
+        return "代理已关闭"
 
     def get(self, url: str, **kwargs) -> requests.Response:
         self.configure_from_storage()

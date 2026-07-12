@@ -1,20 +1,21 @@
 from pathlib import Path
 
-from app.storage import (
-    CACHE_DB_PATH,
-    CACHE_FILES_DIR,
-    ROOT_DIR,
-    IMAGE_CACHE_LEGACY_INDEX_PATH,
-)
+from app.lazy import LazyProxy
+from app.storage import IMAGE_CACHE_LEGACY_INDEX_PATH, get_storage_layout
 from core.cache.image_cache_db import ImageCacheDB, ImageCacheStats
 
 
-image_cache_db = ImageCacheDB(
-    cache_dir=ROOT_DIR,
-    files_dir=CACHE_FILES_DIR,
-    db_path=CACHE_DB_PATH,
-    legacy_index_path=IMAGE_CACHE_LEGACY_INDEX_PATH,
-)
+def _create_image_cache_db() -> ImageCacheDB:
+    layout = get_storage_layout()
+    return ImageCacheDB(
+        cache_dir=layout.paths.cache,
+        files_dir=layout.cache_files,
+        db_path=layout.cache_db,
+        legacy_index_path=IMAGE_CACHE_LEGACY_INDEX_PATH,
+    )
+
+
+image_cache_db = LazyProxy(_create_image_cache_db)
 
 
 IMAGE_CACHE_INDEX_PATH = IMAGE_CACHE_LEGACY_INDEX_PATH

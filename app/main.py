@@ -5,6 +5,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.platform_storage import resolve_storage
+from app.storage import configure_storage
+
+_ACTIVE_STORAGE = resolve_storage()
+configure_storage(_ACTIVE_STORAGE.layout)
+
 if sys.platform.startswith("linux") and "--web" not in sys.argv and "--server" not in sys.argv:
     from app.storage import should_prefer_linux_wayland_window_backend
 
@@ -15,10 +21,10 @@ if sys.platform.startswith("linux") and "--web" not in sys.argv and "--server" n
 import flet as ft
 
 from app.browser_session import browser_session
-from app.debug_log import format_duration_ms, log_debug
+from app.debug_log import configure_logging, format_duration_ms, log_debug
 from app.local_gallery_manager import local_gallery_manager
+from app.notifications import Notification, notifier
 from app.storage import should_use_linux_builtin_title_bar
-from app.storage import CACHE_FILES_DIR, DOWNLOADS_DIR, ROOT_DIR, TEMP_DIR
 from app.theme import apply_app_theme, refresh_adaptive_theme_on_brightness_change
 from app.ui_update import request_update
 from app.views.downloads import create_view as downloads_view
@@ -125,20 +131,30 @@ def _should_use_safe_area(page: ft.Page) -> bool:
 
 def main(page: ft.Page):
     """Flet 应用主入口，负责全局导航、页面缓存和二级页面切换。"""
+    active_storage = _ACTIVE_STORAGE
+    configure_logging(active_storage.layout.debug_log_file)
     print("[storage] platform:", page.platform)
-    print("[storage] data:", ROOT_DIR.resolve())
-    print("[storage] cache:", CACHE_FILES_DIR.resolve())
-    print("[storage] downloads:", DOWNLOADS_DIR.resolve())
-    print("[storage] temp:", TEMP_DIR.resolve())
     print("[storage] FLET_APP_STORAGE_DATA:", os.environ.get("FLET_APP_STORAGE_DATA") or "<unset>")
     print("[storage] FLET_APP_STORAGE_TEMP:", os.environ.get("FLET_APP_STORAGE_TEMP") or "<unset>")
+    for domain in ("data", "cache", "downloads", "temp"):
+        print(
+            f"[storage] {domain}:",
+            getattr(active_storage.paths, domain),
+            f"(source={active_storage.sources[domain]})",
+        )
     page.title = "FletViewer"
     apply_app_theme(page)
     page.fletviewer_apply_theme = lambda update=True: apply_app_theme(page, update=update)
     page.on_platform_brightness_change = lambda e: refresh_adaptive_theme_on_brightness_change(page)
     if page.web:
         os.environ["FLETVIEWER_WEB"] = "1"
-    local_gallery_manager.initialize()
+    page.fletviewer_storage_error = None
+    try:
+        local_gallery_manager.initialize()
+    except Exception as ex:
+        page.fletviewer_storage_error = str(ex)
+        log_debug("storage", f"data storage unavailable; starting in limited mode: {ex}")
+        notifier.send(Notification("存储不可用", str(ex), "storage.unavailable"))
     use_builtin_title_bar = _use_builtin_title_bar(page) and _enable_builtin_title_bar(page)
 
     content_switcher = ft.AnimatedSwitcher(

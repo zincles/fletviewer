@@ -10,7 +10,7 @@ import flet as ft
 from app.controls.async_image import image_placeholder, image_src_for_page
 from app.debug_log import Timer, log_debug, log_exception
 from app.image_fetcher import image_fetcher
-from app.storage import ROOT_DIR, get_image_viewer_mode, should_load_images
+from app.storage import get_image_viewer_mode, get_storage_layout, should_load_images
 from app.toast import show_error_toast
 from app.ui_update import request_update
 
@@ -25,6 +25,18 @@ class ImageViewerItem:
 
 
 ResolveImageUrl = Callable[[ImageViewerItem, int], str]
+
+
+@dataclass(slots=True)
+class ViewerImageResult:
+    data: bytes
+    mime: str
+    url: str = ""
+    path: Path | None = None
+    from_cache: bool = False
+
+
+LoadImage = Callable[[ImageViewerItem, int], ViewerImageResult]
 VERTICAL_ESTIMATED_WIDTH = 900
 VERTICAL_DEFAULT_RATIO = 0.7
 VERTICAL_SPACING = 12
@@ -32,9 +44,18 @@ VERTICAL_WINDOW_PAGES = 2
 VERTICAL_SCROLL_BUFFER = 1200
 
 
+def _suffix_for_mime(mime: str) -> str:
+    return {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+    }.get(mime.split(";", 1)[0].lower(), ".img")
+
+
 def _download_path(source_path: Path, title: str) -> Path:
     """根据图片标题生成 Downloads 下不冲突的保存路径。"""
-    downloads_dir = ROOT_DIR / "Downloads"
+    downloads_dir = get_storage_layout().paths.downloads
     downloads_dir.mkdir(parents=True, exist_ok=True)
     safe_title = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in title).strip("_")
     stem = safe_title[:80] or source_path.stem
@@ -64,6 +85,7 @@ def create_view(
     on_back,
     *,
     resolve_image_url: ResolveImageUrl | None = None,
+    load_image: LoadImage | None = None,
 ) -> ft.Control:
     """创建通用图片阅读器，支持单页和有限窗口垂直浏览。"""
     index = max(0, min(initial_index, len(items) - 1)) if items else 0
@@ -72,6 +94,8 @@ def create_view(
         "mode": get_image_viewer_mode(),
         "current_url": "",
         "current_path": None,
+        "current_data": None,
+        "current_mime": "",
         "paged_generation": 0,
         "vertical_generation": 0,
         "overlay_generation": 0,
@@ -119,7 +143,8 @@ def create_view(
     vertical_loaded: set[int] = set()
     vertical_loading: set[int] = set()
     vertical_urls: dict[int, str] = {}
-    vertical_paths: dict[int, Path] = {}
+    vertical_paths: dict[int, Path | None] = {}
+    vertical_data: dict[int, tuple[bytes, str]] = {}
 
     offsets: list[int] = []
     total = 0
@@ -135,6 +160,8 @@ def create_view(
             return resolve_image_url(item, idx) if resolve_image_url else item.url
 
     def fetch_item_image(item: ImageViewerItem, idx: int):
+        if load_image is not None:
+            return load_image(item, idx)
         provider = item.detail.get("provider")
         gid = item.detail.get("gid")
         token = item.detail.get("token")
@@ -208,6 +235,8 @@ def create_view(
             image_box.content = image_placeholder()
             state["current_url"] = ""
             state["current_path"] = None
+            state["current_data"] = None
+            state["current_mime"] = ""
             update_nav()
             page.update()
             return
@@ -216,6 +245,8 @@ def create_view(
         image_box.content = image_placeholder(loading=True)
         state["current_url"] = ""
         state["current_path"] = None
+        state["current_data"] = None
+        state["current_mime"] = ""
         update_nav()
         page.update()
 
@@ -228,6 +259,8 @@ def create_view(
                     return
                 state["current_url"] = result.url or item.url
                 state["current_path"] = result.path
+                state["current_data"] = result.data
+                state["current_mime"] = result.mime
                 with Timer("viewer", f"build image control index={state['index']}"):
                     image_box.content = ft.Image(
                         src=image_src_for_page(page, result.data, result.mime),
@@ -258,14 +291,20 @@ def create_view(
     def download_current(e):
         show_overlay()
         path = state.get("current_path")
-        if not path:
+        data = state.get("current_data")
+        if not path and not data:
             status.value = "当前图片尚未加载完成"
             page.update()
             return
         try:
             item = current_item()
-            target = _download_path(Path(path), item.title or f"image_{state['index'] + 1}")
-            shutil.copy2(path, target)
+            suffix = Path(path).suffix if path else _suffix_for_mime(str(state.get("current_mime") or ""))
+            source = Path(path) if path else Path(f"image{suffix}")
+            target = _download_path(source, item.title or f"image_{state['index'] + 1}")
+            if path:
+                shutil.copy2(path, target)
+            else:
+                target.write_bytes(data)
             status.value = f"已下载到 {target}"
             log_debug("viewer", f"downloaded {path} -> {target}")
         except Exception as ex:
@@ -327,6 +366,9 @@ def create_view(
         title.value = item.title or f"{state['index'] + 1}/{len(items)}"
         state["current_url"] = vertical_urls.get(state["index"], item.url)
         state["current_path"] = vertical_paths.get(state["index"])
+        current_data = vertical_data.get(state["index"])
+        state["current_data"] = current_data[0] if current_data else None
+        state["current_mime"] = current_data[1] if current_data else ""
         update_nav()
 
     def vertical_visible_indexes(pixels: float, viewport: float) -> set[int]:
@@ -370,6 +412,7 @@ def create_view(
                     return
                 vertical_urls[idx] = result.url or item.url
                 vertical_paths[idx] = result.path
+                vertical_data[idx] = (result.data, result.mime)
                 vertical_loaded.add(idx)
                 vertical_cards[idx].content = ft.Column(
                     controls=[
@@ -390,6 +433,8 @@ def create_view(
                 if idx == state["index"]:
                     state["current_url"] = result.url or item.url
                     state["current_path"] = result.path
+                    state["current_data"] = result.data
+                    state["current_mime"] = result.mime
                 status.value = f"垂直浏览 {state['index'] + 1}/{len(items)}，窗口内加载 {len(vertical_loaded)} 张"
                 log_debug("viewer", f"vertical image loaded index={idx} bytes={len(result.data)}")
             except Exception as ex:
@@ -407,6 +452,9 @@ def create_view(
         for idx in list(vertical_loaded):
             if idx not in keep:
                 vertical_loaded.discard(idx)
+                vertical_data.pop(idx, None)
+                vertical_paths.pop(idx, None)
+                vertical_urls.pop(idx, None)
                 reset_vertical_card(idx)
         for idx in sorted(keep):
             load_vertical_index(idx)
@@ -428,6 +476,11 @@ def create_view(
     def render_paged():
         state["mode"] = "paged"
         state["vertical_generation"] += 1
+        vertical_loaded.clear()
+        vertical_loading.clear()
+        vertical_data.clear()
+        vertical_paths.clear()
+        vertical_urls.clear()
         update_mode_button()
         show_overlay(force=True)
         body.content = interactive_overlay_stack([
@@ -481,6 +534,9 @@ def create_view(
 
         vertical_loaded.clear()
         vertical_loading.clear()
+        vertical_data.clear()
+        vertical_paths.clear()
+        vertical_urls.clear()
         vertical_cards.clear()
         for idx in range(len(items)):
             vertical_cards.append(

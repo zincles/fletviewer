@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing, contextmanager
 from pathlib import Path
+from typing import Iterator
+
+from core.sqlite_recovery import run_with_corruption_recovery
 
 
 class AppDataDB:
@@ -9,18 +13,30 @@ class AppDataDB:
         self.db_path = db_path
         self._ensure_dirs = ensure_dirs
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
         self.ensure_schema()
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        try:
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def ensure_schema(self) -> None:
         if self._ensure_dirs:
             self._ensure_dirs()
-        else:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        run_with_corruption_recovery(self.db_path, self._ensure_schema_once)
+
+    def _ensure_schema_once(self) -> None:
+        with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
+            conn.execute("PRAGMA busy_timeout=10000")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(
                 """
@@ -72,3 +88,4 @@ class AppDataDB:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_history_created ON history(created_at)")
+            conn.commit()

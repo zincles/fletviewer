@@ -4,6 +4,7 @@ import json
 import shutil
 import threading
 import zipfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -16,10 +17,13 @@ except ModuleNotFoundError:
         return "".join("_" if ch in invalid or ord(ch) < 32 else ch for ch in value)
 
 from core.data.data_db import AppDataDB
+from core.atomic_file import atomic_write_bytes, atomic_write_json
 from core.download.manager import DownloadManager, DownloadTask, now_iso
+from core.notification import Notification
 
 
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+_MAX_COVER_BYTES = 64 * 1024 * 1024
 
 
 @dataclass
@@ -37,12 +41,14 @@ class LocalGalleryManager:
         ensure_dirs: Callable[[], None],
         download_manager: DownloadManager,
         log_exception: Callable[[str, str], None] | None = None,
+        notify: Callable[[Notification], None] | None = None,
     ):
         self.archive_dir = archive_dir
         self.data_db = data_db
         self._ensure_dirs = ensure_dirs
         self._download_manager = download_manager
         self._log_exception = log_exception or (lambda _area, _message: None)
+        self._notify = notify or (lambda _notification: None)
         self._lock = threading.RLock()
         self._galleries: list[LocalGallery] | None = None
 
@@ -64,27 +70,39 @@ class LocalGalleryManager:
             gid = str(tag_data.get("gid") or "unknown")
             token = str(tag_data.get("token") or "unknown")
             title = tag_data.get("gallery_details", {}).get("title") or tag_data.get("title") or "Untitled"
+            self.archive_dir.mkdir(parents=True, exist_ok=True)
             gallery_dir = self.archive_dir / self._eh_archive_folder_name(gid, token, title)
-            gallery_dir.mkdir(parents=True, exist_ok=True)
-
+            if self._is_committed_gallery(gallery_dir, task.id):
+                self._upsert_gallery(gallery_dir, self._read_gallery_metadata(gallery_dir))
+                archive_source.unlink(missing_ok=True)
+                self._download_manager.mark_consumed(task.id)
+                return
+            if gallery_dir.exists():
+                gallery_dir = self._unique_path(gallery_dir)
+            staging_dir = self.archive_dir / f".{gallery_dir.name}.{task.id}.staging"
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            staging_dir.mkdir(parents=True)
             archive_name = sanitize_filename(task.filename or "archive.zip", platform="windows").strip() or "archive.zip"
-            archive_path = self._unique_path(gallery_dir / archive_name)
-            shutil.move(str(archive_source), str(archive_path))
-
-            cover_filename = ""
             try:
-                cover_filename = self._extract_cover_from_zip(archive_path, gallery_dir)
-            except Exception as ex:
-                self._exception(f"extract cover failed {archive_path}: {ex}")
-
-            metadata = self._build_gallery_metadata(task, archive_path, cover_filename)
-            (gallery_dir / "gallery.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+                staging_archive = staging_dir / archive_name
+                shutil.copy2(archive_source, staging_archive)
+                self._validate_archive(staging_archive)
+                cover_filename = self._extract_cover_from_zip(staging_archive, staging_dir)
+                metadata = self._build_gallery_metadata(task, staging_archive, cover_filename)
+                atomic_write_json(staging_dir / "gallery.json", metadata)
+                staging_dir.replace(gallery_dir)
+            except Exception:
+                shutil.rmtree(staging_dir, ignore_errors=True)
+                raise
             self._upsert_gallery(gallery_dir, metadata)
+            archive_source.unlink(missing_ok=True)
             self._download_manager.mark_consumed(task.id)
+            self._notify(Notification("本地画廊已归档", title, "gallery.archived", {"task_id": task.id}))
             self.scan_local_galleries(force=True)
         except Exception as ex:
             self._download_manager.mark_consumed(task.id, consume_error=str(ex))
             self._exception(f"consume failed {task.id}: {ex}")
+            self._notify(Notification("本地画廊归档失败", title if 'title' in locals() else task.filename, "gallery.archive_failed", {"task_id": task.id}))
 
     def scan_local_galleries(self, *, force: bool = False) -> list[LocalGallery]:
         with self._lock:
@@ -105,9 +123,15 @@ class LocalGalleryManager:
                         continue
                     try:
                         data = json.loads(gallery_json.read_text(encoding="utf-8"))
+                        self._validate_gallery_metadata(entry, data)
                         galleries.append(LocalGallery(dir_path=entry, metadata=data))
                         self._upsert_gallery(entry, data)
-                    except Exception as ex:
+                    except (json.JSONDecodeError, UnicodeError, TypeError, ValueError) as ex:
+                        target = gallery_json.with_name(f"gallery.json.corrupt-{uuid.uuid4().hex}")
+                        try:
+                            gallery_json.replace(target)
+                        except OSError:
+                            pass
                         self._exception(f"scan failed {entry}: {ex}")
             self._galleries = galleries
             return list(galleries)
@@ -137,13 +161,40 @@ class LocalGalleryManager:
             if not names:
                 return ""
             first = names[0]
+            info = zf.getinfo(first)
+            if info.file_size > _MAX_COVER_BYTES:
+                raise ValueError(f"封面过大，拒绝解压: {info.file_size} bytes")
             data = zf.read(first)
             ext = Path(first).suffix.lower()
             if ext == ".jpeg":
                 ext = ".jpg"
             cover_filename = f"thumb{ext}"
-            (output_dir / cover_filename).write_bytes(data)
+            atomic_write_bytes(output_dir / cover_filename, data)
             return cover_filename
+
+    def _validate_archive(self, zip_path: Path) -> None:
+        with zipfile.ZipFile(zip_path) as archive:
+            archive.infolist()
+
+    def _validate_gallery_metadata(self, gallery_dir: Path, metadata: object) -> None:
+        if not isinstance(metadata, dict):
+            raise ValueError("gallery.json root must be an object")
+        if int(metadata.get("schema_version") or 0) != 1:
+            raise ValueError("unsupported gallery.json schema")
+        source = metadata.get("source")
+        files = metadata.get("files")
+        if not isinstance(source, dict) or not source.get("gid") or not source.get("token"):
+            raise ValueError("gallery.json source is incomplete")
+        if not isinstance(files, dict):
+            raise ValueError("gallery.json files must be an object")
+        archive_name = str(files.get("archive") or "")
+        if not archive_name or Path(archive_name).name != archive_name:
+            raise ValueError("gallery.json archive filename is invalid")
+        if not (gallery_dir / archive_name).is_file():
+            raise ValueError("gallery archive is missing")
+        cover_name = str(files.get("cover") or "")
+        if cover_name and Path(cover_name).name != cover_name:
+            raise ValueError("gallery.json cover filename is invalid")
 
     def _is_image_member(self, name: str) -> bool:
         path = Path(name)
@@ -161,6 +212,7 @@ class LocalGalleryManager:
             "schema_version": 1,
             "provider": "ehentai",
             "storage_method": "eh_archive_zip",
+            "download_task_id": task.id,
             "source": {
                 "gid": tag_data.get("gid", ""),
                 "token": tag_data.get("token", ""),
@@ -185,6 +237,19 @@ class LocalGalleryManager:
             "created_at": created,
             "updated_at": created,
         }
+
+    def _read_gallery_metadata(self, gallery_dir: Path) -> dict:
+        data = json.loads((gallery_dir / "gallery.json").read_text(encoding="utf-8"))
+        self._validate_gallery_metadata(gallery_dir, data)
+        return data
+
+    def _is_committed_gallery(self, gallery_dir: Path, task_id: str) -> bool:
+        if not gallery_dir.is_dir():
+            return False
+        try:
+            return self._read_gallery_metadata(gallery_dir).get("download_task_id") == task_id
+        except Exception:
+            return False
 
     def _unique_path(self, path: Path) -> Path:
         if not path.exists():
