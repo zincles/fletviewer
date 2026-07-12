@@ -2,7 +2,7 @@ from app import image_cache
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.lazy import LazyProxy
-from core.image.fetcher import ImageFetcherService, ImageFetchResult, ImageFetchSnapshot, ImageFetchTaskState
+from core.image.fetcher import ImageFetcherService, ImageFetchResult, ImageFetchSnapshot, ImageFetchTaskState, ImageLoadCoordinator
 
 
 def _get_image_response(url: str, headers: dict[str, str], timeout: int):
@@ -23,4 +23,11 @@ def _create_image_fetcher() -> ImageFetcherService:
 image_fetcher = LazyProxy(_create_image_fetcher)
 
 
-__all__ = ["ImageFetcherService", "ImageFetchResult", "ImageFetchSnapshot", "ImageFetchTaskState", "image_fetcher"]
+def _create_image_load_coordinator() -> ImageLoadCoordinator:
+    return ImageLoadCoordinator(image_fetcher.resolve())
+
+
+image_load_coordinator = LazyProxy(_create_image_load_coordinator)
+
+
+__all__ = ["ImageFetcherService", "ImageFetchResult", "ImageFetchSnapshot", "ImageFetchTaskState", "image_fetcher", "image_load_coordinator"]

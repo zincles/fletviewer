@@ -13,6 +13,14 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - TODO 文档只保留“决策、约束、下一步”；长期规则写进 `AGENTS.md`，实验流水账写进 `tmp/` 或 commit message。
 - 不要随意重构。优先小改、可验证、低风险；不要为了“统一”抹掉 provider 差异。
 
+## 禁止使用子代理
+
+- 本规则适用于本仓库及其所有子目录中的全部任务。
+- 禁止创建、调用、委派或等待任何 subagent（子代理）。
+- 禁止使用 `spawn_agent`、`followup_task`、`send_message`、`wait_agent`、`interrupt_agent`、`list_agents`，以及其他任何多代理协作功能。
+- 所有分析、检索、文件修改、测试和答复都必须由当前主代理独立完成。
+- 即使子代理可能提升速度或质量，也不得启用；如果单一代理确实无法继续，应直接向用户说明限制。
+
 ## 架构边界
 
 - `core/` 是与 UI 框架无关的业务核心；Provider、网络协议、缓存、数据库、下载、图片获取等能力优先放入 `core/`。

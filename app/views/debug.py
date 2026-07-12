@@ -2,7 +2,9 @@ import time
 
 import flet as ft
 
-from app.image_fetcher import ImageFetchTaskState, image_fetcher
+from app.image_fetcher import ImageFetchTaskState, image_fetcher, image_load_coordinator
+from app.debug_log import log_exception
+from app.ui_update import request_update
 
 
 def _format_bytes(value: int) -> str:
@@ -48,6 +50,8 @@ def _task_row(task: ImageFetchTaskState) -> ft.Control:
     status_color = {
         "queued": ft.Colors.AMBER,
         "running": ft.Colors.BLUE,
+        "cancelling": ft.Colors.ORANGE,
+        "cancelled": ft.Colors.ON_SURFACE_VARIANT,
         "completed": ft.Colors.GREEN,
         "cache_hit": ft.Colors.GREEN,
         "failed": ft.Colors.ERROR,
@@ -87,52 +91,74 @@ def _section(title: str, tasks: list[ImageFetchTaskState], empty: str) -> ft.Con
     )
 
 
-def create_view(page: ft.Page) -> ft.Control:
-    status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
-    auto_status = ft.Text("自动刷新中", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
-    content = ft.Column(spacing=16)
-    state = {"alive": True, "refreshing": False}
-
-    def refresh(update: bool = True):
-        if state["refreshing"]:
-            return
-        state["refreshing"] = True
-        snapshot = image_fetcher.snapshot()
-        failed = [task for task in snapshot.recent if task.status == "failed"]
-        status.value = f"小图 fetcher: active={len(snapshot.active)} queued={len(snapshot.queued)} recent={len(snapshot.recent)} failed_recent={len(failed)} max_workers={snapshot.max_workers}"
-        auto_status.value = f"自动刷新中 · {time.strftime('%H:%M:%S')}"
-        content.controls = [
-            _section("正在下载", snapshot.active, "当前没有正在下载的小图任务"),
-            _section("排队中", snapshot.queued, "当前没有排队的小图任务"),
-            _section("最近完成/失败", snapshot.recent[:30], "暂无最近任务"),
-        ]
-        try:
-            if update:
-                page.update()
-        finally:
-            state["refreshing"] = False
-
-    def auto_refresh_worker():
-        created_generation = getattr(page, "fletviewer_content_generation", None)
-        while state["alive"]:
-            current_generation = getattr(page, "fletviewer_content_generation", None)
-            if created_generation is not None and current_generation != created_generation:
-                state["alive"] = False
-                return
-            refresh(update=True)
-            time.sleep(0.5)
-
-    refresh_button = ft.Button("刷新", icon=ft.Icons.REFRESH, on_click=lambda e: refresh())
-    refresh(update=False)
-    page.run_thread(auto_refresh_worker)
-    return ft.Column(
+class _TaskDebugView(ft.Container):
+    def __init__(self, page: ft.Page):
+        super().__init__(expand=True)
+        self._page = page
+        self._alive = False
+        self._refreshing = False
+        self._worker_generation = 0
+        self._status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
+        self._auto_status = ft.Text("自动刷新中", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self._content = ft.Column(spacing=16)
+        refresh_button = ft.Button("刷新", icon=ft.Icons.REFRESH, on_click=lambda e: self._refresh())
+        self.content = ft.Column(
             [
-                ft.Row([auto_status, refresh_button], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                status,
+                ft.Row([self._auto_status, refresh_button], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                self._status,
                 ft.Divider(),
-                content,
+                self._content,
             ],
             spacing=12,
             scroll=ft.ScrollMode.AUTO,
             expand=True,
-    )
+        )
+        self._refresh(update=False)
+
+    def did_mount(self) -> None:
+        self._alive = True
+        self._worker_generation += 1
+        generation = self._worker_generation
+        self._page.run_thread(lambda: self._auto_refresh_worker(generation))
+
+    def will_unmount(self) -> None:
+        self._alive = False
+        self._worker_generation += 1
+
+    def _refresh(self, update: bool = True):
+        if self._refreshing:
+            return True
+        self._refreshing = True
+        try:
+            snapshot = image_fetcher.snapshot()
+            entries = image_load_coordinator.debug_entries()
+            failed = [task for task in snapshot.recent if task.status == "failed"]
+            subscribers = sum(entry["subscribers"] for entry in entries)
+            self._status.value = (
+                f"图像 fetcher：活跃={len(snapshot.active)} 排队={len(snapshot.queued)} 最近={len(snapshot.recent)} "
+                f"最近失败={len(failed)} 共享任务={len(entries)} 订阅={subscribers} worker={snapshot.max_workers}"
+            )
+            self._auto_status.value = f"自动刷新中 · {time.strftime('%H:%M:%S')}"
+            self._content.controls = [
+                _section("正在下载", snapshot.active, "当前没有正在下载的小图任务"),
+                _section("排队中", snapshot.queued, "当前没有排队的小图任务"),
+                _section("最近完成/失败", snapshot.recent[:30], "暂无最近任务"),
+            ]
+            if update:
+                return request_update(self._page)
+            return True
+        finally:
+            self._refreshing = False
+
+    def _auto_refresh_worker(self, generation: int):
+        try:
+            while self._alive and generation == self._worker_generation:
+                if not self._refresh(update=True):
+                    return
+                time.sleep(0.5)
+        except Exception as ex:
+            log_exception("任务调试", f"自动刷新失败：{ex}")
+
+
+def create_view(page: ft.Page) -> ft.Control:
+    return _TaskDebugView(page)

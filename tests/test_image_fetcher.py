@@ -1,11 +1,14 @@
 import tempfile
 import threading
+import time
 import unittest
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import Mock
 
-from core.image.fetcher import ImageFetcherService
+import requests
+
+from core.image.fetcher import ImageFetchCancelled, ImageFetcherService, ImageLoadCoordinator
 
 
 class _MemoryCache:
@@ -67,6 +70,199 @@ class _MemoryCache:
 
 
 class ImageFetcherAsyncTests(unittest.TestCase):
+    def test_coordinator_accepts_already_completed_future_without_deadlock(self) -> None:
+        service = Mock()
+        future = Future()
+        future.set_result("cached")
+        service.submit_fetch.return_value = ("task-1", future)
+        service.task_state.return_value = None
+        coordinator = ImageLoadCoordinator(service)
+
+        subscription = coordinator.subscribe("https://example.test/cached.jpg")
+
+        self.assertEqual(subscription.future.result(), "cached")
+
+    def test_subscription_progress_uses_its_task_generation(self) -> None:
+        service = Mock()
+        future = Future()
+        service.submit_fetch.return_value = ("generation-2", future)
+        expected = Mock(key="generation-2")
+        service.task_state.return_value = expected
+        coordinator = ImageLoadCoordinator(service)
+
+        subscription = coordinator.subscribe("https://example.test/image.jpg")
+        progress = subscription.progress()
+
+        self.assertIs(progress, expected)
+        service.task_state.assert_called_once_with("generation-2")
+        future.set_result("done")
+
+    def test_cancel_then_retry_keeps_new_generation_registered(self) -> None:
+        service = Mock()
+        first_future = Future()
+        second_future = Future()
+        service.submit_fetch.side_effect = [
+            ("generation-1", first_future),
+            ("generation-2", second_future),
+        ]
+        coordinator = ImageLoadCoordinator(service)
+        first = coordinator.subscribe("https://example.test/image.jpg")
+        first.cancel()
+        second = coordinator.retry("https://example.test/image.jpg")
+
+        first_future.set_exception(ImageFetchCancelled())
+
+        entries = coordinator.debug_entries()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["task_key"], "generation-2")
+        self.assertIs(second.future, second_future)
+        second_future.set_result("done")
+
+    def test_coordinator_shares_future_and_cancels_only_last_subscriber(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocked_fetch(url: str, kind: str, task_key: str | None = None, cancel_event=None):
+            started.set()
+            while not release.wait(0.01):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ImageFetchCancelled()
+            return "result"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            service = ImageFetcherService(cache=_MemoryCache(Path(tmp)), get_response=lambda *_args: None, max_workers=1)
+            service._fetch_impl = blocked_fetch
+            coordinator = ImageLoadCoordinator(service)
+
+            first = coordinator.subscribe("https://example.test/shared.jpg")
+            second = coordinator.subscribe("https://example.test/shared.jpg")
+            self.assertTrue(started.wait(timeout=1))
+            self.assertIs(first.future, second.future)
+            self.assertEqual(coordinator.subscriber_count(first.url), 2)
+
+            first.cancel()
+            self.assertFalse(second.future.done())
+            self.assertEqual(coordinator.subscriber_count(second.url), 1)
+
+            release.set()
+            self.assertEqual(second.future.result(timeout=1), "result")
+
+    def test_last_subscriber_cancel_stops_running_task(self) -> None:
+        started = threading.Event()
+
+        def blocked_fetch(url: str, kind: str, task_key: str | None = None, cancel_event=None):
+            started.set()
+            while True:
+                if cancel_event is not None and cancel_event.wait(0.01):
+                    raise ImageFetchCancelled()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            service = ImageFetcherService(cache=_MemoryCache(Path(tmp)), get_response=lambda *_args: None, max_workers=1)
+            service._fetch_impl = blocked_fetch
+            coordinator = ImageLoadCoordinator(service)
+            subscription = coordinator.subscribe("https://example.test/cancel.jpg")
+            self.assertTrue(started.wait(timeout=1))
+
+            subscription.cancel()
+
+            with self.assertRaises(ImageFetchCancelled):
+                subscription.future.result(timeout=1)
+
+    def test_cancelled_cache_write_removes_temporary_file(self) -> None:
+        cancel_event = threading.Event()
+
+        class Response:
+            headers = {"Content-Length": "8"}
+
+            def iter_content(self, chunk_size: int):
+                yield b"data"
+                cancel_event.set()
+                yield b"more"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            service = ImageFetcherService(cache=_MemoryCache(root), get_response=lambda *_args: None, max_workers=1)
+            target = root / "image.jpg"
+
+            with self.assertRaises(ImageFetchCancelled):
+                service._write_response_to_cache(Response(), target, None, cancel_event)
+
+            self.assertFalse(target.exists())
+            self.assertEqual(list(root.glob("*.tmp")), [])
+
+    def test_cancel_interrupts_retry_backoff(self) -> None:
+        cancel_event = threading.Event()
+        attempts = 0
+
+        def fail_response(*_args):
+            nonlocal attempts
+            attempts += 1
+            cancel_event.set()
+            raise requests.ConnectionError("offline")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            service = ImageFetcherService(cache=_MemoryCache(Path(tmp)), get_response=fail_response, max_workers=1)
+            started = time.perf_counter()
+
+            with self.assertRaises(ImageFetchCancelled):
+                service._get_image_response("https://example.test/image.jpg", cancel_event)
+
+            self.assertLess(time.perf_counter() - started, 0.2)
+            self.assertEqual(attempts, 1)
+
+    def test_invalid_content_length_is_treated_as_unknown(self) -> None:
+        class Response:
+            headers = {"Content-Length": "invalid"}
+
+            def iter_content(self, chunk_size: int):
+                yield b"data"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            service = ImageFetcherService(cache=_MemoryCache(Path(tmp)), get_response=lambda *_args: None, max_workers=1)
+
+            data = service._write_response_to_cache(Response(), Path(tmp) / "image.jpg", None)
+
+            self.assertEqual(data, b"data")
+
+    def test_cache_read_failure_finishes_task_as_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = _MemoryCache(Path(tmp))
+            cache.get_cached_path = Mock(side_effect=PermissionError("denied"))
+            service = ImageFetcherService(cache=cache, get_response=lambda *_args: None, max_workers=1)
+
+            with self.assertRaises(PermissionError):
+                service.fetch_async("https://example.test/image.jpg").result(timeout=1)
+
+            snapshot = service.snapshot()
+            self.assertEqual(snapshot.active, [])
+            self.assertEqual(snapshot.queued, [])
+            self.assertEqual(snapshot.recent[0].status, "failed")
+
+    def test_last_subscriber_marks_running_task_cancelling(self) -> None:
+        started = threading.Event()
+
+        def blocked_fetch(url: str, kind: str, task_key: str | None = None, cancel_event=None):
+            service._update_task(task_key, status="running", started_at=time.time())
+            started.set()
+            while not cancel_event.wait(0.01):
+                pass
+            raise ImageFetchCancelled()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            service = ImageFetcherService(cache=_MemoryCache(Path(tmp)), get_response=lambda *_args: None, max_workers=1)
+            service._fetch_impl = blocked_fetch
+            coordinator = ImageLoadCoordinator(service)
+            subscription = coordinator.subscribe("https://example.test/image.jpg")
+            self.assertTrue(started.wait(timeout=1))
+
+            subscription.cancel()
+            state = service.task_state(subscription.task_key)
+
+            self.assertIsNotNone(state)
+            self.assertEqual(state.status, "cancelling")
+            with self.assertRaises(ImageFetchCancelled):
+                subscription.future.result(timeout=1)
+
     def test_concurrent_fetch_impl_for_same_url_downloads_once(self) -> None:
         class Response:
             headers = {"Content-Length": "4", "Content-Type": "image/webp"}
@@ -147,7 +343,7 @@ class ImageFetcherAsyncTests(unittest.TestCase):
 
             data = service._write_response_to_cache(Response(), target, None)
 
-            self.assertEqual(data, b"new!")
+            self.assertEqual(data, b"old!")
             self.assertEqual(target.read_bytes(), b"old!")
             self.assertFalse(temporary.exists())
 

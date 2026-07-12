@@ -1091,6 +1091,24 @@ def main(page: ft.Page):
         expand=True,
     )
     root_tabs_ref["value"] = root_tabs
+
+    def open_task_debug_view():
+        parent_route = navigator.current_route()
+        navigator.push_view(
+            ft.View(
+                route=navigator.next_route("debug-tasks"),
+                controls=[ft.Container(content=debug_view(page), padding=8, expand=True)],
+                padding=0,
+                appbar=ft.AppBar(
+                    title=ft.Text("任务调试"),
+                    leading=ft.IconButton(ft.Icons.ARROW_BACK, tooltip="返回", on_click=lambda e: navigator.pop_view()),
+                    automatically_imply_leading=False,
+                ),
+            ),
+            parent_route=parent_route,
+        )
+
+    page.fletviewer_open_task_debug = open_task_debug_view
     task_debug_overlay = TaskDebugOverlay(page)
     page.overlay.append(task_debug_overlay)
 

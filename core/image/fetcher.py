@@ -63,6 +63,118 @@ class ImageFetchSnapshot:
     max_workers: int
 
 
+class ImageFetchCancelled(Exception):
+    """图像任务被协作取消。"""
+
+
+@dataclass(slots=True)
+class _ImageLoadEntry:
+    url: str
+    future: Future[ImageFetchResult]
+    cancel_event: threading.Event
+    subscribers: set[str]
+    task_key: str = ""
+
+
+class ImageLoadSubscription:
+    def __init__(self, coordinator: "ImageLoadCoordinator", entry: _ImageLoadEntry, subscription_id: str):
+        self._coordinator = coordinator
+        self._entry = entry
+        self.subscription_id = subscription_id
+        self.cancelled = False
+
+    @property
+    def future(self) -> Future[ImageFetchResult]:
+        return self._entry.future
+
+    @property
+    def url(self) -> str:
+        return self._entry.url
+
+    @property
+    def task_key(self) -> str:
+        return self._entry.task_key
+
+    def progress(self) -> ImageFetchTaskState | None:
+        return self._coordinator.progress(self._entry.task_key)
+
+    def cancel(self) -> bool:
+        if self.cancelled:
+            return False
+        self.cancelled = True
+        return self._coordinator._unsubscribe(self._entry, self.subscription_id)
+
+    def unsubscribe(self) -> bool:
+        return self.cancel()
+
+
+class ImageLoadCoordinator:
+    """将同 URL 控件合并为一个底层任务，并独立管理订阅取消。"""
+
+    def __init__(self, service: "ImageFetcherService"):
+        self._service = service
+        self._lock = threading.Lock()
+        self._entries: dict[str, _ImageLoadEntry] = {}
+
+    def subscribe(self, url: str, *, kind: str = "unknown") -> ImageLoadSubscription:
+        normalized = url.strip()
+        if not normalized:
+            raise ValueError("图像 URL 为空")
+        created_entry: _ImageLoadEntry | None = None
+        with self._lock:
+            entry = self._entries.get(normalized)
+            if entry is None or entry.cancel_event.is_set() or entry.future.done():
+                cancel_event = threading.Event()
+                task_key, future = self._service.submit_fetch(normalized, kind=kind, cancel_event=cancel_event)
+                entry = _ImageLoadEntry(normalized, future, cancel_event, set(), task_key)
+                self._entries[normalized] = entry
+                created_entry = entry
+            subscription_id = uuid.uuid4().hex
+            entry.subscribers.add(subscription_id)
+        if created_entry is not None:
+            created_entry.future.add_done_callback(lambda completed, current=created_entry: self._complete(current))
+        return ImageLoadSubscription(self, entry, subscription_id)
+
+    def retry(self, url: str, *, kind: str = "unknown") -> ImageLoadSubscription:
+        return self.subscribe(url, kind=kind)
+
+    def progress(self, task_key: str) -> ImageFetchTaskState | None:
+        return self._service.task_state(task_key)
+
+    def debug_entries(self) -> list[dict]:
+        with self._lock:
+            return [
+                {
+                    "url": entry.url,
+                    "task_key": entry.task_key,
+                    "subscribers": len(entry.subscribers),
+                    "cancelling": entry.cancel_event.is_set(),
+                    "done": entry.future.done(),
+                }
+                for entry in self._entries.values()
+            ]
+
+    def subscriber_count(self, url: str) -> int:
+        with self._lock:
+            entry = self._entries.get(url.strip())
+            return len(entry.subscribers) if entry is not None else 0
+
+    def _unsubscribe(self, entry: _ImageLoadEntry, subscription_id: str) -> bool:
+        with self._lock:
+            if self._entries.get(entry.url) is not entry or subscription_id not in entry.subscribers:
+                return False
+            entry.subscribers.remove(subscription_id)
+            if not entry.subscribers and not entry.future.done():
+                entry.cancel_event.set()
+                self._service.mark_cancelling(entry.task_key)
+        return True
+
+    def _complete(self, entry: _ImageLoadEntry) -> None:
+        with self._lock:
+            if self._entries.get(entry.url) is entry:
+                self._entries.pop(entry.url, None)
+
+
 class ImageFetcherService:
     def __init__(
         self,
@@ -92,7 +204,7 @@ class ImageFetcherService:
 
     def snapshot(self) -> ImageFetchSnapshot:
         with self._state_lock:
-            active = [replace(s) for s in self._task_states.values() if s.status == "running"]
+            active = [replace(s) for s in self._task_states.values() if s.status in {"running", "cancelling"}]
             queued = [replace(s) for s in self._task_states.values() if s.status == "queued"]
             recent = [replace(s) for s in self._recent_states[-self._recent_limit:]]
         active.sort(key=lambda s: s.started_at or s.created_at)
@@ -103,23 +215,63 @@ class ImageFetcherService:
     def fetch(self, url: str, *, kind: str = "unknown") -> ImageFetchResult:
         return self.fetch_async(url, kind=kind).result()
 
-    def fetch_async(self, url: str, *, kind: str = "unknown") -> Future[ImageFetchResult]:
+    def fetch_async(
+        self,
+        url: str,
+        *,
+        kind: str = "unknown",
+        cancel_event: threading.Event | None = None,
+        deduplicate: bool = True,
+    ) -> Future[ImageFetchResult]:
         normalized = url.strip()
         self._debug(f"请求 {normalized}")
         submitted = False
         with self._lock:
-            future = self._in_flight.get(normalized)
+            future = self._in_flight.get(normalized) if deduplicate else None
             if future is None:
                 self._debug(f"提交图像获取任务 {normalized}")
                 task_key = self._new_task(normalized, kind)
-                future = self._executor.submit(self._fetch_impl, normalized, kind, task_key)
-                self._in_flight[normalized] = future
+                if cancel_event is None:
+                    future = self._executor.submit(self._fetch_impl, normalized, kind, task_key)
+                else:
+                    future = self._executor.submit(self._fetch_impl, normalized, kind, task_key, cancel_event)
+                if deduplicate:
+                    self._in_flight[normalized] = future
                 submitted = True
             else:
                 self._debug(f"加入进行中的图像获取任务 {normalized}")
-        if submitted:
+        if submitted and deduplicate:
             future.add_done_callback(lambda completed, key=normalized: self._forget_in_flight(key, completed))
+        elif submitted:
+            future.add_done_callback(lambda completed, key=normalized: self._observe_completion(key, completed))
         return future
+
+    def submit_fetch(
+        self,
+        url: str,
+        *,
+        kind: str = "unknown",
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[str, Future[ImageFetchResult]]:
+        normalized = url.strip()
+        task_key = self._new_task(normalized, kind)
+        try:
+            future = self._executor.submit(self._fetch_impl, normalized, kind, task_key, cancel_event)
+        except Exception as ex:
+            self._finish_task(task_key, status="failed", error=str(ex))
+            raise
+        future.add_done_callback(lambda completed, key=normalized: self._observe_completion(key, completed))
+        return task_key, future
+
+    def _observe_completion(self, normalized: str, future: Future[ImageFetchResult]) -> None:
+        if future.cancelled():
+            return
+        try:
+            future.result()
+        except ImageFetchCancelled:
+            return
+        except Exception as ex:
+            self._log_exception("图像", f"后台图像获取失败 URL={normalized}：{ex}")
 
     def _forget_in_flight(self, normalized: str, future: Future[ImageFetchResult]) -> None:
         with self._lock:
@@ -129,6 +281,8 @@ class ImageFetcherService:
             return
         try:
             future.result()
+        except ImageFetchCancelled:
+            return
         except Exception as ex:
             self._log_exception("图像", f"后台图像获取失败 URL={normalized}：{ex}")
 
@@ -146,6 +300,7 @@ class ImageFetcherService:
         if cached_path is not None:
             with self._timer("读取缓存", str(cached_path)):
                 data = cached_path.read_bytes()
+            self._raise_if_cancelled(cancel_event)
             mime = self._guess_mime(cached_path)
             self._debug(f"画廊页面缓存命中 provider={provider} gid={gid} 索引={page_idx} 字节数={len(data)}")
             return ImageFetchResult(url="", path=cached_path, data=data, mime=mime, from_cache=True)
@@ -160,11 +315,21 @@ class ImageFetcherService:
         self._cache.put_gallery_page_cached_filename(provider, gid, token, page_idx, result.path.name, kind=kind)
         return result
 
-    def _fetch_impl(self, url: str, kind: str, task_key: str | None = None) -> ImageFetchResult:
+    def _fetch_impl(self, url: str, kind: str, task_key: str | None = None, cancel_event: threading.Event | None = None) -> ImageFetchResult:
         with self._url_lock(url):
-            return self._fetch_impl_locked(url, kind, task_key)
+            try:
+                return self._fetch_impl_locked(url, kind, task_key, cancel_event)
+            except ImageFetchCancelled:
+                if task_key:
+                    self._finish_task(task_key, status="cancelled")
+                raise
+            except Exception as ex:
+                if task_key:
+                    self._finish_task(task_key, status="failed", error=str(ex))
+                raise
 
-    def _fetch_impl_locked(self, url: str, kind: str, task_key: str | None = None) -> ImageFetchResult:
+    def _fetch_impl_locked(self, url: str, kind: str, task_key: str | None = None, cancel_event: threading.Event | None = None) -> ImageFetchResult:
+        self._raise_if_cancelled(cancel_event)
         if task_key:
             self._update_task(task_key, status="running", started_at=time.time())
         cached_path = self._cache.get_cached_path(url)
@@ -184,6 +349,7 @@ class ImageFetcherService:
             if stale_path.exists():
                 with self._timer("读取缓存", str(stale_path)):
                     data = stale_path.read_bytes()
+                self._raise_if_cancelled(cancel_event)
                 mime = self._guess_mime(stale_path)
                 self._debug(f"失效索引对应的缓存文件命中 URL={url} 字节数={len(data)} MIME={mime}")
                 result = ImageFetchResult(url=url, path=stale_path, data=data, mime=mime, from_cache=True)
@@ -195,20 +361,26 @@ class ImageFetcherService:
 
         sprite_crop = self._parse_sprite_crop(url)
         if sprite_crop is not None:
-            result = self._fetch_sprite_crop(url, *sprite_crop)
+            result = self._fetch_sprite_crop(url, *sprite_crop, cancel_event=cancel_event)
             if task_key:
                 self._finish_task(task_key, status="completed", bytes_done=len(result.data), bytes_total=len(result.data), from_cache=result.from_cache)
             return result
 
         self._debug(f"缓存未命中 URL={url}")
         try:
-            response = self._get_image_response(url)
-            response.raise_for_status()
-            mime = response.headers.get("Content-Type", "image/jpeg").split(";", 1)[0].strip()
-            filename = self._cache.filename_for_url(url, mime=mime)
-            path = self._cache.cached_path_for_url(url, mime=mime)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            data = self._write_response_to_cache(response, path, task_key)
+            response = self._get_image_response(url, cancel_event)
+            try:
+                self._raise_if_cancelled(cancel_event)
+                response.raise_for_status()
+                mime = response.headers.get("Content-Type", "image/jpeg").split(";", 1)[0].strip()
+                filename = self._cache.filename_for_url(url, mime=mime)
+                path = self._cache.cached_path_for_url(url, mime=mime)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                data = self._write_response_to_cache(response, path, task_key, cancel_event)
+            finally:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
 
             old_filename = self._cache.get_cached_filename(url)
             if old_filename and old_filename != filename:
@@ -218,15 +390,20 @@ class ImageFetcherService:
             if task_key:
                 self._finish_task(task_key, status="completed", bytes_done=len(data), from_cache=False)
             return ImageFetchResult(url=url, path=path, data=data, mime=mime, from_cache=False)
+        except ImageFetchCancelled:
+            if task_key:
+                self._finish_task(task_key, status="cancelled")
+            raise
         except Exception as ex:
             if task_key:
                 self._finish_task(task_key, status="failed", error=str(ex))
             raise
 
-    def _get_image_response(self, url: str) -> requests.Response:
+    def _get_image_response(self, url: str, cancel_event: threading.Event | None = None) -> requests.Response:
         headers = {"Referer": "https://e-hentai.org/", "Connection": "close"}
         last_error: Exception | None = None
         for attempt in range(1, 4):
+            self._raise_if_cancelled(cancel_event)
             try:
                 if attempt > 1:
                     self._debug(f"重试图像获取 尝试次数={attempt} URL={url}")
@@ -235,13 +412,17 @@ class ImageFetcherService:
                 last_error = ex
                 self._debug(f"图像获取暂时失败 尝试次数={attempt} URL={url}：{ex}")
                 if attempt < 3:
-                    time.sleep(0.5 * attempt)
+                    delay = 0.5 * attempt
+                    if cancel_event is not None and cancel_event.wait(delay):
+                        raise ImageFetchCancelled("图像加载已取消")
+                    time.sleep(delay if cancel_event is None else 0)
         assert last_error is not None
         raise last_error
 
-    def _fetch_sprite_crop(self, url: str, base_url: str, left: int, top: int, right: int, bottom: int) -> ImageFetchResult:
+    def _fetch_sprite_crop(self, url: str, base_url: str, left: int, top: int, right: int, bottom: int, *, cancel_event: threading.Event | None = None) -> ImageFetchResult:
         self._debug(f"裁剪 sprite URL={url} 基础URL={base_url} 区域={left},{top},{right},{bottom}")
-        base_result = self._fetch_impl(base_url, "sprite")
+        base_result = self._fetch_impl(base_url, "sprite", cancel_event=cancel_event)
+        self._raise_if_cancelled(cancel_event)
         with self._timer("裁剪 sprite", base_url):
             with Image.open(BytesIO(base_result.data)) as image:
                 cropped = image.crop((left, top, right, bottom))
@@ -257,12 +438,15 @@ class ImageFetcherService:
         tmp_path = self._temporary_path(path)
         with self._timer("写入缓存", str(path)):
             try:
+                self._raise_if_cancelled(cancel_event)
                 tmp_path.write_bytes(data)
+                self._raise_if_cancelled(cancel_event)
                 try:
                     tmp_path.replace(path)
                 except PermissionError:
                     if not path.exists():
                         raise
+                    data = path.read_bytes()
             finally:
                 tmp_path.unlink(missing_ok=True)
 
@@ -273,34 +457,46 @@ class ImageFetcherService:
         self._debug(f"sprite 裁剪完成 URL={url} 字节数={len(data)} MIME={mime} 路径={path}")
         return ImageFetchResult(url=url, path=path, data=data, mime=mime, from_cache=False)
 
-    def _write_response_to_cache(self, response: requests.Response, path: Path, task_key: str | None) -> bytes:
-        total = int(response.headers.get("Content-Length") or 0)
+    def _write_response_to_cache(self, response: requests.Response, path: Path, task_key: str | None, cancel_event: threading.Event | None = None) -> bytes:
+        try:
+            total = max(0, int(response.headers.get("Content-Length") or 0))
+        except (TypeError, ValueError):
+            total = 0
         if task_key:
             self._update_task(task_key, bytes_total=total)
         tmp_path = self._temporary_path(path)
         bytes_done = 0
         chunks: list[bytes] = []
+        use_existing = False
+        last_progress_bytes = 0
+        last_progress_at = time.monotonic()
         with self._timer("写入缓存", str(path)):
             try:
                 with open(tmp_path, "wb") as f:
                     for chunk in response.iter_content(chunk_size=8 * 1024):
+                        self._raise_if_cancelled(cancel_event)
                         if not chunk:
                             continue
                         f.write(chunk)
                         chunks.append(chunk)
                         bytes_done += len(chunk)
-                        if task_key:
+                        now = time.monotonic()
+                        if task_key and (bytes_done - last_progress_bytes >= 64 * 1024 or now - last_progress_at >= 0.2):
                             self._update_task(task_key, bytes_done=bytes_done)
+                            last_progress_bytes = bytes_done
+                            last_progress_at = now
+                self._raise_if_cancelled(cancel_event)
                 try:
                     tmp_path.replace(path)
                 except PermissionError:
                     if not path.exists():
                         raise
+                    use_existing = True
             finally:
                 tmp_path.unlink(missing_ok=True)
-        data = b"".join(chunks)
+        data = path.read_bytes() if use_existing else b"".join(chunks)
         if task_key:
-            self._update_task(task_key, bytes_done=len(data), bytes_total=total or len(data))
+            self._update_task(task_key, bytes_done=len(data), bytes_total=len(data) if use_existing else total or len(data))
         return data
 
     @staticmethod
@@ -310,6 +506,11 @@ class ImageFetcherService:
     def _url_lock(self, url: str) -> threading.RLock:
         digest = hashlib.sha256(url.encode("utf-8")).digest()
         return self._url_locks[int.from_bytes(digest[:2], "big") % len(self._url_locks)]
+
+    @staticmethod
+    def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ImageFetchCancelled("图像加载已取消")
 
     @staticmethod
     def _parse_sprite_crop(url: str) -> tuple[str, int, int, int, int] | None:
@@ -393,6 +594,21 @@ class ImageFetcherService:
             self._recent_states.append(replace(state))
             if len(self._recent_states) > self._recent_limit:
                 self._recent_states = self._recent_states[-self._recent_limit:]
+
+    def task_state_for_url(self, url: str) -> ImageFetchTaskState | None:
+        with self._state_lock:
+            for state in self._task_states.values():
+                if state.url == url:
+                    return replace(state)
+        return None
+
+    def task_state(self, key: str) -> ImageFetchTaskState | None:
+        with self._state_lock:
+            state = self._task_states.get(key)
+            return replace(state) if state is not None else None
+
+    def mark_cancelling(self, key: str) -> None:
+        self._update_task(key, status="cancelling")
 
 
 class _NullTimer:
