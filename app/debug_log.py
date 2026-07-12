@@ -8,7 +8,7 @@ from pathlib import Path
 from app.storage import get_storage_layout
 
 
-_QUIET_AREAS = {"image"}
+_QUIET_AREAS = {"image", "图像"}
 _CACHE_KEYWORDS = ("cache", "缓存", "gallery_cache", "命中", "cache read", "cache write")
 _WEB_KEYWORDS = ("GET", "POST", "HEAD", "抓取", "请求", "浏览器会话", "EH解析", "network fetched")
 _LOGGER = logging.getLogger("fletviewer")
@@ -107,7 +107,10 @@ def format_duration_ms(value: float) -> str:
 def log_image_served(source: str, elapsed_ms: float, url: str, bytes_count: int) -> None:
     """输出单行图片任务摘要。"""
     now = time.strftime("%H:%M:%S")
-    _write_log_line(f"[{now}][async_image][{source}][{format_duration_ms(elapsed_ms)}][{_format_bytes_binary(bytes_count)}] {url}")
+    _write_log_line(
+        f"[{now}][异步图像][{source}][{format_duration_ms(elapsed_ms)}] "
+        f"{_format_bytes_binary(bytes_count)} {url}"
+    )
 
 
 def _prefix(area: str, message: str) -> str:

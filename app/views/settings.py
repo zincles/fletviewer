@@ -109,7 +109,7 @@ class _ImageCacheSizeText(ft.Text):
         except Exception as ex:
             if self._alive:
                 self.value = "统计失败"
-        log_exception("设置", f"统计图像缓存失败：{ex}")
+            log_exception("设置", f"统计图像缓存失败：{ex}")
         if self._alive:
             request_update(self._page)
 
@@ -541,6 +541,7 @@ def create_view(page: ft.Page) -> ft.Control:
         except Exception as ex:
             proxy_status.value = f"代理配置错误: {ex}"
             proxy_status.color = ft.Colors.ERROR
+            log_exception("设置", f"应用代理配置失败：{ex}")
         page.update()
 
     account_page = ft.Container(
@@ -781,7 +782,64 @@ def create_view(page: ft.Page) -> ft.Control:
 
     clear_image_cache_button.on_click = on_clear_image_cache
 
+    settings_categories = [
+        (
+            "常规",
+            [
+                ("account", "账户", "E-Hentai Cookie、自动登录和当前登录状态。", ft.Icons.ACCOUNT_CIRCLE, account_page),
+                ("display", "显示与阅读", "外观、阅读器模式和画廊卡片显示。", ft.Icons.PALETTE, display_page),
+            ],
+        ),
+        (
+            "连接与内容",
+            [
+                ("network", "网络与代理", "统一传输层、代理和连接状态。", ft.Icons.ROUTER, network_page),
+                (
+                    "downloads-local",
+                    "下载与本地画廊",
+                    "下载任务、Archive 归档和本地阅读入口。",
+                    ft.Icons.DOWNLOAD_FOR_OFFLINE,
+                    downloads_local_page,
+                ),
+                ("notifications", "通知", "下载、归档和存储事件的通知 backend。", ft.Icons.NOTIFICATIONS, notification_page),
+            ],
+        ),
+        (
+            "系统与维护",
+            [
+                ("storage", "存储与维护", "四域路径、存储状态和缓存清理。", ft.Icons.STORAGE, storage_page),
+                ("linux-window", "平台与窗口", "Linux 标题栏、窗口后端和平台能力。", ft.Icons.DESKTOP_WINDOWS, linux_window_page),
+            ],
+        ),
+        (
+            "调试",
+            [
+                ("debug-tools", "调试工具", "历史、调试面板和缓存清理操作。", ft.Icons.BUG_REPORT, debug_page),
+            ],
+        ),
+    ]
+    category_by_route = {
+        route_key: (title, icon, content)
+        for _group_title, categories in settings_categories
+        for route_key, title, _subtitle, icon, content in categories
+    }
+    selected_route = {"value": "account"}
+    wide_state = {"value": False}
+    detail_host = ft.Container(expand=True, padding=ft.Padding(24, 0, 24, 0))
+    wide_menu_items: dict[str, ft.Container] = {}
+
+    def update_wide_selection():
+        for route_key, menu_item in wide_menu_items.items():
+            selected = route_key == selected_route["value"]
+            menu_item.bgcolor = ft.Colors.SECONDARY_CONTAINER if selected else None
+
     def open_settings_page(route_key: str, title: str, icon, content: ft.Control):
+        selected_route["value"] = route_key
+        if wide_state["value"]:
+            detail_host.content = content
+            update_wide_selection()
+            page.update()
+            return
         push_view = getattr(page, "fletviewer_push_view", None)
         pop_view = getattr(page, "fletviewer_pop_view", None)
         if not callable(push_view):
@@ -840,88 +898,84 @@ def create_view(page: ft.Page) -> ft.Control:
             spacing=6,
         )
 
-    return ft.Column(
+    narrow_layout = ft.Column(
         [
             ft.Text("设置", size=28, weight=ft.FontWeight.BOLD),
             ft.Text("按使用场景管理账户、阅读、网络、下载、通知、存储与平台能力。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
-            settings_group(
-                "常规",
-                [
-                    settings_tile(
-                        "account",
-                        "账户",
-                        "E-Hentai Cookie、自动登录和当前登录状态。",
-                        ft.Icons.ACCOUNT_CIRCLE,
-                        account_page,
-                    ),
-                    settings_tile(
-                        "display",
-                        "显示与阅读",
-                        "外观、阅读器模式和画廊卡片显示。",
-                        ft.Icons.PALETTE,
-                        display_page,
-                    ),
-                ],
-            ),
-            settings_group(
-                "连接与内容",
-                [
-                    settings_tile(
-                        "network",
-                        "网络与代理",
-                        "统一传输层、代理和连接状态。",
-                        ft.Icons.ROUTER,
-                        network_page,
-                    ),
-                    settings_tile(
-                        "downloads-local",
-                        "下载与本地画廊",
-                        "下载任务、Archive 归档和本地阅读入口。",
-                        ft.Icons.DOWNLOAD_FOR_OFFLINE,
-                        downloads_local_page,
-                    ),
-                    settings_tile(
-                        "notifications",
-                        "通知",
-                        "下载、归档和存储事件的通知 backend。",
-                        ft.Icons.NOTIFICATIONS,
-                        notification_page,
-                    ),
-                ],
-            ),
-            settings_group(
-                "系统与维护",
-                [
-                    settings_tile(
-                        "storage",
-                        "存储与维护",
-                        "四域路径、存储状态和缓存清理。",
-                        ft.Icons.STORAGE,
-                        storage_page,
-                    ),
-                    settings_tile(
-                        "linux-window",
-                        "平台与窗口",
-                        "Linux 标题栏、窗口后端和平台能力。",
-                        ft.Icons.DESKTOP_WINDOWS,
-                        linux_window_page,
-                    ),
-                ],
-            ),
-            settings_group(
-                "调试",
-                [
-                    settings_tile(
-                        "debug-tools",
-                        "调试工具",
-                        "历史、调试面板和缓存清理操作。",
-                        ft.Icons.BUG_REPORT,
-                        debug_page,
-                    ),
-                ],
-            ),
+            *[
+                settings_group(
+                    group_title,
+                    [settings_tile(route_key, title, subtitle, icon, content) for route_key, title, subtitle, icon, content in categories],
+                )
+                for group_title, categories in settings_categories
+            ],
         ],
         spacing=18,
         expand=True,
         scroll=ft.ScrollMode.AUTO,
     )
+
+    wide_menu_controls: list[ft.Control] = [
+        ft.Text("设置", size=28, weight=ft.FontWeight.BOLD),
+        ft.Text("选择分类", size=13, color=ft.Colors.ON_SURFACE_VARIANT),
+    ]
+    for group_title, categories in settings_categories:
+        wide_menu_controls.append(ft.Text(group_title, size=12, weight=ft.FontWeight.W_600, color=ft.Colors.PRIMARY))
+        for route_key, title, _subtitle, icon, content in categories:
+            menu_item = ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Icon(icon, size=21),
+                        ft.Text(title, size=15, weight=ft.FontWeight.W_500, expand=True),
+                    ],
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=ft.Padding(14, 12, 14, 12),
+                border_radius=12,
+                ink=True,
+                on_click=lambda e, key=route_key, name=title, item_icon=icon, item_content=content: open_settings_page(
+                    key, name, item_icon, item_content
+                ),
+            )
+            wide_menu_items[route_key] = menu_item
+            wide_menu_controls.append(menu_item)
+        wide_menu_controls.append(ft.Container(height=4))
+
+    wide_layout = ft.Row(
+        [
+            ft.Container(
+                content=ft.Column(wide_menu_controls, spacing=6, scroll=ft.ScrollMode.AUTO),
+                width=280,
+                padding=ft.Padding(8, 8, 12, 8),
+            ),
+            ft.VerticalDivider(width=1, thickness=1, color=ft.Colors.OUTLINE_VARIANT),
+            detail_host,
+        ],
+        spacing=0,
+        expand=True,
+        vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+    )
+    layout_host = ft.Container(expand=True)
+
+    def apply_responsive_layout(e=None, *, update: bool = True):
+        wide = float(page.width or 0) >= 900
+        if layout_host.content is not None and wide == wide_state["value"]:
+            return
+        wide_state["value"] = wide
+        if wide:
+            _title, _icon, content = category_by_route[selected_route["value"]]
+            detail_host.content = content
+            update_wide_selection()
+            layout_host.content = wide_layout
+        else:
+            detail_host.content = None
+            layout_host.content = narrow_layout
+        if update:
+            page.update()
+
+    apply_responsive_layout(update=False)
+    add_resize_handler = getattr(page, "fletviewer_add_resize_handler", None)
+    if callable(add_resize_handler):
+        add_resize_handler(apply_responsive_layout)
+    return layout_host

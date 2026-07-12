@@ -4,6 +4,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from app import debug_log
 
 
 class DebugLogInitializationTests(unittest.TestCase):
@@ -35,6 +38,25 @@ class DebugLogInitializationTests(unittest.TestCase):
             log_path = storage_temp / "debug_log.md"
             self.assertTrue(log_path.is_file())
             self.assertIn("# FletViewer 调试日志", log_path.read_text(encoding="utf-8"))
+
+    def test_chinese_image_area_is_quiet_by_default(self):
+        with patch("app.debug_log._write_log_line") as write_log_line:
+            debug_log.log_debug("图像", "网络获取完成")
+
+        write_log_line.assert_not_called()
+
+    def test_image_summary_uses_chinese_area_and_full_url(self):
+        with patch("app.debug_log._write_log_line") as write_log_line:
+            debug_log.log_image_served(
+                "网络抓取🌐",
+                12,
+                "https://ehgt.org/w/02/491/33513-omuhyu3f.webp",
+                19406,
+            )
+
+        line = write_log_line.call_args.args[0]
+        self.assertIn("[异步图像][网络抓取🌐][12ms]", line)
+        self.assertIn("https://ehgt.org/w/02/491/33513-omuhyu3f.webp", line)
 
 
 if __name__ == "__main__":

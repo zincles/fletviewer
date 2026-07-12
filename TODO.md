@@ -5,6 +5,16 @@
 - 画廊列表仍需补回分页能力：支持自动加载下一页，并保留手动翻页按钮作为显式控制。
 - 存储可靠性完成后增加受限的“存储浏览器”页面：仅浏览 Data/Cache/Downloads/Temp 四域，支持路径、大小、mtime、JSON/文本预览、ZIP 文件列表、缓存/临时文件维护和导出诊断；不得允许路径逃逸，Android 外部文件继续通过 FilePicker/SAF 交换，Web 端明确展示的是服务器文件而非浏览器设备文件。
 
+## 未来目标：单文件画廊与 CBZ
+
+- 目标模型为“一个画廊一个归档文件”，减少 SD 卡等低性能文件系统中的目录项数量，并方便移动、备份和分享；不要把逐页图片、metadata 和持久缩略图散落为大量并列文件。
+- Provider 提供官方归档时保留官方文件：EH Archive 继续保留原始 ZIP，不修改、不重打包、不仅为改扩展名而转成 CBZ。
+- Provider 只提供独立图片、且未来允许逐页下载时，由 FletViewer 在 staging 中直接生成单个自包含 CBZ；图片使用固定宽度页码，已压缩图片优先 `ZIP_STORED`，完成校验后原子发布。
+- 自建 CBZ 根目录包含 `ComicInfo.xml`（第三方漫画阅读器兼容）和 `gallery.json`（FletViewer/provider 完整 metadata），正文只包含真实画廊页面。
+- 本地画廊封面不要求在归档旁持久保存 `thumb.*`；优先从 ZIP/CBZ 的封面 member 读取，并在应用 `Cache` 域维护可删除、可重建的集中式缩略图缓存。具体缩略图策略后续单独设计。
+- ZIP/CBZ 阅读必须支持不解压整本的列表与随机单页读取，并继续限制 member 数量、单页/总解压大小、路径穿越、加密归档和损坏 CRC。
+- 第一阶段不改变 EH“批量下载只使用 Archive”的约束；逐页打包 CBZ 主要面向未来支持该下载方式的 Booru、Pixiv 或其他 provider。
+
 ## 存储可靠性之后
 
 1. 增加最小通知接口和默认 print backend，先接入下载完成/失败、Archive 消费和存储恢复事件；后续再适配 Web、Android、Windows、Linux、Telegram/webhook。

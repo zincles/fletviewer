@@ -125,6 +125,12 @@ class ImageFetcherService:
         with self._lock:
             if self._in_flight.get(normalized) is future:
                 self._in_flight.pop(normalized, None)
+        if future.cancelled():
+            return
+        try:
+            future.result()
+        except Exception as ex:
+            self._log_exception("图像", f"后台图像获取失败 URL={normalized}：{ex}")
 
     def fetch_gallery_page(
         self,

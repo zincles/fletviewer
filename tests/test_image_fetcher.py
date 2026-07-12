@@ -3,6 +3,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import Mock
 
 from core.image.fetcher import ImageFetcherService
 
@@ -221,6 +222,25 @@ class ImageFetcherAsyncTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "failed"):
                 service.fetch_async("https://example.test/image.jpg").result(timeout=1)
             self.assertEqual(calls, 2)
+
+    def test_failed_background_request_is_reported(self) -> None:
+        logged = threading.Event()
+        log_exception = Mock(side_effect=lambda *_args: logged.set())
+        with tempfile.TemporaryDirectory() as tmp:
+            service = ImageFetcherService(
+                cache=_MemoryCache(Path(tmp)),
+                get_response=lambda *_args: None,
+                log_exception=log_exception,
+                max_workers=1,
+            )
+            service._fetch_impl = lambda *_args: (_ for _ in ()).throw(RuntimeError("failed"))
+
+            service.fetch_async("https://example.test/image.jpg")
+
+            self.assertTrue(logged.wait(timeout=1))
+            area, message = log_exception.call_args.args
+            self.assertEqual(area, "图像")
+            self.assertIn("failed", message)
 
 
 if __name__ == "__main__":

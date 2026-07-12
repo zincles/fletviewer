@@ -19,6 +19,18 @@ class NotificationTests(unittest.TestCase):
 
         Notifier(backend).send(Notification("Title", "Body"))
 
+    def test_backend_failure_is_reported_when_logger_is_available(self):
+        backend = Mock()
+        backend.send.side_effect = RuntimeError("unavailable")
+        log_exception = Mock()
+
+        Notifier(backend, log_exception=log_exception).send(Notification("Title", "Body", "test.failed"))
+
+        area, message = log_exception.call_args.args
+        self.assertEqual(area, "通知")
+        self.assertIn("test.failed", message)
+        self.assertIn("unavailable", message)
+
 
 if __name__ == "__main__":
     unittest.main()

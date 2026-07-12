@@ -21,7 +21,7 @@ if sys.platform.startswith("linux") and "--web" not in sys.argv and "--server" n
 import flet as ft
 
 from app.browser_session import browser_session
-from app.debug_log import configure_logging, format_duration_ms, log_debug
+from app.debug_log import configure_logging, format_duration_ms, log_debug, log_exception
 from app.local_gallery_manager import local_gallery_manager
 from app.notifications import Notification, notifier
 from app.storage import should_use_linux_builtin_title_bar
@@ -153,7 +153,7 @@ def main(page: ft.Page):
         local_gallery_manager.initialize()
     except Exception as ex:
         page.fletviewer_storage_error = str(ex)
-        log_debug("存储", f"数据存储不可用，将以受限模式启动：{ex}")
+        log_exception("存储", f"数据存储不可用，将以受限模式启动：{ex}")
         notifier.send(Notification("存储不可用", str(ex), "storage.unavailable"))
     use_builtin_title_bar = _use_builtin_title_bar(page) and _enable_builtin_title_bar(page)
 
@@ -310,11 +310,14 @@ def main(page: ft.Page):
             page.update()
 
             def worker():
-                for idx, item in enumerate(reversed(reading_speed_dial_items)):
-                    time.sleep(0.03)
-                    item.opacity = 1.0
-                    item.offset = ft.Offset(0, 0)
-                    page.update()
+                try:
+                    for idx, item in enumerate(reversed(reading_speed_dial_items)):
+                        time.sleep(0.03)
+                        item.opacity = 1.0
+                        item.offset = ft.Offset(0, 0)
+                        request_update(page)
+                except Exception as ex:
+                    log_exception("界面动画", f"展开阅读工具失败：{ex}")
 
             page.run_thread(worker)
             return
@@ -326,10 +329,13 @@ def main(page: ft.Page):
             page.update()
 
         def hide_worker():
-            time.sleep(0.18)
-            for item in reading_speed_dial_items:
-                item.visible = False
-            page.update()
+            try:
+                time.sleep(0.18)
+                for item in reading_speed_dial_items:
+                    item.visible = False
+                request_update(page)
+            except Exception as ex:
+                log_exception("界面动画", f"收起阅读工具失败：{ex}")
 
         page.run_thread(hide_worker)
 
@@ -372,7 +378,8 @@ def main(page: ft.Page):
             try:
                 handler(e)
             except Exception as ex:
-                log_debug("导航", f"窗口尺寸变化处理器执行失败：{ex}")
+                handler_name = getattr(handler, "__qualname__", type(handler).__name__)
+                log_exception("导航", f"窗口尺寸变化处理器执行失败 处理器={handler_name}：{ex}")
 
     page.fletviewer_add_resize_handler = add_resize_handler
     page.on_resize = on_page_resized
@@ -413,10 +420,13 @@ def main(page: ft.Page):
 
     def play_enter_animation(container: ft.Container):
         def worker():
-            time.sleep(0.02)
-            container.opacity = 1
-            container.scale = 1
-            page.update()
+            try:
+                time.sleep(0.02)
+                container.opacity = 1
+                container.scale = 1
+                request_update(page)
+            except Exception as ex:
+                log_exception("界面动画", f"进入动画执行失败：{ex}")
 
         page.run_thread(worker)
 
@@ -426,8 +436,11 @@ def main(page: ft.Page):
         page.update()
 
         def worker():
-            time.sleep(0.18)
-            after()
+            try:
+                time.sleep(0.18)
+                after()
+            except Exception as ex:
+                log_exception("界面动画", f"退出动画执行失败：{ex}")
 
         page.run_thread(worker)
 
@@ -518,7 +531,7 @@ def main(page: ft.Page):
             record_gallery_history(comic)
             view_cache.pop("page:6", None)
         except Exception as ex:
-            log_debug("历史记录", f"记录画廊失败 {comic.id}：{ex}")
+            log_exception("历史记录", f"记录画廊失败 {comic.id}：{ex}")
         detail_container = animated_scale_container(ft.Container(expand=True))
         route = f"/gallery/{len(page.views)}"
         detail_actions: dict[str, object] = {}
@@ -1164,7 +1177,7 @@ def main(page: ft.Page):
         try:
             browser_session.set_login_enabled(browser_session.login_enabled(), verify=True)
         except Exception as ex:
-            log_debug("导航", f"初始化网络会话失败：{ex}")
+            log_exception("浏览器会话", f"初始化网络会话失败：{ex}")
 
     page.run_thread(initialize_browser_session)
 
