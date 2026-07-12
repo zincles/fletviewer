@@ -109,7 +109,7 @@ class _ImageCacheSizeText(ft.Text):
         except Exception as ex:
             if self._alive:
                 self.value = "统计失败"
-            log_exception("设置", f"统计图像缓存失败: {ex}")
+        log_exception("设置", f"统计图像缓存失败：{ex}")
         if self._alive:
             request_update(self._page)
 
@@ -502,7 +502,7 @@ def create_view(page: ft.Page) -> ft.Control:
                 show_toast(page, "已清除所有图像缓存")
             except Exception as ex:
                 image_cache_size.value = "清理失败"
-                log_exception("设置", f"清除图像缓存失败: {ex}")
+                log_exception("设置", f"清除图像缓存失败：{ex}")
                 show_error_toast(page, "清除图像缓存失败", ex)
             finally:
                 image_cache_state["busy"] = False
@@ -517,7 +517,7 @@ def create_view(page: ft.Page) -> ft.Control:
             _invalidate_gallery_views(page, "gallery_cache_cleared")
             show_toast(page, "已清除所有画廊缓存")
         except Exception as ex:
-            log_exception("设置", f"清除画廊缓存失败: {ex}")
+            log_exception("设置", f"清除画廊缓存失败：{ex}")
             show_error_toast(page, "清除画廊缓存失败", ex)
 
     def open_page(label: str):

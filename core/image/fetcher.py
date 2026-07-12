@@ -105,18 +105,18 @@ class ImageFetcherService:
 
     def fetch_async(self, url: str, *, kind: str = "unknown") -> Future[ImageFetchResult]:
         normalized = url.strip()
-        self._debug(f"request {normalized}")
+        self._debug(f"请求 {normalized}")
         submitted = False
         with self._lock:
             future = self._in_flight.get(normalized)
             if future is None:
-                self._debug(f"submit fetch {normalized}")
+                self._debug(f"提交图像获取任务 {normalized}")
                 task_key = self._new_task(normalized, kind)
                 future = self._executor.submit(self._fetch_impl, normalized, kind, task_key)
                 self._in_flight[normalized] = future
                 submitted = True
             else:
-                self._debug(f"join in-flight {normalized}")
+                self._debug(f"加入进行中的图像获取任务 {normalized}")
         if submitted:
             future.add_done_callback(lambda completed, key=normalized: self._forget_in_flight(key, completed))
         return future
@@ -138,15 +138,15 @@ class ImageFetcherService:
     ) -> ImageFetchResult:
         cached_path = self._cache.get_gallery_page_cached_path(provider, gid, token, page_idx)
         if cached_path is not None:
-            with self._timer("cache read", str(cached_path)):
+            with self._timer("读取缓存", str(cached_path)):
                 data = cached_path.read_bytes()
             mime = self._guess_mime(cached_path)
-            self._debug(f"gallery page cache hit provider={provider} gid={gid} index={page_idx} bytes={len(data)}")
+            self._debug(f"画廊页面缓存命中 provider={provider} gid={gid} 索引={page_idx} 字节数={len(data)}")
             return ImageFetchResult(url="", path=cached_path, data=data, mime=mime, from_cache=True)
 
         cached_filename = self._cache.get_gallery_page_cached_filename(provider, gid, token, page_idx)
         if cached_filename:
-            self._debug(f"gallery stale index repaired provider={provider} gid={gid} index={page_idx} filename={cached_filename}")
+            self._debug(f"已修复画廊失效索引 provider={provider} gid={gid} 索引={page_idx} 文件名={cached_filename}")
             self._cache.repair_gallery_page_entry(provider, gid, token, page_idx)
 
         url = resolve_url()
@@ -163,10 +163,10 @@ class ImageFetcherService:
             self._update_task(task_key, status="running", started_at=time.time())
         cached_path = self._cache.get_cached_path(url)
         if cached_path is not None:
-            with self._timer("cache read", str(cached_path)):
+            with self._timer("读取缓存", str(cached_path)):
                 data = cached_path.read_bytes()
             mime = self._guess_mime(cached_path)
-            self._debug(f"cache hit url={url} bytes={len(data)} mime={mime}")
+            self._debug(f"缓存命中 URL={url} 字节数={len(data)} MIME={mime}")
             result = ImageFetchResult(url=url, path=cached_path, data=data, mime=mime, from_cache=True)
             if task_key:
                 self._finish_task(task_key, status="cache_hit", bytes_done=len(data), bytes_total=len(data), from_cache=True)
@@ -176,15 +176,15 @@ class ImageFetcherService:
         if cached_filename:
             stale_path = self._cache.path_for_filename(cached_filename)
             if stale_path.exists():
-                with self._timer("cache read", str(stale_path)):
+                with self._timer("读取缓存", str(stale_path)):
                     data = stale_path.read_bytes()
                 mime = self._guess_mime(stale_path)
-                self._debug(f"cache hit stale-index url={url} bytes={len(data)} mime={mime}")
+                self._debug(f"失效索引对应的缓存文件命中 URL={url} 字节数={len(data)} MIME={mime}")
                 result = ImageFetchResult(url=url, path=stale_path, data=data, mime=mime, from_cache=True)
                 if task_key:
                     self._finish_task(task_key, status="cache_hit", bytes_done=len(data), bytes_total=len(data), from_cache=True)
                 return result
-            self._debug(f"stale index repaired url={url} filename={cached_filename}")
+            self._debug(f"已修复失效索引 URL={url} 文件名={cached_filename}")
             self._cache.repair_stale_entry(url)
 
         sprite_crop = self._parse_sprite_crop(url)
@@ -194,7 +194,7 @@ class ImageFetcherService:
                 self._finish_task(task_key, status="completed", bytes_done=len(result.data), bytes_total=len(result.data), from_cache=result.from_cache)
             return result
 
-        self._debug(f"cache miss url={url}")
+        self._debug(f"缓存未命中 URL={url}")
         try:
             response = self._get_image_response(url)
             response.raise_for_status()
@@ -208,7 +208,7 @@ class ImageFetcherService:
             if old_filename and old_filename != filename:
                 self._cache.drop_cached_filename(url)
             self._cache.put_cached_filename(url, filename, kind=kind)
-            self._debug(f"network fetched url={url} bytes={len(data)} mime={mime} path={path}")
+            self._debug(f"网络获取完成 URL={url} 字节数={len(data)} MIME={mime} 路径={path}")
             if task_key:
                 self._finish_task(task_key, status="completed", bytes_done=len(data), from_cache=False)
             return ImageFetchResult(url=url, path=path, data=data, mime=mime, from_cache=False)
@@ -223,20 +223,20 @@ class ImageFetcherService:
         for attempt in range(1, 4):
             try:
                 if attempt > 1:
-                    self._debug(f"retry image fetch attempt={attempt} url={url}")
+                    self._debug(f"重试图像获取 尝试次数={attempt} URL={url}")
                 return self._get_response(url, headers, 20)
             except requests.RequestException as ex:
                 last_error = ex
-                self._debug(f"transient image fetch failed attempt={attempt} url={url}: {ex}")
+                self._debug(f"图像获取暂时失败 尝试次数={attempt} URL={url}：{ex}")
                 if attempt < 3:
                     time.sleep(0.5 * attempt)
         assert last_error is not None
         raise last_error
 
     def _fetch_sprite_crop(self, url: str, base_url: str, left: int, top: int, right: int, bottom: int) -> ImageFetchResult:
-        self._debug(f"sprite crop url={url} base={base_url} box={left},{top},{right},{bottom}")
+        self._debug(f"裁剪 sprite URL={url} 基础URL={base_url} 区域={left},{top},{right},{bottom}")
         base_result = self._fetch_impl(base_url, "sprite")
-        with self._timer("sprite crop", base_url):
+        with self._timer("裁剪 sprite", base_url):
             with Image.open(BytesIO(base_result.data)) as image:
                 cropped = image.crop((left, top, right, bottom))
                 output = BytesIO()
@@ -249,7 +249,7 @@ class ImageFetcherService:
         path = self._cache.cached_path_for_url(url, mime=mime)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._temporary_path(path)
-        with self._timer("cache write", str(path)):
+        with self._timer("写入缓存", str(path)):
             try:
                 tmp_path.write_bytes(data)
                 try:
@@ -264,7 +264,7 @@ class ImageFetcherService:
         if old_filename and old_filename != filename:
             self._cache.drop_cached_filename(url)
         self._cache.put_cached_filename(url, filename, kind="sprite_crop")
-        self._debug(f"sprite cropped url={url} bytes={len(data)} mime={mime} path={path}")
+        self._debug(f"sprite 裁剪完成 URL={url} 字节数={len(data)} MIME={mime} 路径={path}")
         return ImageFetchResult(url=url, path=path, data=data, mime=mime, from_cache=False)
 
     def _write_response_to_cache(self, response: requests.Response, path: Path, task_key: str | None) -> bytes:
@@ -274,7 +274,7 @@ class ImageFetcherService:
         tmp_path = self._temporary_path(path)
         bytes_done = 0
         chunks: list[bytes] = []
-        with self._timer("cache write", str(path)):
+        with self._timer("写入缓存", str(path)):
             try:
                 with open(tmp_path, "wb") as f:
                     for chunk in response.iter_content(chunk_size=8 * 1024):
@@ -350,10 +350,10 @@ class ImageFetcherService:
         }.get(path.suffix.lower(), "application/octet-stream")
 
     def _debug(self, message: str) -> None:
-        self._log_debug("image", message)
+        self._log_debug("图像", message)
 
     def _timer(self, name: str, detail: str):
-        return self._timer_factory("image", f"{name} {detail}")
+        return self._timer_factory("图像", f"{name} {detail}")
 
     def _new_task(self, url: str, kind: str) -> str:
         key = uuid.uuid4().hex[:12]

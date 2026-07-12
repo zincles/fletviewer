@@ -177,13 +177,13 @@ def create_view(page: ft.Page) -> ft.Control:
 
         def worker():
             try:
-                log_debug("search", f"search start keyword={kw} page_url={page_url}")
+                log_debug("搜索", f"开始搜索 关键词={kw} 页面URL={page_url}")
                 client = browser_session.get_eh_client(require_login=False)
-                with Timer("search", f"search keyword={kw} page_url={page_url}"):
+                with Timer("搜索", f"执行搜索 关键词={kw} 页面URL={page_url}"):
                     result = client.search(page_url=page_url) if page_url else client.search(keyword=kw)
                 log_debug(
-                    "search",
-                    f"search result count={len(result.comics)} prev={result.prev_url} next={result.next_url}",
+                    "搜索",
+                    f"搜索结果 数量={len(result.comics)} 上一页={result.prev_url} 下一页={result.next_url}",
                 )
                 render_result(result, append=append)
             except Exception as ex:
@@ -191,7 +191,7 @@ def create_view(page: ft.Page) -> ft.Control:
                 status.value = f"错误: {ex}"
                 output.value = f"错误: {ex}"
                 show_error_toast(page, "搜索加载失败", ex)
-                log_exception("search", f"search failed keyword={kw} page_url={page_url}: {ex}")
+                log_exception("搜索", f"搜索失败 关键词={kw} 页面URL={page_url}：{ex}")
             finally:
                 state["loading"] = False
                 if callable(set_reading_loading):

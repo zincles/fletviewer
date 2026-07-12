@@ -174,7 +174,7 @@ class BrowserSessionService:
                 raise RuntimeError("请先在账户页填写有效凭据")
         else:
             self.configure_from_storage()
-        self._debug(f"创建 EH 客户端 require_login={require_login} 登录开关={self.login_enabled()} has_cookie={self.has_eh_cookie()}")
+        self._debug(f"创建 EH 客户端 要求登录={require_login} 登录开关={self.login_enabled()} 已有Cookie={self.has_eh_cookie()}")
         return EHentaiClient(domain=domain, session=self.session, log_debug=self._log_debug)
 
     def get_session(self) -> requests.Session:
@@ -200,23 +200,23 @@ class BrowserSessionService:
             with self._timer(f"GET {url}"):
                 resp = self.session.get(url, **kwargs)
         if kwargs.get("stream"):
-            self._debug(f"GET 流式完成 status={resp.status_code} final_url={resp.url}")
+            self._debug(f"GET 流式完成 状态码={resp.status_code} 最终URL={resp.url}")
         elif not quiet_image or resp.status_code >= 400:
-            self._debug(f"GET 完成 status={resp.status_code} bytes={len(resp.content)} final_url={resp.url}")
+            self._debug(f"GET 完成 状态码={resp.status_code} 字节数={len(resp.content)} 最终URL={resp.url}")
         return resp
 
     def post(self, url: str, **kwargs) -> requests.Response:
         self.configure_from_storage()
         with self._timer(f"POST {url}"):
             resp = self.session.post(url, **kwargs)
-            self._debug(f"POST 完成 status={resp.status_code} bytes={len(resp.content)} final_url={resp.url}")
+        self._debug(f"POST 完成 状态码={resp.status_code} 字节数={len(resp.content)} 最终URL={resp.url}")
         return resp
 
     def head(self, url: str, **kwargs) -> requests.Response:
         self.configure_from_storage()
         with self._timer(f"HEAD {url}"):
             resp = self.session.head(url, **kwargs)
-            self._debug(f"HEAD 完成 status={resp.status_code} final_url={resp.url}")
+        self._debug(f"HEAD 完成 状态码={resp.status_code} 最终URL={resp.url}")
         return resp
 
     def _clear_eh_cookies_locked(self) -> None:

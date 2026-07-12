@@ -81,7 +81,7 @@ class _AsyncImage(ft.Container):
             future.add_done_callback(lambda completed: self._schedule_apply(token, completed))
         except Exception as ex:
             self._loading = False
-            log_exception("async_image", f"start failed url={self._url}: {ex}")
+            log_exception("异步图像", f"启动失败 URL={self._url}：{ex}")
 
     def will_unmount(self) -> None:
         self._mounted = False
@@ -108,10 +108,10 @@ class _AsyncImage(ft.Container):
             if not self._can_schedule():
                 self._loading = False
                 return
-            log_exception("async_image", f"apply scheduling failed url={self._url}: {ex}")
+                log_exception("异步图像", f"调度结果应用失败 URL={self._url}：{ex}")
         except Exception as ex:
             self._loading = False
-            log_exception("async_image", f"apply scheduling failed url={self._url}: {ex}")
+            log_exception("异步图像", f"调度结果应用失败 URL={self._url}：{ex}")
 
     def _apply_result(self, token: int, future: Future[ImageFetchResult]) -> None:
         started_at = time.perf_counter()
@@ -153,7 +153,7 @@ class _AsyncImage(ft.Container):
                 alignment=ft.Alignment(0, 0),
                 content=ft.Icon(ft.Icons.BROKEN_IMAGE_OUTLINED, color=ft.Colors.ON_SURFACE_VARIANT),
             )
-            log_exception("async_image", f"load failed url={self._url}: {ex}")
+            log_exception("异步图像", f"加载失败 URL={self._url}：{ex}")
         self._loading = False
         if self._is_active(token):
             request_update(self._page)
@@ -175,10 +175,10 @@ def async_image(
 ) -> ft.Control:
     """创建异步图片控件：先显示占位，再通过 ImageFetcherService 获取图片。"""
     if not should_load_images():
-        log_debug("async_image", f"disabled url={url}")
+        log_debug("异步图像", f"图像加载已禁用 URL={url}")
         return image_placeholder(width, height)
     if not url:
-        log_debug("async_image", "empty url")
+        log_debug("异步图像", "URL 为空")
         return image_placeholder(width, height)
     return _AsyncImage(
         page,

@@ -181,7 +181,7 @@ class DownloadManager:
             task.updated_at = now_iso()
             self._save_task_locked(task)
             if self._executor is None:
-                raise RuntimeError("DownloadManager is not initialized")
+                raise RuntimeError("下载管理器尚未初始化")
             self._executor.submit(self._download_impl, task_id)
 
     def cancel_task(self, task_id: str) -> None:
@@ -252,7 +252,7 @@ class DownloadManager:
                     self._save_task_locked(task)
                 self._tasks[task.id] = task
             except Exception as ex:
-                self._exception(f"load task failed from data.db: {ex}")
+                self._exception(f"从 data.db 加载任务失败：{ex}")
         self._recover_task_snapshots()
         for task in list(self._tasks.values()):
             if task.status == "completed":
@@ -265,11 +265,11 @@ class DownloadManager:
             try:
                 data = json.loads(task_file.read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
-                    raise ValueError("task.json root must be an object")
+                    raise ValueError("task.json 根节点必须是对象")
                 task = DownloadTask.from_dict(data)
                 expected_dir = task_file.parent.resolve()
                 if task.id != task_file.parent.name:
-                    raise ValueError("task id does not match snapshot directory")
+                    raise ValueError("任务 ID 与快照目录不匹配")
                 task.temp_dir = expected_dir.as_posix()
                 task.part_path = (expected_dir / "payload.part").as_posix()
                 task.final_path = (expected_dir / "payload.zip").as_posix()
@@ -287,7 +287,7 @@ class DownloadManager:
                     task_file.replace(target)
                 except OSError:
                     pass
-                self._exception(f"load task snapshot failed {task_file}: {ex}")
+                self._exception(f"加载任务快照失败 {task_file}：{ex}")
 
     def _download_impl(self, task_id: str) -> None:
         task = self.get_task(task_id)
@@ -309,7 +309,7 @@ class DownloadManager:
                 task.bytes_done = offset
                 self._save_task_locked(task)
 
-            with self._timer("GET stream", task.url):
+            with self._timer("GET 流式请求", task.url):
                 response = self._stream_get(task.url, headers=headers, stream=True, timeout=60)
             if offset > 0 and response.status_code == 200:
                 offset = 0
@@ -374,7 +374,7 @@ class DownloadManager:
                 task.error = str(ex)
                 task.updated_at = now_iso()
                 self._save_task_locked(task)
-            self._exception(f"download failed {task_id}: {ex}")
+            self._exception(f"下载失败 {task_id}：{ex}")
             self._notify(Notification("下载失败", task.filename, "download.failed", {"task_id": task.id}))
 
     def _notify_completed(self, task: DownloadTask) -> None:
@@ -384,7 +384,7 @@ class DownloadManager:
             try:
                 handler(task)
             except Exception as ex:
-                self._exception(f"completion handler failed {task.id}: {ex}")
+                self._exception(f"完成处理器执行失败 {task.id}：{ex}")
 
     def _save_task_locked(self, task: DownloadTask) -> None:
         task.temp_dir_path.mkdir(parents=True, exist_ok=True)
@@ -421,10 +421,10 @@ class DownloadManager:
             conn.execute("DELETE FROM download_tasks WHERE id = ?", (task_id,))
 
     def _timer(self, name: str, detail: str):
-        return self._timer_factory("download", f"{name} {detail}")
+        return self._timer_factory("下载", f"{name} {detail}")
 
     def _exception(self, message: str) -> None:
-        self._log_exception("download", message)
+        self._log_exception("下载", message)
 
 
 class _NullTimer:

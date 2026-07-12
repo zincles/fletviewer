@@ -34,7 +34,7 @@ class DebugLogInitializationTests(unittest.TestCase):
             )
             log_path = storage_temp / "debug_log.md"
             self.assertTrue(log_path.is_file())
-            self.assertIn("# FletViewer Debug Log", log_path.read_text(encoding="utf-8"))
+            self.assertIn("# FletViewer 调试日志", log_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

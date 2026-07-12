@@ -36,23 +36,23 @@ def _make_loader(call_fn, needs_login=False):
 
         def worker():
             try:
-                log_debug("gallery_list", f"load start needs_login={needs_login}")
+                log_debug("画廊列表", f"开始加载 需要登录={needs_login}")
                 cfg = load_eh_config()
                 if needs_login:
                     if not cfg.get("ipb_member_id") or not cfg.get("ipb_pass_hash"):
-                        log_debug("gallery_list", "missing credentials")
+                        log_debug("画廊列表", "缺少登录凭据")
                         output.value = "请先在账户页填写凭据"
                         show_toast(page, "请先在账户页填写凭据")
                         return
                 client = browser_session.get_eh_client(require_login=needs_login)
-                with Timer("gallery_list", "call_fn"):
+                with Timer("画廊列表", "调用加载函数"):
                     result = call_fn(client)
-                log_debug("gallery_list", f"result count={len(result.comics)} next={result.next_url}")
+                log_debug("画廊列表", f"结果数量={len(result.comics)} 下一页={result.next_url}")
                 output.value = _result_to_json(result)
             except Exception as ex:
                 output.value = f"错误: {ex}"
                 show_error_toast(page, "画廊列表加载失败", ex)
-                log_exception("gallery_list", f"load failed: {ex}")
+                log_exception("画廊列表", f"加载失败：{ex}")
             finally:
                 btn.disabled = False
                 request_update(page)

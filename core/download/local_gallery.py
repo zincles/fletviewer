@@ -69,7 +69,7 @@ class LocalGalleryManager:
             tag_data = task.tag_data
             gid = str(tag_data.get("gid") or "unknown")
             token = str(tag_data.get("token") or "unknown")
-            title = tag_data.get("gallery_details", {}).get("title") or tag_data.get("title") or "Untitled"
+            title = tag_data.get("gallery_details", {}).get("title") or tag_data.get("title") or "未命名"
             self.archive_dir.mkdir(parents=True, exist_ok=True)
             gallery_dir = self.archive_dir / self._eh_archive_folder_name(gid, token, title)
             if self._is_committed_gallery(gallery_dir, task.id):
@@ -101,7 +101,7 @@ class LocalGalleryManager:
             self.scan_local_galleries(force=True)
         except Exception as ex:
             self._download_manager.mark_consumed(task.id, consume_error=str(ex))
-            self._exception(f"consume failed {task.id}: {ex}")
+            self._exception(f"消费下载任务失败 {task.id}：{ex}")
             self._notify(Notification("本地画廊归档失败", title if 'title' in locals() else task.filename, "gallery.archive_failed", {"task_id": task.id}))
 
     def scan_local_galleries(self, *, force: bool = False) -> list[LocalGallery]:
@@ -132,7 +132,7 @@ class LocalGalleryManager:
                             gallery_json.replace(target)
                         except OSError:
                             pass
-                        self._exception(f"scan failed {entry}: {ex}")
+                        self._exception(f"扫描本地画廊失败 {entry}：{ex}")
             self._galleries = galleries
             return list(galleries)
 
@@ -147,12 +147,12 @@ class LocalGalleryManager:
         return None
 
     def _eh_archive_folder_name(self, gid: str, token: str, title: str) -> str:
-        safe_title = sanitize_filename(title or "Untitled", platform="windows").strip()
+        safe_title = sanitize_filename(title or "未命名", platform="windows").strip()
         if not safe_title:
-            safe_title = "Untitled"
+            safe_title = "未命名"
         prefix = f"[{gid}][{token}] "
         max_title_len = max(1, 180 - len(prefix))
-        safe_title = safe_title[:max_title_len].rstrip(" .") or "Untitled"
+        safe_title = safe_title[:max_title_len].rstrip(" .") or "未命名"
         return f"{prefix}{safe_title}"
 
     def _extract_cover_from_zip(self, zip_path: Path, output_dir: Path) -> str:
@@ -178,23 +178,23 @@ class LocalGalleryManager:
 
     def _validate_gallery_metadata(self, gallery_dir: Path, metadata: object) -> None:
         if not isinstance(metadata, dict):
-            raise ValueError("gallery.json root must be an object")
+            raise ValueError("gallery.json 根节点必须是对象")
         if int(metadata.get("schema_version") or 0) != 1:
-            raise ValueError("unsupported gallery.json schema")
+            raise ValueError("不支持的 gallery.json schema")
         source = metadata.get("source")
         files = metadata.get("files")
         if not isinstance(source, dict) or not source.get("gid") or not source.get("token"):
-            raise ValueError("gallery.json source is incomplete")
+            raise ValueError("gallery.json source 不完整")
         if not isinstance(files, dict):
-            raise ValueError("gallery.json files must be an object")
+            raise ValueError("gallery.json files 必须是对象")
         archive_name = str(files.get("archive") or "")
         if not archive_name or Path(archive_name).name != archive_name:
-            raise ValueError("gallery.json archive filename is invalid")
+            raise ValueError("gallery.json 归档文件名无效")
         if not (gallery_dir / archive_name).is_file():
-            raise ValueError("gallery archive is missing")
+            raise ValueError("画廊归档文件缺失")
         cover_name = str(files.get("cover") or "")
         if cover_name and Path(cover_name).name != cover_name:
-            raise ValueError("gallery.json cover filename is invalid")
+            raise ValueError("gallery.json 封面文件名无效")
 
     def _is_image_member(self, name: str) -> bool:
         path = Path(name)
@@ -275,7 +275,7 @@ class LocalGalleryManager:
             try:
                 galleries.append(LocalGallery(dir_path=path, metadata=json.loads(metadata_json)))
             except Exception as ex:
-                self._exception(f"load gallery from db failed {dir_path}: {ex}")
+                self._exception(f"从数据库加载画廊失败 {dir_path}：{ex}")
         return galleries
 
     def _upsert_gallery(self, dir_path: Path, metadata: dict) -> None:
@@ -322,4 +322,4 @@ class LocalGalleryManager:
             )
 
     def _exception(self, message: str) -> None:
-        self._log_exception("local_gallery", message)
+        self._log_exception("本地画廊", message)

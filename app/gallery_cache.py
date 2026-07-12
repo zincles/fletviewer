@@ -28,7 +28,7 @@ def get_eh_gallery_cache(comic_url: str) -> GalleryCacheEntry | None:
     try:
         return gallery_cache.get(comic_url)
     except Exception as ex:
-        log_exception("gallery_cache", f"read unavailable, using cache miss: {ex}")
+        log_exception("画廊缓存", f"无法读取，按缓存未命中处理：{ex}")
         return None
 
 
@@ -36,7 +36,7 @@ def put_eh_gallery_cache(comic_url: str, details: ComicDetails, thumbnails: Thum
     try:
         return gallery_cache.put(comic_url, details, thumbnails)
     except Exception as ex:
-        log_exception("gallery_cache", f"write unavailable, continuing without cache: {ex}")
+        log_exception("画廊缓存", f"无法写入，将在不使用缓存的情况下继续：{ex}")
         return None
 
 
@@ -44,7 +44,7 @@ def clear_gallery_cache() -> None:
     try:
         gallery_cache.clear()
     except Exception as ex:
-        log_exception("gallery_cache", f"clear unavailable: {ex}")
+        log_exception("画廊缓存", f"无法清除：{ex}")
 
 
 __all__ = [

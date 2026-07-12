@@ -391,11 +391,11 @@ class EHentaiClient:
 
         body = resp.text.strip()
         if not body:
-            raise RuntimeError("Empty response — may lack permission")
+            raise RuntimeError("响应为空，可能缺少访问权限")
         if body[0] != "<":
             if "IP" in body:
-                raise RuntimeError("Your IP has been banned")
-            raise RuntimeError("Failed to load page")
+                raise RuntimeError("你的 IP 已被封禁")
+            raise RuntimeError("页面加载失败")
 
         soup = BeautifulSoup(body, "lxml")
         galleries: list[Comic] = []
@@ -677,7 +677,7 @@ class EHentaiClient:
         if prev_url and not prev_url.startswith("http"):
             prev_url = self.base_url + prev_url
 
-        self._log_debug("EH解析", f"画廊列表解析完成 url={url} is_logged={self.is_logged} count={len(galleries)} prev={bool(prev_url)} next={bool(next_url)}")
+        self._log_debug("EH解析", f"画廊列表解析完成 URL={url} 已登录={self.is_logged} 数量={len(galleries)} 有上一页={bool(prev_url)} 有下一页={bool(next_url)}")
         return SearchResult(comics=galleries, next_url=next_url, prev_url=prev_url)
 
     # -----------------------------------------------------------------------
@@ -688,7 +688,7 @@ class EHentaiClient:
         """加载画廊详细信息，包括标签、评论、API 凭证等"""
         resp = self._request(url, cookies={"nw": "1"}, timeout=30)
         if not resp.text.strip():
-            raise RuntimeError("Empty data — permission denied")
+            raise RuntimeError("数据为空，访问被拒绝")
 
         soup = BeautifulSoup(resp.text, "lxml")
 
@@ -1139,7 +1139,7 @@ class EHentaiClient:
         if mpvkey:
             return KeyResult(mpvkey=mpvkey, image_keys=image_keys)
 
-        raise RuntimeError("Failed to extract key from page")
+        raise RuntimeError("无法从页面提取密钥")
 
     # -----------------------------------------------------------------------
     # 单张图片加载
@@ -1271,7 +1271,7 @@ class EHentaiClient:
         soup = BeautifulSoup(resp.text, "lxml")
         db = soup.select_one("div#db")
         if not db:
-            raise RuntimeError("Failed to parse archiver page")
+            raise RuntimeError("归档页面解析失败")
 
         archives: list[Archive] = []
 
@@ -1354,17 +1354,17 @@ class EHentaiClient:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             if resp.status_code != 200:
-                raise RuntimeError(f"H@H download failed: HTTP {resp.status_code}")
+                raise RuntimeError(f"H@H 下载失败：HTTP {resp.status_code}")
             soup = BeautifulSoup(resp.text, "lxml")
             err = soup.select_one("p.br")
             if err:
                 msg = err.get_text(strip=True)
                 if "H@H client" in msg:
-                    raise RuntimeError("You need an H@H client associated with your account")
+                    raise RuntimeError("需要将 H@H 客户端与你的账户关联")
                 if "offline" in msg:
-                    raise RuntimeError("Your H@H client is offline")
+                    raise RuntimeError("你的 H@H 客户端处于离线状态")
                 if "resolution" in msg:
-                    raise RuntimeError("This resolution is not available for this gallery")
+                    raise RuntimeError("该画廊不提供此分辨率")
                 raise RuntimeError(msg)
             return ""  # H@H 是服务端下载，不返回 URL
 
@@ -1378,12 +1378,12 @@ class EHentaiClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if resp.status_code != 200:
-            raise RuntimeError(f"Archive request failed: HTTP {resp.status_code}")
+            raise RuntimeError(f"归档请求失败：HTTP {resp.status_code}")
 
         soup = BeautifulSoup(resp.text, "lxml")
         link_el = soup.select_one("a")
         if not link_el or not link_el.get("href"):
-            raise RuntimeError("Failed to get intermediate download link")
+            raise RuntimeError("无法获取中间下载链接")
         link1 = link_el["href"]
 
         # 跟随重定向
@@ -1394,7 +1394,7 @@ class EHentaiClient:
         soup2 = BeautifulSoup(resp2.text, "lxml")
         link2_el = soup2.select_one("a")
         if not link2_el or not link2_el.get("href"):
-            raise RuntimeError("Failed to get final download link")
+            raise RuntimeError("无法获取最终下载链接")
         link2 = link2_el["href"]
 
         # 拼接完整 URL
@@ -1407,7 +1407,7 @@ class EHentaiClient:
             headers={"http_client": "dart:io"},
         )
         if head.status_code == 410:
-            raise RuntimeError("IP quota exhausted.")
+            raise RuntimeError("IP 配额已耗尽。")
 
         return result_url
 
@@ -1457,7 +1457,7 @@ class EHentaiClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if resp.status_code != 200 or not resp.text.strip() or resp.text[0] != "<":
-            raise RuntimeError("Failed to add favorite")
+            raise RuntimeError("添加收藏失败")
 
     def delete_favorite(self, comic_url: str) -> None:
         """从收藏移除"""
@@ -1468,7 +1468,7 @@ class EHentaiClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if resp.status_code != 200 or not resp.text.strip() or resp.text[0] != "<":
-            raise RuntimeError("Failed to delete favorite")
+            raise RuntimeError("删除收藏失败")
 
     def get_favorite_folders(self) -> dict[str, str]:
         """获取收藏文件夹列表，返回 {id: name}"""
@@ -1513,7 +1513,7 @@ class EHentaiClient:
             },
         )
         if resp.status_code >= 400:
-            raise RuntimeError(f"Failed to send comment: HTTP {resp.status_code}")
+            raise RuntimeError(f"发送评论失败：HTTP {resp.status_code}")
         soup = BeautifulSoup(resp.text, "lxml")
         err = soup.select_one("p.br")
         if err:
@@ -1527,7 +1527,7 @@ class EHentaiClient:
     ) -> int:
         """评论投票，返回新分数"""
         if not self.api_key or not self.api_uid:
-            raise RuntimeError("Login required — no API credentials")
+            raise RuntimeError("需要登录，但未提供 API 凭据")
         gid, token = self.parse_url(comic_url)
         resp = self._post(
             self.api_url,
@@ -1560,7 +1560,7 @@ class EHentaiClient:
             rating: 0-10 (app 5 星制, 1 rating = 0.5 stars)
         """
         if not self.api_key or not self.api_uid:
-            raise RuntimeError("Login required — no API credentials")
+            raise RuntimeError("需要登录，但未提供 API 凭据")
         gid, token = self.parse_url(comic_url)
         resp = self._post(
             self.api_url,
@@ -1575,7 +1575,7 @@ class EHentaiClient:
             headers={"Content-Type": "application/json"},
         )
         if resp.status_code != 200:
-            raise RuntimeError(f"Rating failed: HTTP {resp.status_code}")
+            raise RuntimeError(f"评分失败：HTTP {resp.status_code}")
 
     # -----------------------------------------------------------------------
     # 探索页面
@@ -1592,7 +1592,7 @@ class EHentaiClient:
     def get_watched(self, page_url: Optional[str] = None) -> SearchResult:
         """关注画廊（需要登录）"""
         if not self.is_logged:
-            raise RuntimeError("Login required for watched page")
+            raise RuntimeError("查看订阅页面需要登录")
         return self._get_galleries(page_url or f"{self.base_url}/watched")
 
     # -----------------------------------------------------------------------

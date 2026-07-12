@@ -156,7 +156,7 @@ def create_view(
         return items[state["index"]]
 
     def resolve_item_url(item: ImageViewerItem, idx: int) -> str:
-        with Timer("viewer", f"resolve image index={idx}"):
+        with Timer("图像查看器", f"解析图像 索引={idx}"):
             return resolve_image_url(item, idx) if resolve_image_url else item.url
 
     def fetch_item_image(item: ImageViewerItem, idx: int):
@@ -252,8 +252,8 @@ def create_view(
 
         def worker():
             try:
-                log_debug("viewer", f"load image index={state['index']}")
-                with Timer("viewer", f"fetch image index={state['index']}"):
+                log_debug("图像查看器", f"加载图像 索引={state['index']}")
+                with Timer("图像查看器", f"获取图像 索引={state['index']}"):
                     result = fetch_item_image(item, state["index"])
                 if generation != state["paged_generation"] or state["mode"] != "paged":
                     return
@@ -261,18 +261,18 @@ def create_view(
                 state["current_path"] = result.path
                 state["current_data"] = result.data
                 state["current_mime"] = result.mime
-                with Timer("viewer", f"build image control index={state['index']}"):
+                with Timer("图像查看器", f"构建图像控件 索引={state['index']}"):
                     image_box.content = ft.Image(
                         src=image_src_for_page(page, result.data, result.mime),
                         fit=ft.BoxFit.CONTAIN,
                         expand=True,
                     )
                 status.value = f"{pos}  {len(result.data)} bytes  {'cache' if result.from_cache else 'network'}"
-                log_debug("viewer", f"image loaded index={state['index']} bytes={len(result.data)}")
+                log_debug("图像查看器", f"图像加载完成 索引={state['index']} 字节数={len(result.data)}")
             except Exception as ex:
                 status.value = f"错误: {ex}"
                 show_error_toast(page, "图片加载失败", ex)
-                log_exception("viewer", f"image load failed index={state['index']}: {ex}")
+                log_exception("图像查看器", f"图像加载失败 索引={state['index']}：{ex}")
             finally:
                 request_update(page)
 
@@ -306,11 +306,11 @@ def create_view(
             else:
                 target.write_bytes(data)
             status.value = f"已下载到 {target}"
-            log_debug("viewer", f"downloaded {path} -> {target}")
+            log_debug("图像查看器", f"下载完成 {path} -> {target}")
         except Exception as ex:
             status.value = f"下载失败: {ex}"
             show_error_toast(page, "图片下载失败", ex)
-            log_exception("viewer", f"download failed: {ex}")
+            log_exception("图像查看器", f"下载失败：{ex}")
         page.update()
 
     def show_detail(e):
@@ -406,7 +406,7 @@ def create_view(
 
         def worker():
             try:
-                log_debug("viewer", f"vertical load image index={idx}")
+                log_debug("图像查看器", f"垂直模式加载图像 索引={idx}")
                 result = fetch_item_image(item, idx)
                 if generation != state["vertical_generation"] or state["mode"] != "vertical":
                     return
@@ -436,10 +436,10 @@ def create_view(
                     state["current_data"] = result.data
                     state["current_mime"] = result.mime
                 status.value = f"垂直浏览 {state['index'] + 1}/{len(items)}，窗口内加载 {len(vertical_loaded)} 张"
-                log_debug("viewer", f"vertical image loaded index={idx} bytes={len(result.data)}")
+                log_debug("图像查看器", f"垂直模式图像加载完成 索引={idx} 字节数={len(result.data)}")
             except Exception as ex:
                 vertical_cards[idx].content = ft.Text(f"#{idx + 1} 加载失败: {ex}", color=ft.Colors.ERROR)
-                log_exception("viewer", f"vertical image load failed index={idx}: {ex}")
+                log_exception("图像查看器", f"垂直模式图像加载失败 索引={idx}：{ex}")
             finally:
                 vertical_loading.discard(idx)
                 request_update(page)
@@ -571,7 +571,7 @@ def create_view(
             try:
                 list_view.scroll_to(offset=offsets[target] if offsets else 0, duration=0)
             except Exception as ex:
-                log_exception("viewer", f"vertical scroll_to failed index={target}: {ex}")
+                log_exception("图像查看器", f"垂直模式滚动定位失败 索引={target}：{ex}")
 
         page.run_thread(scroll_worker)
 

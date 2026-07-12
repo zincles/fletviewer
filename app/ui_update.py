@@ -9,5 +9,5 @@ def request_update(page: ft.Page) -> bool:
         page.update()
         return True
     except Exception as ex:
-        log_exception("ui_update", f"page.update failed: {ex}")
+        log_exception("界面更新", f"page.update 执行失败：{ex}")
         return False

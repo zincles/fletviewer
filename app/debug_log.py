@@ -45,9 +45,9 @@ def configure_logging(path: Path | None = None) -> Path | None:
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
         _LOGGER.addHandler(file_handler)
-        _LOGGER.info("# FletViewer Debug Log")
+        _LOGGER.info("# FletViewer 调试日志")
         _LOGGER.info("")
-        _LOGGER.info("Started at %s", time.strftime("%Y-%m-%d %H:%M:%S"))
+        _LOGGER.info("启动时间：%s", time.strftime("%Y-%m-%d %H:%M:%S"))
         _LOGGER.info("")
     except Exception:
         return None
@@ -149,5 +149,5 @@ class Timer:
         """结束计时并输出 END/ERROR 日志。"""
         elapsed_ms = (time.perf_counter() - self.started_at) * 1000
         status = "ERROR " if exc_type else ""
-        log_debug(self.area, f"{status}{self.message} 用时={format_duration_ms(elapsed_ms)}")
+        log_debug(self.area, f"{status}{self.message} 耗时={format_duration_ms(elapsed_ms)}")
         return False

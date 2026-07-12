@@ -330,7 +330,7 @@ def create_gallery_cards_view(
             set_reading_loading = getattr(page, "fletviewer_set_reading_loading", None)
             if callable(set_reading_loading):
                 set_reading_loading(f"gallery:{title}", True)
-            log_debug("画廊列表", f"{title} 开始加载 page_url={page_url} append={append}")
+            log_debug("画廊列表", f"{title} 开始加载 页面URL={page_url} 追加模式={append}")
             refresh_btn.disabled = True
             prev_btn.disabled = True if not append else prev_btn.disabled
             next_btn.disabled = True
@@ -349,7 +349,7 @@ def create_gallery_cards_view(
 
             def worker():
                 try:
-                    log_debug("画廊列表", f"{title} worker 启动 needs_login={needs_login}")
+                    log_debug("画廊列表", f"{title} 工作线程启动 需要登录={needs_login}")
                     cfg = load_eh_config()
                     if needs_login and (not cfg.get("ipb_member_id") or not cfg.get("ipb_pass_hash")):
                         log_debug("画廊列表", f"{title} 缺少登录凭据")
@@ -359,9 +359,9 @@ def create_gallery_cards_view(
 
                     client = browser_session.get_eh_client(require_login=needs_login)
 
-                    with Timer("gallery", f"{title} load_fn page_url={page_url}"):
+                    with Timer("画廊", f"{title} 执行加载函数 页面URL={page_url}"):
                         result = load_fn(client, page_url)
-                    log_debug("画廊列表", f"{title} 加载完成 count={len(result.comics)} prev={bool(result.prev_url)} next={bool(result.next_url)}")
+                    log_debug("画廊列表", f"{title} 加载完成 数量={len(result.comics)} 有上一页={bool(result.prev_url)} 有下一页={bool(result.next_url)}")
                     incoming = [comic for comic in result.comics if comic.id not in state["comic_ids"]]
                     if append:
                         state["comics"].extend(incoming)
@@ -394,7 +394,7 @@ def create_gallery_cards_view(
                     state["requested_urls"].discard(request_key)
                     status_text.value = f"错误: {ex}"
                     show_error_toast(page, f"{title}加载失败", ex)
-                    log_exception("画廊列表", f"{title} 加载失败: {ex}")
+                    log_exception("画廊列表", f"{title} 加载失败：{ex}")
                 finally:
                     state["loading"] = False
                     if callable(set_reading_loading):

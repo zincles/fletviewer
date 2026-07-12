@@ -53,23 +53,23 @@ class EHGalleryCache:
                 (str(gid), token),
             ).fetchone()
         if not row:
-            self._debug(f"miss {comic_url}")
+            self._debug(f"缓存未命中 {comic_url}")
             return None
         try:
             gallery_url, details_json, thumbnails_json, expires_at_raw, schema_version = row
             if int(schema_version or 0) != GALLERY_CACHE_SCHEMA_VERSION:
-                self._debug(f"schema miss {comic_url}")
+                self._debug(f"缓存 schema 不匹配 {comic_url}")
                 return None
             expires_at = _parse_iso(str(expires_at_raw or ""))
             if expires_at is None or expires_at <= _now():
-                self._debug(f"expired {comic_url}")
+                self._debug(f"缓存已过期 {comic_url}")
                 return None
             details = _comic_details_from_dict(json.loads(details_json))
             thumbnails = _thumbnails_result_from_dict(json.loads(thumbnails_json))
-            self._debug(f"hit {comic_url}")
+            self._debug(f"缓存命中 {comic_url}")
             return GalleryCacheEntry(details=details, thumbnails=thumbnails, path=self.db_path)
         except Exception as ex:
-            self._exception(f"read failed {comic_url}: {ex}")
+            self._exception(f"读取缓存失败 {comic_url}：{ex}")
             return None
 
     def put(self, comic_url: str, details: ComicDetails, thumbnails: ThumbnailsResult) -> Path:
@@ -104,7 +104,7 @@ class EHGalleryCache:
                     GALLERY_CACHE_SCHEMA_VERSION,
                 ),
             )
-        self._debug(f"written {comic_url}")
+        self._debug(f"缓存写入完成 {comic_url}")
         return self.db_path
 
     def clear(self) -> None:
@@ -152,10 +152,10 @@ class EHGalleryCache:
             conn.close()
 
     def _debug(self, message: str) -> None:
-        self._log_debug("gallery_cache", message)
+        self._log_debug("画廊缓存", message)
 
     def _exception(self, message: str) -> None:
-        self._log_exception("gallery_cache", message)
+        self._log_exception("画廊缓存", message)
 
 
 def _now() -> datetime:

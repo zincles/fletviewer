@@ -138,7 +138,7 @@ class _DownloadsView(ft.Container):
         if update and self._alive:
             self._archive_status_text.update()
             self._archive_tasks.update()
-        log_debug("下载页", f"刷新归档任务 count={len(tasks)} total={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
+        log_debug("下载页", f"刷新归档任务 数量={len(tasks)} 总耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
 
 def create_view(page: ft.Page) -> ft.Control:
     return _DownloadsView(page)

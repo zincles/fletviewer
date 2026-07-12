@@ -46,7 +46,7 @@ def create_gallery_debug_view(
         state = {"page_num": 1, "prev_url": None, "next_url": None, "current_url": None}
 
         def load(page_url=None):
-            log_debug("gallery_debug", f"{title} load requested page_url={page_url}")
+            log_debug("画廊调试", f"{title} 已请求加载 页面URL={page_url}")
             refresh_btn.disabled = True
             prev_btn.disabled = True
             next_btn.disabled = True
@@ -61,7 +61,7 @@ def create_gallery_debug_view(
                         show_toast(page, f"{title}: 请先在账户页填写凭据")
                         return
                     client = browser_session.get_eh_client(require_login=needs_login)
-                    with Timer("gallery_debug", f"{title} load_fn page_url={page_url}"):
+                    with Timer("画廊调试", f"{title} 执行加载函数 页面URL={page_url}"):
                         result = load_fn(client, page_url)
                     state["prev_url"] = result.prev_url
                     state["next_url"] = result.next_url
@@ -69,11 +69,11 @@ def create_gallery_debug_view(
                     prev_btn.disabled = result.prev_url is None
                     next_btn.disabled = result.next_url is None
                     output.value = _result_to_json(result)
-                    log_debug("gallery_debug", f"{title} result count={len(result.comics)}")
+                    log_debug("画廊调试", f"{title} 结果数量={len(result.comics)}")
                 except Exception as ex:
                     output.value = f"错误: {ex}"
                     show_error_toast(page, f"{title}加载失败", ex)
-                    log_exception("gallery_debug", f"{title} worker failed: {ex}")
+                    log_exception("画廊调试", f"{title} 工作线程执行失败：{ex}")
                 finally:
                     refresh_btn.disabled = False
                     request_update(page)

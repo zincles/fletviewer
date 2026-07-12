@@ -545,12 +545,12 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
             details = state["details"]
             thumbs = state["thumbs"]
             if details is None:
-                with Timer("detail", f"download load_comic_info {comic.id}"):
+                with Timer("详情", f"下载：加载画廊信息 {comic.id}"):
                     details = client.load_comic_info(comic.id)
             if thumbs is None:
-                with Timer("detail", f"download load_thumbnails {comic.id}"):
+                with Timer("详情", f"下载：加载缩略图 {comic.id}"):
                     thumbs = client.load_thumbnails(comic.id)
-            with Timer("detail", f"get archive url {comic.id} {archive.id}"):
+            with Timer("详情", f"获取归档 URL 画廊={comic.id} 归档={archive.id}"):
                 download_url = client.get_archive_download_url(comic.id, archive.id)
             if not download_url:
                 raise RuntimeError("该 Archive 选项未返回可下载 URL")
@@ -580,11 +580,11 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
             )
             download_manager.start_task(task.id)
             download_status.value = f"已加入下载队列: {archive.title}"
-            log_debug("detail", f"archive task created {task.id} {comic.id}")
+            log_debug("详情", f"归档任务已创建 任务={task.id} 画廊={comic.id}")
         except Exception as ex:
             download_status.value = f"创建下载任务失败: {ex}"
             show_error_toast(page, "创建下载任务失败", ex)
-            log_exception("detail", f"create archive task failed {comic.id}: {ex}")
+            log_exception("详情", f"创建归档任务失败 画廊={comic.id}：{ex}")
         finally:
             request_update(page)
 
@@ -595,13 +595,13 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
         def archive_worker():
             try:
                 client = browser_session.get_eh_client(require_login=True)
-                with Timer("detail", f"get archives {comic.id}"):
+                with Timer("详情", f"获取归档列表 {comic.id}"):
                     archives = client.get_archives(comic.id)
                 show_archive_dialog(archives)
             except Exception as ex:
                 download_status.value = f"加载 Archive 失败: {ex}"
                 show_error_toast(page, "加载 Archive 失败", ex)
-                log_exception("detail", f"load archives failed {comic.id}: {ex}")
+                log_exception("详情", f"加载归档列表失败 {comic.id}：{ex}")
                 request_update(page)
 
         page.run_thread(archive_worker)
@@ -611,17 +611,17 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
             return
         state["loading"] = True
         try:
-            log_debug("detail", f"load start {comic.id}")
+            log_debug("详情", f"开始加载 {comic.id}")
             client = browser_session.get_eh_client(require_login=False)
             cached = None if force_refresh else get_eh_gallery_cache(comic.id)
             if cached is not None:
                 details = cached.details
                 thumbs = cached.thumbnails
-                log_debug("detail", f"gallery cache used {comic.id}")
+                log_debug("详情", f"已使用画廊缓存 {comic.id}")
             else:
-                with Timer("detail", f"load_comic_info {comic.id}"):
+                with Timer("详情", f"加载画廊信息 {comic.id}"):
                     details = client.load_comic_info(comic.id)
-                with Timer("detail", f"load_thumbnails {comic.id}"):
+                with Timer("详情", f"加载缩略图 {comic.id}"):
                     thumbs = client.load_thumbnails(comic.id)
                 put_eh_gallery_cache(comic.id, details, thumbs)
             state["details"] = details
@@ -680,10 +680,10 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
 
             def resolve_full_image(item: ImageViewerItem, idx: int) -> str:
                 if idx in resolved_image_urls:
-                    log_debug("detail", f"resolve full image cache hit {comic.id} index={idx}")
+                    log_debug("详情", f"解析原图时命中缓存 画廊={comic.id} 索引={idx}")
                     return resolved_image_urls[idx]
                 client = browser_session.get_eh_client(require_login=False)
-                with Timer("detail", f"resolve full image {comic.id} index={idx}"):
+                with Timer("详情", f"解析原图 画廊={comic.id} 索引={idx}"):
                     resolve_thumbs = state["thumbs"] or thumbs
                     key = image_key_state.get("key")
                     if key is None:
@@ -732,11 +732,11 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
                 indent=2,
             )
             thumbs_status.value = f"{len(viewer_items)} 张缩略图"
-            log_debug("detail", f"load done {comic.id} thumbs={len(thumbs.thumbnails)}")
+            log_debug("详情", f"加载完成 {comic.id} 缩略图数={len(thumbs.thumbnails)}")
         except Exception as ex:
             status.value = f"错误: {ex}"
             show_error_toast(page, "画廊详情加载失败", ex)
-            log_exception("detail", f"load failed {comic.id}: {ex}")
+            log_exception("详情", f"加载失败 {comic.id}：{ex}")
         finally:
             state["loading"] = False
             request_update(page)

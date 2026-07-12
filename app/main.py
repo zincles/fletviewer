@@ -75,7 +75,7 @@ def _enable_builtin_title_bar(page: ft.Page) -> bool:
         if hasattr(window, "title_bar_buttons_hidden"):
             window.title_bar_buttons_hidden = True
         return True
-    log_debug("nav", "linux builtin title bar requested but title_bar_hidden is unavailable")
+    log_debug("导航", "已请求使用 Linux 内置标题栏，但 title_bar_hidden 不可用")
     return False
 
 
@@ -133,14 +133,14 @@ def main(page: ft.Page):
     """Flet 应用主入口，负责全局导航、页面缓存和二级页面切换。"""
     active_storage = _ACTIVE_STORAGE
     configure_logging(active_storage.layout.debug_log_file)
-    print("[storage] platform:", page.platform)
-    print("[storage] FLET_APP_STORAGE_DATA:", os.environ.get("FLET_APP_STORAGE_DATA") or "<unset>")
-    print("[storage] FLET_APP_STORAGE_TEMP:", os.environ.get("FLET_APP_STORAGE_TEMP") or "<unset>")
+    print("[存储] 平台：", page.platform)
+    print("[存储] FLET_APP_STORAGE_DATA：", os.environ.get("FLET_APP_STORAGE_DATA") or "<未设置>")
+    print("[存储] FLET_APP_STORAGE_TEMP：", os.environ.get("FLET_APP_STORAGE_TEMP") or "<未设置>")
     for domain in ("data", "cache", "downloads", "temp"):
         print(
-            f"[storage] {domain}:",
+            f"[存储] {domain}：",
             getattr(active_storage.paths, domain),
-            f"(source={active_storage.sources[domain]})",
+            f"（来源={active_storage.sources[domain]}）",
         )
     page.title = "FletViewer"
     apply_app_theme(page)
@@ -153,7 +153,7 @@ def main(page: ft.Page):
         local_gallery_manager.initialize()
     except Exception as ex:
         page.fletviewer_storage_error = str(ex)
-        log_debug("storage", f"data storage unavailable; starting in limited mode: {ex}")
+        log_debug("存储", f"数据存储不可用，将以受限模式启动：{ex}")
         notifier.send(Notification("存储不可用", str(ex), "storage.unavailable"))
     use_builtin_title_bar = _use_builtin_title_bar(page) and _enable_builtin_title_bar(page)
 
@@ -367,12 +367,12 @@ def main(page: ft.Page):
         return remove_handler
 
     def on_page_resized(e):
-        log_debug("nav", f"resize width={page.width} height={page.height} handlers={len(resize_handlers)}")
+        log_debug("导航", f"窗口尺寸变化 宽度={page.width} 高度={page.height} 处理器数={len(resize_handlers)}")
         for handler in list(resize_handlers):
             try:
                 handler(e)
             except Exception as ex:
-                log_debug("nav", f"resize handler failed: {ex}")
+                log_debug("导航", f"窗口尺寸变化处理器执行失败：{ex}")
 
     page.fletviewer_add_resize_handler = add_resize_handler
     page.on_resize = on_page_resized
@@ -476,7 +476,7 @@ def main(page: ft.Page):
         push_route(route)
 
     def handle_route_change(e=None):
-        log_debug("nav", f"route change route={page.route} cached_views={len(route_view_cache)}")
+        log_debug("导航", f"路由变更 路由={page.route} 缓存视图数={len(route_view_cache)}")
         rebuild_views_for_route(page.route)
 
     async def handle_view_pop(e):
@@ -500,7 +500,7 @@ def main(page: ft.Page):
         for key in targets:
             if key in view_cache:
                 view_cache.pop(key, None)
-                log_debug("nav", f"invalidate {key} reason={reason}")
+                log_debug("导航", f"使缓存失效 键={key} 原因={reason}")
             if key.startswith("page:"):
                 try:
                     page_index = int(key.split(":", 1)[1])
@@ -513,18 +513,18 @@ def main(page: ft.Page):
     page.fletviewer_invalidate_views = invalidate_views
 
     def open_gallery_detail(comic):
-        log_debug("nav", f"open gallery detail {comic.id}")
+        log_debug("导航", f"打开画廊详情 {comic.id}")
         try:
             record_gallery_history(comic)
             view_cache.pop("page:6", None)
         except Exception as ex:
-            log_debug("history", f"record gallery failed {comic.id}: {ex}")
+            log_debug("历史记录", f"记录画廊失败 {comic.id}：{ex}")
         detail_container = animated_scale_container(ft.Container(expand=True))
         route = f"/gallery/{len(page.views)}"
         detail_actions: dict[str, object] = {}
 
         def go_back():
-            log_debug("nav", f"close gallery detail {comic.id}")
+            log_debug("导航", f"关闭画廊详情 {comic.id}")
             pop_top_view()
 
         def register_refresh(action):
@@ -567,11 +567,11 @@ def main(page: ft.Page):
     page.fletviewer_open_gallery_detail = open_gallery_detail
 
     def open_image_viewer(items, initial_index=0, resolve_image_url=None):
-        log_debug("nav", f"open image viewer index={initial_index} count={len(items)}")
+        log_debug("导航", f"打开图像查看器 索引={initial_index} 数量={len(items)}")
         viewer_container: ft.Container | None = None
 
         def go_back():
-            log_debug("nav", "close image viewer")
+            log_debug("导航", "关闭图像查看器")
             pop_top_view()
 
         viewer_container = animated_scale_container(
@@ -598,21 +598,21 @@ def main(page: ft.Page):
         set_bottom_nav("阅读")
         set_header_actions(header_action_cache.get("search", []))
         if "search" not in view_cache:
-            log_debug("nav", "create view search")
+            log_debug("导航", "创建搜索视图")
             view_cache["search"] = search_view(page)
         else:
-            log_debug("nav", "reuse view search")
+            log_debug("导航", "复用搜索视图")
         set_content(view_cache["search"])
         if keyword is not None:
             run_search = getattr(page, "fletviewer_run_search", None)
             if callable(run_search):
                 run_search(keyword)
         page.update()
-        log_debug("nav", f"切换视图 搜索 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
+        log_debug("导航", f"切换至搜索视图 耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
 
     def render(idx):
         if idx is None or idx < 0 or idx >= len(PAGES):
-            log_debug("nav", f"忽略无效导航索引 idx={idx}")
+            log_debug("导航", f"忽略无效导航索引 索引={idx}")
             return
         started_at = time.perf_counter()
         label, subtitle, icon, view_fn = PAGES[idx]
@@ -620,19 +620,19 @@ def main(page: ft.Page):
             set_header(label, subtitle)
             set_header_actions([])
             activate_root_section("本地")
-            log_debug("nav", f"切换主分区 本地 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
+            log_debug("导航", f"切换至本地主分区 耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
             return
         if label == "设置":
             set_header(label, subtitle)
             set_header_actions([])
             activate_root_section("设置")
-            log_debug("nav", f"切换主分区 设置 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
+            log_debug("导航", f"切换至设置主分区 耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
             return
         if label == "下载":
             set_header(label, subtitle)
             set_header_actions([])
             activate_root_section("下载")
-            log_debug("nav", f"切换主分区 下载 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
+            log_debug("导航", f"切换至下载主分区 耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
             return
         set_header(label, subtitle)
         set_bottom_nav(bottom_nav_for_page.get(label, "阅读"))
@@ -644,19 +644,19 @@ def main(page: ft.Page):
         set_header_actions(header_action_cache.get(cache_key, []))
         if label in READING_PAGE_LABELS:
             if cache_key not in view_cache:
-                log_debug("nav", f"create persistent reading view {label}")
+                log_debug("导航", f"创建持久阅读视图 {label}")
                 view_cache[cache_key] = view_fn(page) if view_fn is not None else ft.Container(expand=True)
             else:
-                log_debug("nav", f"reuse persistent reading view {label}")
+                log_debug("导航", f"复用持久阅读视图 {label}")
             set_reading_tab_content(label, view_cache[cache_key])
             page.update()
-            log_debug("nav", f"切换阅读视图 {label} 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)} cache_key={cache_key}")
+            log_debug("导航", f"切换阅读视图 {label} 耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)} 缓存键={cache_key}")
             return
         detach_content_for_navigation()
         show_shared_reading_content()
         if view_fn is None:
             if cache_key not in view_cache:
-                log_debug("nav", f"create placeholder {label}")
+                log_debug("导航", f"创建占位视图 {label}")
                 view_cache[cache_key] = ft.Container(
                     content=ft.Column(
                         [
@@ -676,24 +676,24 @@ def main(page: ft.Page):
                     padding=24,
                 )
             else:
-                log_debug("nav", f"reuse placeholder {label}")
+                log_debug("导航", f"复用占位视图 {label}")
             set_content(view_cache[cache_key])
         else:
             if cache_key not in view_cache:
-                log_debug("nav", f"create view {label}")
+                log_debug("导航", f"创建视图 {label}")
                 view_cache[cache_key] = view_fn(page)
             else:
-                log_debug("nav", f"reuse view {label}")
+                log_debug("导航", f"复用视图 {label}")
             set_content(view_cache[cache_key])
         page.update()
-        log_debug("nav", f"切换视图 {label} 用时={format_duration_ms((time.perf_counter() - started_at) * 1000)} cache_key={cache_key}")
+        log_debug("导航", f"切换视图 {label} 耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)} 缓存键={cache_key}")
 
     def render_label(label: str):
         for idx, (page_label, _subtitle, _icon, _view_fn) in enumerate(PAGES):
             if page_label == label:
                 render(idx)
                 return
-        log_debug("nav", f"忽略无效导航标签 label={label}")
+        log_debug("导航", f"忽略无效导航标签 标签={label}")
 
     page.fletviewer_render_label = render_label
 
@@ -1164,7 +1164,7 @@ def main(page: ft.Page):
         try:
             browser_session.set_login_enabled(browser_session.login_enabled(), verify=True)
         except Exception as ex:
-            log_debug("nav", f"初始化网络会话失败: {ex}")
+            log_debug("导航", f"初始化网络会话失败：{ex}")
 
     page.run_thread(initialize_browser_session)
 
