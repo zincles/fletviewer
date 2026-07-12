@@ -1,5 +1,7 @@
 import dataclasses
 import json
+from dataclasses import dataclass
+from typing import Callable
 
 import flet as ft
 
@@ -11,6 +13,17 @@ from app.storage import get_gallery_view_mode, should_render_gallery_cards
 from app.toast import show_error_toast
 from app.ui_update import request_update
 from app.views.gallery_cards import make_gallery_card
+from core.provider.ehgrabber import EHentaiClient, SearchResult
+
+
+@dataclass(frozen=True, slots=True)
+class SearchContext:
+    key: str
+    title: str
+    hint: str
+    load: Callable[[EHentaiClient, str, str | None], SearchResult]
+    needs_login: bool = False
+    scope_note: str = ""
 
 
 def _comic_to_dict(comic):
@@ -29,11 +42,17 @@ def _result_to_json(result) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def create_view(page: ft.Page) -> ft.Control:
+def create_view(page: ft.Page, context: SearchContext | None = None) -> ft.Control:
     """创建搜索页，支持卡片结果和 JSON 调试输出。"""
+    context = context or SearchContext(
+        key="global",
+        title="搜索 E-Hentai",
+        hint="画廊、标签或作者",
+        load=lambda client, keyword, page_url: client.search(page_url=page_url) if page_url else client.search(keyword=keyword),
+    )
     query = ft.TextField(
-        label="搜索关键词",
-        hint_text="例如: blue archive",
+        label=context.title,
+        hint_text=context.hint,
         width=500,
         autofocus=True,
     )
@@ -44,7 +63,7 @@ def create_view(page: ft.Page) -> ft.Control:
         next_btn.text = "加载下一页内容"
         next_btn.icon = ft.Icons.EXPAND_MORE
     page_label = ft.Text("第 1 页", size=14)
-    status = ft.Text("输入关键词后搜索", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
+    status = ft.Text(context.scope_note or "输入关键词后搜索", size=14, color=ft.Colors.ON_SURFACE_VARIANT)
     render_cards = should_render_gallery_cards()
     view_mode = get_gallery_view_mode()
     grid_spacing = 0
@@ -80,6 +99,8 @@ def create_view(page: ft.Page) -> ft.Control:
     }
 
     def update_grid_columns(e=None):
+        if gallery_results.page is None:
+            return
         if masonry_gallery is not None:
             new_count = runs_count_for_width(page.width, min_columns=2, max_columns=10)
             if masonry_gallery.set_column_count(new_count):
@@ -110,7 +131,7 @@ def create_view(page: ft.Page) -> ft.Control:
             output.value = text
         page.update()
 
-    def render_result(result, *, append: bool = False):
+    def render_result(result, *, append: bool = False, target_page: int = 1):
         state["prev_url"] = result.prev_url
         state["next_url"] = result.next_url
         prev_btn.disabled = result.prev_url is None
@@ -124,7 +145,7 @@ def create_view(page: ft.Page) -> ft.Control:
         else:
             state["comics"] = incoming
             state["cards"] = [make_gallery_card(page, comic, mode=view_mode) for comic in incoming]
-            state["page_num"] = 1
+            state["page_num"] = target_page
         state["comic_ids"].update(comic.id for comic in incoming)
         page_label.value = f"已加载 {state['page_num']} 页" if state["page_num"] > 1 else "第 1 页"
         if render_cards:
@@ -148,7 +169,13 @@ def create_view(page: ft.Page) -> ft.Control:
         else:
             output.value = _result_to_json(result)
 
-    def load(keyword: str | None = None, page_url: str | None = None, *, append: bool = False):
+    def load(
+        keyword: str | None = None,
+        page_url: str | None = None,
+        *,
+        append: bool = False,
+        target_page: int = 1,
+    ):
         kw = (keyword if keyword is not None else state["keyword"]).strip()
         if not kw and not page_url:
             return
@@ -157,9 +184,6 @@ def create_view(page: ft.Page) -> ft.Control:
             return
         state["loading"] = True
         state["requested_urls"].add(request_key)
-        set_reading_loading = getattr(page, "fletviewer_set_reading_loading", None)
-        if callable(set_reading_loading):
-            set_reading_loading("search", True)
         if keyword is not None:
             state["keyword"] = kw
             state["page_num"] = 1
@@ -178,32 +202,28 @@ def create_view(page: ft.Page) -> ft.Control:
         def worker():
             try:
                 log_debug("搜索", f"开始搜索 关键词={kw} 页面URL={page_url}")
-                client = browser_session.get_eh_client(require_login=False)
+                client = browser_session.get_eh_client(require_login=context.needs_login)
                 with Timer("搜索", f"执行搜索 关键词={kw} 页面URL={page_url}"):
-                    result = client.search(page_url=page_url) if page_url else client.search(keyword=kw)
+                    result = context.load(client, kw, page_url)
                 log_debug(
                     "搜索",
                     f"搜索结果 数量={len(result.comics)} 上一页={result.prev_url} 下一页={result.next_url}",
                 )
-                render_result(result, append=append)
+                render_result(result, append=append, target_page=target_page)
             except Exception as ex:
                 state["requested_urls"].discard(request_key)
                 status.value = f"错误: {ex}"
                 output.value = f"错误: {ex}"
-                show_error_toast(page, "搜索加载失败", ex)
+                if query.page is not None:
+                    show_error_toast(page, "搜索加载失败", ex)
                 log_exception("搜索", f"搜索失败 关键词={kw} 页面URL={page_url}：{ex}")
             finally:
                 state["loading"] = False
-                if callable(set_reading_loading):
-                    set_reading_loading("search", False)
                 btn.disabled = False
                 if view_mode == "masonry":
                     next_btn.text = "加载下一页内容"
                     next_btn.icon = ft.Icons.EXPAND_MORE
-                if append and masonry_gallery is not None:
-                    next_btn.update()
-                    btn.update()
-                else:
+                if query.page is not None:
                     request_update(page)
 
         page.run_thread(worker)
@@ -215,17 +235,14 @@ def create_view(page: ft.Page) -> ft.Control:
         query.value = keyword
         load(keyword=keyword)
 
-    page.fletviewer_run_search = run_search
-
     def on_prev(e):
         if state["prev_url"]:
-            state["page_num"] -= 1
-            page_label.value = f"第 {state['page_num']} 页"
-            load(page_url=state["prev_url"])
+            load(page_url=state["prev_url"], target_page=max(1, state["page_num"] - 1))
 
     def on_next(e):
         if state["next_url"]:
-            load(page_url=state["next_url"], append=True)
+            append = view_mode == "masonry"
+            load(page_url=state["next_url"], append=append, target_page=state["page_num"] + 1)
 
     query.on_submit = on_search
     btn.on_click = on_search

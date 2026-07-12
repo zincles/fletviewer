@@ -21,8 +21,10 @@ if sys.platform.startswith("linux") and "--web" not in sys.argv and "--server" n
 import flet as ft
 
 from app.browser_session import browser_session
+from app.controls.task_debug_overlay import TaskDebugOverlay
 from app.debug_log import configure_logging, format_duration_ms, log_debug, log_exception
 from app.local_gallery_manager import local_gallery_manager
+from app.navigation import AppNavigator
 from app.notifications import Notification, notifier
 from app.storage import should_use_linux_builtin_title_bar
 from app.theme import apply_app_theme, refresh_adaptive_theme_on_brightness_change
@@ -37,7 +39,8 @@ from app.views.favorites import create_view as favorites_view
 from app.views.local_galleries import create_view as local_galleries_view
 from app.views.gallery_detail import create_view as gallery_detail_view
 from app.views.image_viewer import create_view as image_viewer_view
-from app.views.search import create_view as search_view
+from app.views.search import SearchContext, create_view as search_view
+from core.provider.ehgrabber import SearchResult
 from app.views.settings import create_view as settings_view
 from app.views.history import create_view as history_view
 from app.history import record_gallery_history
@@ -178,6 +181,8 @@ def main(page: ft.Page):
     reading_loading_sources: set[str] = set()
     reading_loading_indicator_ref: dict[str, ft.ProgressBar | None] = {"value": None}
     active_cache_key = {"value": ""}
+    active_page_label = {"value": "主页"}
+    top_search_hint_ref: dict[str, ft.Text | None] = {"value": None}
     bottom_nav_state = {"value": "阅读"}
     bottom_nav_segments: dict[str, ft.Container] = {}
     bottom_nav_indicator_ref: dict[str, ft.Container | None] = {"value": None}
@@ -187,7 +192,6 @@ def main(page: ft.Page):
     reading_tabs_ref: dict[str, ft.Tabs | None] = {"value": None}
     reading_tabs_syncing = {"value": False}
     reading_tab_pages: list[ft.Container] = []
-    top_bar_state = {"offset": 0.0}
     reading_content_host: ft.Container | None = None
     reading_speed_dial_state = {"open": False}
     section_indexes = {"阅读": 0, "本地": 1, "下载": 2, "设置": 3}
@@ -247,7 +251,7 @@ def main(page: ft.Page):
             holder.content = control
 
     def show_shared_reading_content() -> None:
-        """搜索等独立入口临时复用当前阅读 Tab 的内容宿主。"""
+        """让非持久阅读入口使用当前阅读 Tab 的共享内容宿主。"""
         tabs = reading_tabs_ref.get("value")
         selected_index = int(getattr(tabs, "selected_index", 0) or 0)
         if 0 <= selected_index < len(reading_tab_pages):
@@ -342,26 +346,6 @@ def main(page: ft.Page):
     def toggle_reading_speed_dial(e=None) -> None:
         set_reading_speed_dial_open(not reading_speed_dial_state["open"])
 
-    def set_top_bar_scroll_offset(offset: float, update: bool = True) -> None:
-        clamped = max(0.0, min(88.0, offset))
-        if abs(clamped - top_bar_state["offset"]) < 0.5:
-            return
-        top_bar_state["offset"] = clamped
-        top_bar.top = -clamped
-        top_bar.opacity = max(0.18, 1.0 - clamped / 70.0)
-        if update:
-            page.update()
-
-    def on_content_scroll(delta: float | None = None, pixels: float | None = None) -> None:
-        if pixels is not None and pixels <= 2:
-            set_top_bar_scroll_offset(0.0)
-            return
-        if delta is None or abs(delta) < 0.5:
-            return
-        set_top_bar_scroll_offset(top_bar_state["offset"] + delta)
-
-    page.fletviewer_on_content_scroll = on_content_scroll
-
     def add_resize_handler(handler):
         if handler not in resize_handlers:
             resize_handlers.append(handler)
@@ -444,69 +428,11 @@ def main(page: ft.Page):
 
         page.run_thread(worker)
 
-    route_view_cache: dict[str, ft.View] = {}
-    route_parent_cache: dict[str, str] = {}
-    root_view_ref: dict[str, ft.View | None] = {"value": None}
-
-    def push_route(route: str) -> None:
-        page.navigate(route)
-
-    def rebuild_views_for_route(route: str | None = None):
-        target_route = route or page.route or "/"
-        root_view = root_view_ref.get("value")
-        if root_view is None:
-            return
-
-        chain: list[str] = []
-        cursor = target_route
-        seen: set[str] = set()
-        while cursor and cursor != "/" and cursor not in seen:
-            seen.add(cursor)
-            if cursor not in route_view_cache:
-                break
-            chain.append(cursor)
-            cursor = route_parent_cache.get(cursor, "/")
-        chain.reverse()
-
-        page.views.clear()
-        page.views.append(root_view)
-        for child_route in chain:
-            view = route_view_cache.get(child_route)
-            if view is not None:
-                page.views.append(view)
-        page.route = page.views[-1].route or "/"
-        page.update()
-
-    def pop_top_view():
-        if len(page.views) > 1:
-            push_route(page.views[-2].route or "/")
-
-    def push_app_view(view: ft.View, parent_route: str | None = None):
-        route = view.route or f"/view/{len(route_view_cache) + 1}"
-        view.route = route
-        route_view_cache[route] = view
-        route_parent_cache[route] = parent_route or (page.views[-1].route if page.views else "/") or "/"
-        push_route(route)
-
-    def handle_route_change(e=None):
-        log_debug("导航", f"路由变更 路由={page.route} 缓存视图数={len(route_view_cache)}")
-        rebuild_views_for_route(page.route)
-
-    async def handle_view_pop(e):
-        if len(page.views) <= 1:
-            return
-        view = getattr(e, "view", None)
-        if view in page.views and page.views.index(view) > 0:
-            target_index = page.views.index(view) - 1
-            target_route = page.views[target_index].route or "/"
-        else:
-            target_route = page.views[-2].route or "/"
-        await page.push_route(target_route)
-
-    page.on_route_change = handle_route_change
-    page.on_view_pop = handle_view_pop
-    page.fletviewer_push_view = push_app_view
-    page.fletviewer_pop_view = pop_top_view
+    navigator = AppNavigator(page)
+    navigator.install()
+    page.fletviewer_navigator = navigator
+    page.fletviewer_push_view = navigator.push_view
+    page.fletviewer_pop_view = navigator.pop_view
 
     def invalidate_views(keys: list[str] | None = None, reason: str = ""):
         targets = keys or list(view_cache.keys())
@@ -533,12 +459,13 @@ def main(page: ft.Page):
         except Exception as ex:
             log_exception("历史记录", f"记录画廊失败 {comic.id}：{ex}")
         detail_container = animated_scale_container(ft.Container(expand=True))
-        route = f"/gallery/{len(page.views)}"
+        route = navigator.next_route("gallery")
+        parent_route = navigator.current_route()
         detail_actions: dict[str, object] = {}
 
         def go_back():
             log_debug("导航", f"关闭画廊详情 {comic.id}")
-            pop_top_view()
+            navigator.navigate(parent_route)
 
         def register_refresh(action):
             detail_actions["refresh"] = action
@@ -553,7 +480,7 @@ def main(page: ft.Page):
             return
 
         detail_container.content = gallery_detail_view(page, comic, go_back, register_refresh=register_refresh)
-        push_app_view(
+        navigator.push_view(
             ft.View(
                 route=route,
                 controls=[detail_container],
@@ -573,7 +500,8 @@ def main(page: ft.Page):
                         )
                     ],
                 ),
-            )
+            ),
+            parent_route=parent_route,
         )
         play_enter_animation(detail_container)
 
@@ -582,10 +510,12 @@ def main(page: ft.Page):
     def open_image_viewer(items, initial_index=0, resolve_image_url=None):
         log_debug("导航", f"打开图像查看器 索引={initial_index} 数量={len(items)}")
         viewer_container: ft.Container | None = None
+        route = navigator.next_route("viewer")
+        parent_route = navigator.current_route()
 
         def go_back():
             log_debug("导航", "关闭图像查看器")
-            pop_top_view()
+            navigator.navigate(parent_route)
 
         viewer_container = animated_scale_container(
             image_viewer_view(
@@ -596,32 +526,10 @@ def main(page: ft.Page):
                 resolve_image_url=resolve_image_url,
             ),
         )
-        route = f"/viewer/{len(page.views)}-{initial_index}"
-        push_app_view(ft.View(route=route, controls=[viewer_container], padding=0))
+        navigator.push_view(ft.View(route=route, controls=[viewer_container], padding=0), parent_route=parent_route)
         play_enter_animation(viewer_container)
 
     page.fletviewer_open_image_viewer = open_image_viewer
-
-    def render_search(keyword: str | None = None):
-        detach_content_for_navigation()
-        show_shared_reading_content()
-        active_cache_key["value"] = "search"
-        started_at = time.perf_counter()
-        set_header("搜索", "E-Hentai 画廊搜索")
-        set_bottom_nav("阅读")
-        set_header_actions(header_action_cache.get("search", []))
-        if "search" not in view_cache:
-            log_debug("导航", "创建搜索视图")
-            view_cache["search"] = search_view(page)
-        else:
-            log_debug("导航", "复用搜索视图")
-        set_content(view_cache["search"])
-        if keyword is not None:
-            run_search = getattr(page, "fletviewer_run_search", None)
-            if callable(run_search):
-                run_search(keyword)
-        page.update()
-        log_debug("导航", f"切换至搜索视图 耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
 
     def render(idx):
         if idx is None or idx < 0 or idx >= len(PAGES):
@@ -629,6 +537,13 @@ def main(page: ft.Page):
             return
         started_at = time.perf_counter()
         label, subtitle, icon, view_fn = PAGES[idx]
+        active_page_label["value"] = label
+        search_hint = top_search_hint_ref["value"]
+        if search_hint is not None:
+            search_hint.value = {
+                "收藏": "搜索收藏",
+                "订阅": "搜索订阅",
+            }.get(label, "搜索 E-Hentai")
         if label == "本地画廊":
             set_header(label, subtitle)
             set_header_actions([])
@@ -710,29 +625,76 @@ def main(page: ft.Page):
 
     page.fletviewer_render_label = render_label
 
-    top_search_field = ft.SearchBar(
-        bar_hint_text="搜索画廊、标签、作者",
-        bar_leading=ft.Icon(ft.Icons.SEARCH),
-        bar_bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
-        bar_elevation=0,
-        bar_shape=ft.StadiumBorder(),
-        bar_border_side=ft.BorderSide(0, ft.Colors.TRANSPARENT),
-        bar_padding=ft.Padding(12, 0, 12, 0),
-        view_hint_text="搜索画廊、标签、作者",
-        view_leading=ft.Icon(ft.Icons.SEARCH),
-        view_elevation=2,
-        view_shape=ft.RoundedRectangleBorder(radius=28),
-        full_screen=False,
-        shrink_wrap=True,
+    def global_search(client, keyword: str, page_url: str | None):
+        return client.search(page_url=page_url) if page_url else client.search(keyword=keyword)
+
+    def favorite_search(client, keyword: str, page_url: str | None):
+        return client.get_favorites(page_url=page_url, keyword=keyword)
+
+    def watched_search(client, keyword: str, page_url: str | None):
+        result = client.get_watched(page_url=page_url)
+        needle = keyword.casefold()
+        return SearchResult(
+            comics=[comic for comic in result.comics if needle in (comic.title or "").casefold()],
+            next_url=result.next_url,
+            prev_url=result.prev_url,
+        )
+
+    def current_search_context() -> SearchContext:
+        label = active_page_label["value"]
+        if label == "收藏":
+            return SearchContext(
+                key="favorites",
+                title="搜索收藏",
+                hint="标题、标签或作者",
+                load=favorite_search,
+                needs_login=True,
+            )
+        if label == "订阅":
+            return SearchContext(
+                key="subscriptions",
+                title="搜索订阅",
+                hint="过滤当前订阅页的标题",
+                load=watched_search,
+                needs_login=True,
+                scope_note="订阅暂不支持服务端关键词搜索，将按服务端分页逐页过滤标题。",
+            )
+        return SearchContext(
+            key="global",
+            title="搜索 E-Hentai",
+            hint="画廊、标签或作者",
+            load=global_search,
+        )
+
+    def open_search_view(e=None):
+        context = current_search_context()
+        parent_route = navigator.current_route()
+        navigator.push_view(
+            ft.View(
+                route=navigator.next_route(f"search-{context.key}"),
+                controls=[ft.Container(content=search_view(page, context), padding=8, expand=True)],
+                padding=0,
+                appbar=ft.AppBar(
+                    title=ft.Text(context.title),
+                    leading=ft.IconButton(ft.Icons.ARROW_BACK, tooltip="返回", on_click=lambda event: navigator.pop_view()),
+                    automatically_imply_leading=False,
+                ),
+            ),
+            parent_route=parent_route,
+        )
+
+    top_search_hint = ft.Text("搜索画廊、标签、作者", color=ft.Colors.ON_SURFACE_VARIANT, expand=True)
+    top_search_hint_ref["value"] = top_search_hint
+    top_search_field = ft.Container(
+        content=ft.Row([ft.Icon(ft.Icons.SEARCH), top_search_hint], spacing=12),
         height=44,
         expand=True,
+        padding=ft.Padding(16, 0, 16, 0),
+        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
+        border_radius=999,
+        ink=True,
+        on_click=open_search_view,
     )
-
-    def submit_top_search(e=None):
-        keyword = (top_search_field.value or "").strip()
-        render_search(keyword if keyword else None)
-
-    top_search_field.on_submit = submit_top_search
 
     def show_account_summary(e=None) -> None:
         """显示当前 EH 账户摘要；资产数据接口接入前使用占位值。"""
@@ -870,6 +832,7 @@ def main(page: ft.Page):
         left=0,
         right=0,
         top=0,
+        opacity=1,
         bgcolor=ft.Colors.SURFACE,
         border=ft.border.Border(bottom=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
     )
@@ -1128,6 +1091,8 @@ def main(page: ft.Page):
         expand=True,
     )
     root_tabs_ref["value"] = root_tabs
+    task_debug_overlay = TaskDebugOverlay(page)
+    page.overlay.append(task_debug_overlay)
 
     body = ft.Stack(
         controls=[
@@ -1166,12 +1131,9 @@ def main(page: ft.Page):
     if _should_use_safe_area(page):
         root = ft.SafeArea(content=root, expand=True)
 
-    page.views.clear()
-    root_view_ref["value"] = ft.View(route="/", controls=[root], padding=0)
-    page.views.append(root_view_ref["value"])
-    page.update()
+    navigator.set_root_view(ft.View(route="/", controls=[root], padding=0))
     render(0)
-    rebuild_views_for_route(page.route or "/")
+    navigator.rebuild(page.route or "/")
 
     def initialize_browser_session():
         try:

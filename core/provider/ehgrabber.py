@@ -13,7 +13,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlsplit, urlunsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -1439,13 +1439,30 @@ class EHentaiClient:
     # 收藏
     # -----------------------------------------------------------------------
 
-    def get_favorites(self, folder: str = "-1", page_url: Optional[str] = None) -> SearchResult:
+    def get_favorites(
+        self,
+        folder: str = "-1",
+        page_url: Optional[str] = None,
+        keyword: Optional[str] = None,
+    ) -> SearchResult:
         """获取收藏列表"""
         if page_url:
+            if keyword:
+                parsed = urlsplit(page_url)
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                query.setdefault("f_search", [keyword])
+                page_url = urlunsplit(
+                    (parsed.scheme, parsed.netloc, parsed.path, urlencode(query, doseq=True), parsed.fragment)
+                )
             return self._get_galleries(page_url)
         url = f"{self.base_url}/favorites.php"
+        params = {}
         if folder != "-1":
-            url += f"?favcat={folder}"
+            params["favcat"] = folder
+        if keyword:
+            params["f_search"] = keyword
+        if params:
+            url += f"?{urlencode(params)}"
         return self._get_galleries(url)
 
     def add_favorite(self, comic_url: str, folder_id: str = "0") -> None:

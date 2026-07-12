@@ -314,13 +314,6 @@ def create_gallery_cards_view(
         if callable(add_resize_handler):
             add_resize_handler(update_grid_columns)
 
-        def on_grid_scroll(e):
-            on_content_scroll = getattr(page, "fletviewer_on_content_scroll", None)
-            if callable(on_content_scroll):
-                on_content_scroll(getattr(e, "scroll_delta", None), getattr(e, "pixels", None))
-
-        list_view.on_scroll = on_grid_scroll
-
         def load(page_url=None, *, append: bool = False):
             request_key = page_url or "__first__"
             if state["loading"] or (append and request_key in state["requested_urls"]):
