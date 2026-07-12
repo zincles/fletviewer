@@ -7,6 +7,7 @@ import flet as ft
 from app.debug_log import log_debug, log_exception, log_image_served
 from app.image_fetcher import image_load_coordinator
 from app.image_progress import image_progress_pump
+from app.image_results import image_result_pump
 from app.storage import should_load_images
 from app.ui_update import request_update
 from core.image.fetcher import ImageFetchCancelled, ImageFetchResult, ImageLoadSubscription
@@ -117,7 +118,7 @@ class _AsyncImage(ft.Container):
         try:
             subscription = image_load_coordinator.subscribe(self._url, kind="thumbnail")
             self._subscription = subscription
-            image_progress_pump(self._page).register(self)
+            # 缩略图保持 Flutter 本地不定进度动画；不向远程页面发送逐 chunk diff。
             subscription.future.add_done_callback(
                 lambda completed, current=subscription: self._schedule_apply(token, current, completed)
             )
@@ -180,7 +181,7 @@ class _AsyncImage(ft.Container):
             log_debug("异步图像", f"完成回调缺少订阅 URL={self._url}")
             return
         try:
-            self._page.run_thread(lambda: self._apply_result(token, subscription, future))
+            image_result_pump(self._page).enqueue(lambda: self._apply_result(token, subscription, future))
         except AttributeError as ex:
             self._clear_if_current(subscription)
             log_exception("异步图像", f"调度结果应用失败 URL={self._url}：{ex}")
@@ -188,11 +189,11 @@ class _AsyncImage(ft.Container):
             self._clear_if_current(subscription)
             log_exception("异步图像", f"调度结果应用失败 URL={self._url}：{ex}")
 
-    def _apply_result(self, token: int, subscription: ImageLoadSubscription, future: Future[ImageFetchResult]) -> None:
+    def _apply_result(self, token: int, subscription: ImageLoadSubscription, future: Future[ImageFetchResult]) -> bool:
         try:
             if not self._is_active(token) or self._subscription is not subscription:
                 self._clear_if_current(subscription)
-                return
+                return False
             result = future.result()
         except ImageFetchCancelled:
             if self._is_active(token) and self._subscription is subscription:
@@ -204,7 +205,7 @@ class _AsyncImage(ft.Container):
         else:
             if not self._is_active(token) or self._subscription is not subscription:
                 self._clear_if_current(subscription)
-                return
+                return False
             try:
                 self.content = ft.Image(
                     src=image_src_for_page(self._page, result.data, result.mime),
@@ -236,8 +237,7 @@ class _AsyncImage(ft.Container):
                 log_image_served(source, elapsed_ms, self._url, len(result.data))
         was_current = self._subscription is subscription
         self._clear_if_current(subscription)
-        if was_current and self._is_active(token):
-            request_update(self._page)
+        return bool(was_current and self._is_active(token))
 
     def _clear_if_current(self, subscription) -> None:
         if getattr(self, "_subscription", None) is not subscription:

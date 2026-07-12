@@ -52,6 +52,9 @@ class AppNavigator:
         return self.page.route or "/"
 
     def navigate(self, route: str) -> None:
+        prioritize = getattr(self.page, "fletviewer_prioritize_navigation", None)
+        if callable(prioritize):
+            prioritize()
         self.page.navigate(route or "/")
 
     def push_view(self, view: ft.View, parent_route: str | None = None) -> str:

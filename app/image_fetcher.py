@@ -18,7 +18,7 @@ def _create_image_fetcher() -> ImageFetcherService:
         log_debug=log_debug,
         log_exception=log_exception,
         timer_factory=Timer,
-        max_workers=30,
+        max_workers=8,
     )
     atexit.register(service.shutdown)
     return service

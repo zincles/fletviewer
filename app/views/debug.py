@@ -3,6 +3,7 @@ import time
 import flet as ft
 
 from app.image_fetcher import ImageFetchTaskState, image_fetcher, image_load_coordinator
+from app.image_results import image_result_pump
 from app.debug_log import log_exception
 from app.ui_update import request_update
 
@@ -164,7 +165,10 @@ class _TaskDebugView(ft.Container):
             entries = image_load_coordinator.debug_entries()
             failed = [task for task in snapshot.recent if task.status == "failed"]
             subscribers = sum(entry["subscribers"] for entry in entries)
-            if not snapshot.active and not snapshot.queued and not entries:
+            pending_results = image_result_pump(self._page).pending_count()
+            if pending_results:
+                diagnosis = f"有 {pending_results} 个已完成图片等待合并应用；远程客户端慢时导航会优先于这些结果"
+            elif not snapshot.active and not snapshot.queued and not entries:
                 diagnosis = "任务层空闲；若图片仍在转圈，请检查异步图像结果应用日志"
             elif entries and not snapshot.active and not snapshot.queued:
                 diagnosis = "存在共享订阅但没有活动 fetcher 任务；检查已完成 Future 的回调清理"
@@ -173,7 +177,7 @@ class _TaskDebugView(ft.Container):
             self._status.value = (
                 f"图像 fetcher：活跃={len(snapshot.active)} 排队={len(snapshot.queued)} 最近={len(snapshot.recent)} "
                 f"最近失败={len(failed)} 共享任务={len(entries)} 订阅={subscribers} worker={snapshot.max_workers}\n"
-                f"诊断：{diagnosis}"
+                f"待显示={pending_results}\n诊断：{diagnosis}"
             )
             self._auto_status.value = f"自动刷新中 · {time.strftime('%H:%M:%S')}"
             self._content.controls = [

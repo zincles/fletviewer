@@ -27,9 +27,11 @@ class AsyncImageLifecycleTests(unittest.TestCase):
         future = Future()
         future.set_result(None)
 
-        control._schedule_apply(1, subscription, future)
+        pump = Mock()
+        with patch("app.controls.async_image.image_result_pump", return_value=pump):
+            control._schedule_apply(1, subscription, future)
 
-        page.run_thread.assert_called_once()
+        pump.enqueue.assert_called_once()
 
     def test_completed_fetch_attempts_public_scheduler_without_private_connection_check(self) -> None:
         control = object.__new__(_AsyncImage)

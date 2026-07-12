@@ -5,6 +5,7 @@ import flet as ft
 from app.debug_log import log_exception
 from app.download_manager import download_manager
 from app.image_fetcher import image_fetcher, image_load_coordinator
+from app.image_results import image_result_pump
 from app.ui_update import request_update
 
 
@@ -81,6 +82,7 @@ class TaskDebugOverlay(ft.Container):
 
     def _refresh(self) -> None:
         image_snapshot = image_fetcher.snapshot()
+        pending_results = image_result_pump(self._page).pending_count()
         coordinator_entries = image_load_coordinator.debug_entries()
         entry_by_key = {entry["task_key"]: entry for entry in coordinator_entries}
         downloads = download_manager.list_tasks()
@@ -94,7 +96,7 @@ class TaskDebugOverlay(ft.Container):
         )
         self._image_status.value = (
             f"图片：{len(image_snapshot.active)} 活跃，{len(image_snapshot.queued)} 排队，"
-            f"{len(failed_images)} 最近失败，{len(coordinator_entries)} 共享任务"
+            f"{len(failed_images)} 最近失败，{len(coordinator_entries)} 共享任务，{pending_results} 待显示"
         )
         self._download_status.value = f"下载：{len(running_downloads)} 运行，{len(queued_downloads)} 排队"
 

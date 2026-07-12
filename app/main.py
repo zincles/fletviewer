@@ -24,6 +24,7 @@ from app.browser_session import browser_session
 from app.controls.task_debug_overlay import TaskDebugOverlay
 from app.debug_log import configure_logging, format_duration_ms, log_debug, log_exception
 from app.local_gallery_manager import local_gallery_manager
+from app.image_results import image_result_pump
 from app.navigation import AppNavigator
 from app.notifications import Notification, notifier
 from app.storage import should_show_task_debug_overlay, should_use_linux_builtin_title_bar
@@ -172,6 +173,8 @@ def main(page: ft.Page):
     content = ft.Container(content=content_switcher, expand=True, padding=ft.Padding(0, 8, 0, 0))
     view_cache: dict[str, ft.Control] = {}
     content_generation = {"value": 0}
+    result_pump = image_result_pump(page)
+    page.fletviewer_prioritize_navigation = result_pump.prioritize_navigation
     current_content: dict[str, ft.Control | None] = {"value": None}
     shell_host: dict[str, ft.Container | None] = {"value": None}
     resize_handlers = []
@@ -374,6 +377,7 @@ def main(page: ft.Page):
 
     def begin_content_transition():
         """导航开始时立即让旧页面后台图片任务失效。"""
+        result_pump.prioritize_navigation()
         content_generation["value"] += 1
         page.fletviewer_content_generation = content_generation["value"]
 
@@ -540,6 +544,7 @@ def main(page: ft.Page):
             log_debug("导航", f"忽略无效导航索引 索引={idx}")
             return
         started_at = time.perf_counter()
+        result_pump.prioritize_navigation()
         label, subtitle, icon, view_fn = PAGES[idx]
         active_page_label["value"] = label
         search_hint = top_search_hint_ref["value"]
