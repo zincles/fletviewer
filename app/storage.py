@@ -44,11 +44,14 @@ _storage_layout = StorageLayout(
 )
 
 EH_CONFIG_KEYS = ("ipb_member_id", "ipb_pass_hash", "igneous", "star")
+BOORU_CONFIG_DEFAULTS = {"gelbooru_user_id": "", "gelbooru_api_key": ""}
 APP_CONFIG_DEFAULTS = {
     "enable_login": True,
     "load_images": True,
     "show_error_toasts": True,
     "show_task_debug_overlay": True,
+    "enable_file_manager_panel": False,
+    "enable_debug_panel": False,
     "render_gallery_cards": True,
     "theme_mode": "system",
     "theme_color": "adaptive",
@@ -67,6 +70,8 @@ APP_CONFIG_DEFAULTS = {
     "linux_prefer_wayland_window_backend": False,
     "proxy_mode": "disabled",
     "proxy_url": "",
+    "active_provider": "ehentai",
+    "active_booru_provider": "gelbooru",
 }
 IMAGE_VIEWER_MODES = {"paged", "vertical"}
 THEME_MODES = {"system", "light", "dark"}
@@ -74,6 +79,7 @@ THEME_COLORS = {"adaptive", "teal", "blue", "green", "rose", "amber", "violet"}
 GALLERY_VIEW_MODES = {"card", "list", "masonry"}
 CONFIG_DEFAULTS = {
     "eh": {k: "" for k in EH_CONFIG_KEYS},
+    "booru": dict(BOORU_CONFIG_DEFAULTS),
     "app": dict(APP_CONFIG_DEFAULTS),
 }
 
@@ -126,18 +132,19 @@ def _load_config() -> dict:
                 data = json.load(f)
         except (json.JSONDecodeError, UnicodeError, TypeError, ValueError):
             _quarantine_config(config_path)
-            return {"eh": dict(CONFIG_DEFAULTS["eh"]), "app": dict(CONFIG_DEFAULTS["app"])}
+            return {key: dict(value) for key, value in CONFIG_DEFAULTS.items()}
         if isinstance(data, dict):
             try:
                 return {
                     "eh": {**CONFIG_DEFAULTS["eh"], **dict(data.get("eh") or {})},
+                    "booru": {**CONFIG_DEFAULTS["booru"], **dict(data.get("booru") or {})},
                     "app": {**CONFIG_DEFAULTS["app"], **dict(data.get("app") or {})},
                 }
             except (TypeError, ValueError):
                 _quarantine_config(config_path)
         else:
             _quarantine_config(config_path)
-    return {"eh": dict(CONFIG_DEFAULTS["eh"]), "app": dict(CONFIG_DEFAULTS["app"])}
+    return {key: dict(value) for key, value in CONFIG_DEFAULTS.items()}
 
 
 def _quarantine_config(config_path: Path) -> Path:
@@ -152,6 +159,7 @@ def _save_config(data: dict) -> None:
     config_path = get_storage_layout().config_file
     payload = {
         "eh": {**CONFIG_DEFAULTS["eh"], **dict(data.get("eh") or {})},
+        "booru": {**CONFIG_DEFAULTS["booru"], **dict(data.get("booru") or {})},
         "app": {**CONFIG_DEFAULTS["app"], **dict(data.get("app") or {})},
     }
     atomic_write_json(config_path, payload)
@@ -166,6 +174,16 @@ def save_eh_config(cfg: dict) -> None:
     """保存 EH Cookie 凭据配置。"""
     data = _load_config()
     data["eh"] = {**CONFIG_DEFAULTS["eh"], **cfg}
+    _save_config(data)
+
+
+def load_booru_config() -> dict:
+    return _load_config()["booru"]
+
+
+def save_booru_config(cfg: dict) -> None:
+    data = _load_config()
+    data["booru"] = {**BOORU_CONFIG_DEFAULTS, **cfg}
     _save_config(data)
 
 
@@ -197,8 +215,18 @@ def should_show_error_toasts() -> bool:
 
 
 def should_show_task_debug_overlay() -> bool:
-    """返回是否显示右上角任务调试悬浮窗。"""
+    """返回是否显示任务调试浮层。"""
     return bool(load_app_config().get("show_task_debug_overlay", True))
+
+
+def should_enable_file_manager_panel() -> bool:
+    """返回是否在底栏显示文件管理器附加面板。"""
+    return bool(load_app_config().get("enable_file_manager_panel", False))
+
+
+def should_enable_debug_panel() -> bool:
+    """返回是否在底栏显示调试附加面板。"""
+    return bool(load_app_config().get("enable_debug_panel", False))
 
 
 def get_theme_mode() -> str:

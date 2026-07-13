@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from typing import Callable, Protocol
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 import requests
 from PIL import Image
@@ -442,7 +442,11 @@ class ImageFetcherService:
             try:
                 self._raise_if_cancelled(cancel_event)
                 response.raise_for_status()
-                mime = response.headers.get("Content-Type", "image/jpeg").split(";", 1)[0].strip()
+                mime = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if not mime.startswith("image/"):
+                    raise ValueError(
+                        f"图片 URL 返回了非图片响应 MIME={mime or 'unknown'} 最终URL={response.url}"
+                    )
                 filename = self._cache.filename_for_url(url, mime=mime)
                 path = self._cache.cached_path_for_url(url, mime=mime)
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -470,7 +474,16 @@ class ImageFetcherService:
             raise
 
     def _get_image_response(self, url: str, cancel_event: threading.Event | None = None) -> requests.Response:
-        headers = {"Referer": "https://e-hentai.org/", "Connection": "close"}
+        hostname = urlsplit(url).hostname or ""
+        if hostname == "gelbooru.com" or hostname.endswith(".gelbooru.com"):
+            referer = "https://gelbooru.com/"
+        elif hostname.endswith("e-hentai.org") or hostname.endswith("exhentai.org") or hostname.endswith("ehgt.org"):
+            referer = "https://e-hentai.org/"
+        else:
+            referer = f"{urlsplit(url).scheme or 'https'}://{hostname}/" if hostname else ""
+        headers = {"Connection": "close"}
+        if referer:
+            headers["Referer"] = referer
         last_error: Exception | None = None
         for attempt in range(1, 4):
             self._raise_if_cancelled(cancel_event)

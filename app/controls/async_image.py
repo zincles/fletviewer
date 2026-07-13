@@ -73,6 +73,7 @@ class _AsyncImage(ft.Container):
         self._subscription: ImageLoadSubscription | None = None
         self._progress_ring: ft.ProgressRing | None = None
         self._load_started_at = 0.0
+        self._pending_completion: tuple[int, ImageLoadSubscription, Future[ImageFetchResult]] | None = None
 
     def _loading_content(self) -> ft.Control:
         self._progress_ring = ft.ProgressRing(width=42, height=42)
@@ -98,6 +99,12 @@ class _AsyncImage(ft.Container):
     def did_mount(self) -> None:
         self._mounted = True
         self._content_generation = getattr(self._page, "fletviewer_content_generation", None)
+        pending = self._pending_completion
+        if pending is not None:
+            self._pending_completion = None
+            token, subscription, future = pending
+            image_result_pump(self._page).enqueue(lambda: self._apply_result(token, subscription, future))
+            return
         if self._loaded or self._loading:
             return
         self._start_load()
@@ -149,12 +156,8 @@ class _AsyncImage(ft.Container):
 
     def will_unmount(self) -> None:
         self._mounted = False
-        self._loading = False
-        self._load_token += 1
-        subscription = self._subscription
-        self._subscription = None
-        if subscription is not None:
-            subscription.unsubscribe()
+        # TabBarView 左右切换会临时卸载相邻页面。保留共享请求，重新挂载后直接应用结果，
+        # 避免取消整页缩略图后再次从缓存/网络加载。
         image_progress_pump(self._page).unregister(self)
 
     def _is_active(self, token: int) -> bool:
@@ -171,6 +174,9 @@ class _AsyncImage(ft.Container):
         if future is None:
             future = subscription
             subscription = getattr(self, "_subscription", None)
+        if not self._mounted and token == self._load_token and subscription is self._subscription:
+            self._pending_completion = (token, subscription, future)
+            return
         if not self._is_active(token):
             self._clear_if_current(subscription)
             return

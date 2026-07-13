@@ -2,7 +2,7 @@ import unittest
 import threading
 from unittest.mock import Mock
 
-from core.net.browser_session import BrowserSessionService
+from core.net.browser_session import BrowserSessionService, redact_url
 
 
 class BrowserSessionProxyTests(unittest.TestCase):
@@ -11,6 +11,12 @@ class BrowserSessionProxyTests(unittest.TestCase):
             load_app_config=lambda: app_config,
             load_eh_config=lambda: {},
         )
+
+    def test_redact_url_hides_api_key(self):
+        value = redact_url("https://example.test/posts?user_id=12&api_key=secret&tags=cat")
+        self.assertIn("user_id=12", value)
+        self.assertIn("tags=cat", value)
+        self.assertNotIn("secret", value)
 
     def test_manual_proxy_applies_to_shared_session(self):
         service = self._service({"proxy_mode": "manual", "proxy_url": "http://127.0.0.1:7890"})

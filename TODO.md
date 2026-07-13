@@ -28,7 +28,9 @@
 
 ### 背景与已确认事实
 
-- 当前配置、数据库、缓存和下载仍主要位于同一个相对 `FletViewer/` 根目录。Windows 开发模式的实际路径已通过启动日志确认：Data=`E:\fletviewer\FletViewer`、Cache=`E:\fletviewer\FletViewer\Cache`、Downloads=`E:\fletviewer\FletViewer\Downloads`、Temp=`E:\fletviewer\FletViewer\Temp`。
+- Phase 1/2 代码已开始落地：`resolve_storage()`、`configure_storage()`、`migrate_legacy_storage()` 会在应用 import 早期执行；Windows 桌面已验证可把旧根目录迁移为 `FletViewer/Data`、`FletViewer/Cache/files`、`FletViewer/Downloads`、`FletViewer/Temp`，并写入 `Data/.storage-layout-v1`。
+- 仍需 Android 真机覆盖升级与“清除缓存”验收，不能把桌面迁移成功等同于 Android 完成。
+- 迁移前旧布局位于同一个相对 `FletViewer/` 根目录。Windows 开发模式曾确认：旧 Data 文件在根目录、Cache 在 `FletViewer/Cache`、Downloads 在 `FletViewer/Downloads`、Temp 在 `FletViewer/Temp`。
 - Flet 打包环境会提供 `FLET_APP_STORAGE_DATA` 和 `FLET_APP_STORAGE_TEMP`。前者用于跨启动保留的应用数据，后者用于允许系统清理的缓存/临时数据；普通 `python main.py` 桌面开发环境中两者可以未设置。
 - Android 系统设置区分“清除缓存”和“清除数据”。图片、sprite 和可重建索引应进入 application cache；配置、数据库、下载任务、下载中断点和本地画廊不得随“清除缓存”删除。
 - Android APK 当前相对路径可能落在 Flet/Serious Python 的应用代码解包目录下。代码包升级时该目录可能被删除重建，因此持久业务数据必须迁移到 `FLET_APP_STORAGE_DATA` 或 `StoragePaths` 返回的 application support/documents 路径。

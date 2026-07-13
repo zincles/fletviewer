@@ -4,7 +4,7 @@ import threading
 import time
 from contextlib import contextmanager
 from typing import Callable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
@@ -18,10 +18,21 @@ DEFAULT_UA = (
 )
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif")
 EH_COOKIE_KEYS = ("ipb_member_id", "ipb_pass_hash", "igneous", "star")
+SENSITIVE_QUERY_KEYS = {"api_key", "access_token", "token", "password", "pass_hash"}
 
 
 def is_image_request_url(url: str) -> bool:
     return urlsplit(url).path.lower().endswith(IMAGE_SUFFIXES)
+
+
+def redact_url(url: str) -> str:
+    """隐藏日志 URL 中的认证参数，同时保留可排障的请求形状。"""
+    parsed = urlsplit(str(url))
+    query = urlencode([
+        (key, "<redacted>" if key.lower() in SENSITIVE_QUERY_KEYS else value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+    ])
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
 
 
 class BrowserSessionService:
@@ -227,23 +238,23 @@ class BrowserSessionService:
                 with self._timer(f"GET {url}"):
                     resp = self.session.get(url, **kwargs)
         if kwargs.get("stream"):
-            self._debug(f"GET 流式完成 状态码={resp.status_code} 最终URL={resp.url}")
+            self._debug(f"GET 流式完成 状态码={resp.status_code} 最终URL={redact_url(resp.url)}")
         elif not quiet_image or resp.status_code >= 400:
-            self._debug(f"GET 完成 状态码={resp.status_code} 字节数={len(resp.content)} 最终URL={resp.url}")
+            self._debug(f"GET 完成 状态码={resp.status_code} 字节数={len(resp.content)} 最终URL={redact_url(resp.url)}")
         return resp
 
     def post(self, url: str, **kwargs) -> requests.Response:
         with self._request_lease():
             with self._timer(f"POST {url}"):
                 resp = self.session.post(url, **kwargs)
-        self._debug(f"POST 完成 状态码={resp.status_code} 字节数={len(resp.content)} 最终URL={resp.url}")
+        self._debug(f"POST 完成 状态码={resp.status_code} 字节数={len(resp.content)} 最终URL={redact_url(resp.url)}")
         return resp
 
     def head(self, url: str, **kwargs) -> requests.Response:
         with self._request_lease():
             with self._timer(f"HEAD {url}"):
                 resp = self.session.head(url, **kwargs)
-        self._debug(f"HEAD 完成 状态码={resp.status_code} 最终URL={resp.url}")
+        self._debug(f"HEAD 完成 状态码={resp.status_code} 最终URL={redact_url(resp.url)}")
         return resp
 
     def _clear_eh_cookies_locked(self) -> None:
@@ -257,7 +268,8 @@ class BrowserSessionService:
     @contextmanager
     def _request_lease(self):
         with self._lock:
-            self.configure_from_storage()
+            # 通用 Provider/图片请求只共享代理和连接池；EH Cookie 仅由 get_eh_client 配置。
+            self.configure_proxy_from_storage()
             self._active_requests += 1
         try:
             yield

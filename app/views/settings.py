@@ -16,8 +16,10 @@ from app.storage import (
     get_theme_color,
     get_theme_mode,
     load_app_config,
+    load_booru_config,
     load_eh_config,
     save_app_config,
+    save_booru_config,
     save_eh_config,
 )
 from app.toast import show_error_toast, show_toast
@@ -117,6 +119,7 @@ class _ImageCacheSizeText(ft.Text):
 def create_view(page: ft.Page) -> ft.Control:
     """创建设置页，包含账户、显示、Linux 窗口和存储选项卡。"""
     cfg = load_eh_config()
+    booru_cfg = load_booru_config()
     app_cfg = load_app_config()
 
     fields = {}
@@ -131,6 +134,21 @@ def create_view(page: ft.Page) -> ft.Control:
         )
 
     status = ft.Text("", size=14)
+    booru_status = ft.Text("", size=14)
+    gelbooru_user_id = ft.TextField(
+        label="Gelbooru User ID",
+        value=str(booru_cfg.get("gelbooru_user_id") or ""),
+        width=450,
+        dense=True,
+    )
+    gelbooru_api_key = ft.TextField(
+        label="Gelbooru API Key",
+        value=str(booru_cfg.get("gelbooru_api_key") or ""),
+        width=450,
+        password=True,
+        can_reveal_password=True,
+        dense=True,
+    )
     display_status = ft.Text("", size=14)
     debug_status = ft.Text("", size=14)
     image_cache_size = _ImageCacheSizeText(page)
@@ -150,8 +168,12 @@ def create_view(page: ft.Page) -> ft.Control:
         value=bool(app_cfg.get("show_error_toasts", True)),
     )
     show_task_debug_overlay_switch = ft.Switch(
-        label="显示任务调试悬浮窗",
+        label="显示任务调试浮层",
         value=bool(app_cfg.get("show_task_debug_overlay", True)),
+    )
+    enable_debug_panel_switch = ft.Switch(
+        label="启用调试面板",
+        value=bool(app_cfg.get("enable_debug_panel", False)),
     )
     render_cards_switch = ft.Switch(
         label="使用JSON而非解析画廊",
@@ -288,6 +310,7 @@ def create_view(page: ft.Page) -> ft.Control:
             "load_images": load_images_switch.value,
             "show_error_toasts": show_error_toasts_switch.value,
             "show_task_debug_overlay": show_task_debug_overlay_switch.value,
+            "enable_debug_panel": enable_debug_panel_switch.value,
             "render_gallery_cards": not render_cards_switch.value,
             "theme_mode": (theme_mode_segments.selected or ["system"])[0],
             "theme_color": theme_color_dropdown.value or "adaptive",
@@ -520,6 +543,18 @@ def create_view(page: ft.Page) -> ft.Control:
         status.color = ft.Colors.PRIMARY
         page.update()
 
+    def on_save_booru(e):
+        from app.booru_session import invalidate_booru_clients
+
+        save_booru_config({
+            "gelbooru_user_id": (gelbooru_user_id.value or "").strip(),
+            "gelbooru_api_key": (gelbooru_api_key.value or "").strip(),
+        })
+        invalidate_booru_clients()
+        booru_status.value = "Gelbooru API 凭据已保存"
+        booru_status.color = ft.Colors.PRIMARY
+        page.update()
+
     image_cache_state = {"busy": False}
     clear_image_cache_button = ft.OutlinedButton("清除所有图像缓存", icon=ft.Icons.DELETE_SWEEP)
 
@@ -600,6 +635,22 @@ def create_view(page: ft.Page) -> ft.Control:
                     ],
                     spacing=16,
                 ),
+                ft.Divider(),
+                ft.Text("Gelbooru API", size=20, weight=ft.FontWeight.W_500),
+                ft.Text(
+                    "匿名访问时两项均可留空；需要认证时，Gelbooru 官方要求同时填写 User ID 和 API Key。HTTP 403 会直接报错。",
+                    size=14,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                gelbooru_user_id,
+                gelbooru_api_key,
+                ft.Row(
+                    [
+                        ft.FilledButton("保存 Gelbooru API", icon=ft.Icons.SAVE, on_click=on_save_booru),
+                        booru_status,
+                    ],
+                    spacing=16,
+                ),
             ],
             spacing=16,
             scroll=ft.ScrollMode.AUTO,
@@ -653,6 +704,9 @@ def create_view(page: ft.Page) -> ft.Control:
     )
 
     storage_layout = get_storage_layout()
+    def open_file_manager(e=None):
+        open_page("文件")
+
     storage_error = getattr(page, "fletviewer_storage_error", None)
     storage_page = ft.Container(
         padding=ft.Padding(0, 16, 0, 0),
@@ -675,6 +729,12 @@ def create_view(page: ft.Page) -> ft.Control:
                 ft.Text(f"缓存文件目录: {storage_layout.cache_files}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
                 ft.Text(f"下载目录: {storage_layout.paths.downloads}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
                 ft.Text(f"临时目录: {storage_layout.paths.temp}", size=14, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Text(
+                    "目录浏览统一走文件管理器，不再提供单独的系统“打开下载目录”入口。",
+                    size=13,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                ft.OutlinedButton("打开文件管理器", icon=ft.Icons.FOLDER_OPEN, on_click=open_file_manager),
                 ft.Divider(),
                 ft.Text("缓存维护", size=16, weight=ft.FontWeight.W_500),
                 ft.Row(
@@ -686,6 +746,46 @@ def create_view(page: ft.Page) -> ft.Control:
                     spacing=12,
                     wrap=True,
                 ),
+            ],
+            spacing=16,
+            scroll=ft.ScrollMode.AUTO,
+        ),
+    )
+
+    extras_status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
+
+    def on_extra_panel_change(e=None):
+        apply_app_settings(
+            reason="extra_panels_changed",
+            target=extras_status,
+            message="附加功能已保存。底栏面板已立即更新。",
+            update=False,
+        )
+        rebuild = getattr(page, "fletviewer_rebuild_extra_sections", None)
+        if callable(rebuild):
+            rebuild(update=True)
+        else:
+            request_update(page)
+
+    enable_debug_panel_switch.on_change = on_extra_panel_change
+
+    extras_page = ft.Container(
+        padding=ft.Padding(0, 16, 0, 0),
+        content=ft.Column(
+            [
+                ft.Text("附加功能", size=20, weight=ft.FontWeight.W_500),
+                ft.Text(
+                    "调试面板会显示在底栏“下载”和“设置”之间。默认关闭；开关后立即生效，无需重启。",
+                    size=14,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                enable_debug_panel_switch,
+                ft.Text(
+                    "调试界面：显示小图任务 active/queued/recent 诊断信息。",
+                    size=13,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                extras_status,
             ],
             spacing=16,
             scroll=ft.ScrollMode.AUTO,
@@ -725,11 +825,16 @@ def create_view(page: ft.Page) -> ft.Control:
         content=ft.Column(
             [
                 ft.Text("下载与本地画廊", size=20, weight=ft.FontWeight.W_500),
-                ft.Text("下载任务使用 task.json 灾备；Archive 完成后通过 staging 安全归档。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+                ft.Text(
+                    "下载任务和本地画廊都在应用内管理。目录浏览请使用文件管理器，不再提供单独的“打开下载目录”。",
+                    size=14,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
                 ft.Row(
                     [
-                        ft.FilledButton("打开下载", icon=ft.Icons.DOWNLOAD, on_click=lambda e: open_page("下载")),
+                        ft.FilledButton("打开下载任务", icon=ft.Icons.DOWNLOAD, on_click=lambda e: open_page("下载")),
                         ft.OutlinedButton("打开本地画廊", icon=ft.Icons.FOLDER, on_click=lambda e: open_page("本地画廊")),
+                        ft.OutlinedButton("打开文件管理器", icon=ft.Icons.FOLDER_OPEN, on_click=open_file_manager),
                     ],
                     spacing=12,
                     wrap=True,
@@ -850,6 +955,7 @@ def create_view(page: ft.Page) -> ft.Control:
             "系统与维护",
             [
                 ("storage", "存储与维护", "四域路径、存储状态和缓存清理。", ft.Icons.STORAGE, storage_page),
+                ("extras", "附加功能", "底栏调试面板开关。", ft.Icons.EXTENSION, extras_page),
                 ("linux-window", "平台与窗口", "Linux 标题栏、窗口后端和平台能力。", ft.Icons.DESKTOP_WINDOWS, linux_window_page),
             ],
         ),
@@ -965,6 +1071,23 @@ def create_view(page: ft.Page) -> ft.Control:
         [
             ft.Text("设置", size=28, weight=ft.FontWeight.BOLD),
             ft.Text("按使用场景管理账户、阅读、网络、下载、通知、存储与平台能力。", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+            ft.Container(
+                content=ft.ListTile(
+                    leading=ft.Icon(ft.Icons.EXTENSION, color=ft.Colors.PRIMARY),
+                    title=ft.Text("附加功能", weight=ft.FontWeight.W_600),
+                    subtitle=ft.Text("启用底栏调试面板", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                    trailing=ft.Icon(ft.Icons.CHEVRON_RIGHT),
+                    on_click=lambda e: open_settings_page(
+                        "extras",
+                        "附加功能",
+                        ft.Icons.EXTENSION,
+                        extras_page,
+                    ),
+                ),
+                bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                border_radius=14,
+                border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+            ),
             *[
                 settings_group(
                     group_title,

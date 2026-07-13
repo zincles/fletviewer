@@ -289,16 +289,16 @@ def create_view(page: ft.Page) -> ft.Control:
         )
         page.update()
 
-    def open_downloads(e):
+    def open_file_manager(e):
         render_label = getattr(page, "fletviewer_render_label", None)
         if callable(render_label):
-            render_label("下载")
+            render_label("文件")
 
     refresh_btn = ft.Button("刷新", icon=ft.Icons.REFRESH, on_click=lambda e: show_list(force=True))
-    downloads_btn = ft.Button("下载", icon=ft.Icons.DOWNLOAD, on_click=open_downloads)
+    files_btn = ft.Button("文件", icon=ft.Icons.FOLDER_OPEN, on_click=open_file_manager)
     root = ft.Column(
         [
-            ft.Row([downloads_btn, refresh_btn], alignment=ft.MainAxisAlignment.END),
+            ft.Row([files_btn, refresh_btn], alignment=ft.MainAxisAlignment.END),
             status,
             ft.Divider(),
             content,
