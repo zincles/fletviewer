@@ -245,6 +245,7 @@ def create_gallery_cards_view(
                 on_item_click=open_masonry_item,
                 spacing=0,
                 on_error=show_masonry_error,
+                loading_source=f"gallery:{title}",
             )
             set_refresh_action = getattr(page, "fletviewer_set_reading_refresh_action", None)
             if callable(set_refresh_action):

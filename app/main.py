@@ -36,7 +36,7 @@ from app.controls.persistent_tabs import PersistentTabSpec, PersistentTabView
 from app.debug_log import configure_logging, format_duration_ms, log_debug, log_exception
 from app.local_gallery_manager import local_gallery_manager
 from app.image_results import image_result_pump
-from app.navigation import AppNavigator
+from app.navigation import AppNavigator, reading_label_for_index
 from app.notifications import Notification, notifier
 from app.storage import (
     load_app_config,
@@ -149,6 +149,7 @@ def _default_reading_label(provider: str) -> str:
     if provider == "booru":
         return "Safebooru"
     return "主页"
+
 
 def _is_linux_desktop(page: ft.Page) -> bool:
     """判断当前是否为 Linux 桌面端。"""
@@ -329,6 +330,7 @@ def main(page: ft.Page):
     root_tabs_ref: dict[str, ft.Tabs | None] = {"value": None}
     root_tabs_syncing = {"value": False}
     reading_tabs_ref: dict[str, PersistentTabView | None] = {"value": None}
+    reading_tab_controller_ref: dict[str, ft.Tabs | None] = {"value": None}
     reading_tabs_syncing = {"value": False}
     reading_content_host: ft.Container | None = None
     reading_speed_dial_state = {"open": False}
@@ -394,7 +396,11 @@ def main(page: ft.Page):
         reading_tabs_syncing["value"] = True
         tabs.select(label, notify=False)
         if label in tabs.keys:
-            reading_tab_bar.selected_index = tabs.keys.index(label)
+            selected_index = tabs.keys.index(label)
+            reading_tab_bar.selected_index = selected_index
+            controller = reading_tab_controller_ref.get("value")
+            if controller is not None:
+                controller.selected_index = selected_index
         reading_tabs_syncing["value"] = False
 
     def set_reading_tab_content(label: str, control: ft.Control) -> None:
@@ -916,6 +922,9 @@ def main(page: ft.Page):
         reading_indexes = nav_state["reading_indexes"]
         pages = nav_state["pages"]
         reading_tab_bar.tabs = [ft.Tab(label=pages[idx][0]) for idx in reading_indexes]
+        reading_controller = reading_tab_controller_ref.get("value")
+        if reading_controller is not None:
+            reading_controller.length = max(1, len(reading_indexes))
         tabs = reading_tabs_ref.get("value")
         if tabs is not None:
             tabs.set_tabs(
@@ -1236,10 +1245,14 @@ def main(page: ft.Page):
         if reading_tabs_syncing["value"]:
             return
         selected_index = int(getattr(e.control, "selected_index", 0) or 0)
-        reading_indexes = nav_state["reading_indexes"]
-        if selected_index < 0 or selected_index >= len(reading_indexes):
+        label = reading_label_for_index(
+            nav_state["pages"],
+            nav_state["reading_indexes"],
+            selected_index,
+        )
+        if label is None:
             return
-        render(reading_indexes[selected_index])
+        render_label(label)
 
     reading_tab_bar = ft.TabBar(
         tabs=[ft.Tab(label=nav_state["pages"][idx][0]) for idx in nav_state["reading_indexes"]],
@@ -1247,7 +1260,6 @@ def main(page: ft.Page):
         divider_color=ft.Colors.TRANSPARENT,
         indicator_thickness=3,
         label_padding=ft.Padding(14, 0, 14, 0),
-        on_click=on_reading_tabs_change,
     )
     reading_loading_indicator = ft.ProgressBar(
         value=None,
@@ -1344,7 +1356,14 @@ def main(page: ft.Page):
         content=ft.Stack([reading_tabs, top_bar, reading_speed_dial], expand=True),
         expand=True,
     )
-    reading_section = reading_content_host
+    reading_section = ft.Tabs(
+        content=reading_content_host,
+        length=max(1, len(nav_state["reading_indexes"])),
+        selected_index=0,
+        on_change=on_reading_tabs_change,
+        expand=True,
+    )
+    reading_tab_controller_ref["value"] = reading_section
     local_tabs_ref: dict[str, PersistentTabView | None] = {"value": None}
     local_tabs = PersistentTabView(
         [

@@ -76,6 +76,7 @@ def create_provider_view(page: ft.Page, provider_id: str) -> ft.Control:
         on_item_click=open_image,
         on_items_changed=update_viewer_items,
         on_error=show_error,
+        loading_source=f"booru:{provider_id}",
     )
 
     def search(query: str | None = None, **_kwargs) -> None:

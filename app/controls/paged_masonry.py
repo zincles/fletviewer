@@ -31,6 +31,7 @@ class PagedMasonryView(ft.Container, Generic[ItemT, CursorT]):
         empty_text: str = "没有可显示的内容",
         on_items_changed: Callable[[list[ItemT]], None] | None = None,
         on_error: Callable[[Exception], None] | None = None,
+        loading_source: str | None = None,
         autoload: bool = True,
     ) -> None:
         super().__init__(expand=True, padding=padding)
@@ -39,6 +40,7 @@ class PagedMasonryView(ft.Container, Generic[ItemT, CursorT]):
         self._item_key = item_key
         self._on_items_changed = on_items_changed
         self._on_error = on_error
+        self._loading_source = loading_source or f"paged-masonry:{id(self)}"
         self.state: PagedFeedState[ItemT, CursorT] = PagedFeedState()
 
         columns = runs_count_for_width(page.width, min_columns=2, max_columns=10)
@@ -104,6 +106,10 @@ class PagedMasonryView(ft.Container, Generic[ItemT, CursorT]):
         request = self.state.begin(cursor, replace=replace)
         if request is None:
             return
+        loading_source = f"{self._loading_source}:{request.generation}:{id(request)}"
+        set_reading_loading = getattr(self._page, "fletviewer_set_reading_loading", None)
+        if callable(set_reading_loading):
+            set_reading_loading(loading_source, True)
         if replace:
             self.image_list.set_items([])
             self.empty.visible = False
@@ -140,6 +146,8 @@ class PagedMasonryView(ft.Container, Generic[ItemT, CursorT]):
                     self._on_error(ex)
             finally:
                 self.load_more_button.disabled = self.state.loading or self.state.next_cursor is None
+                if callable(set_reading_loading):
+                    set_reading_loading(loading_source, False)
                 request_update(self._page)
 
         self._page.run_thread(worker)

@@ -31,10 +31,17 @@ class PersistentTabView(ft.Column):
         self._built: dict[str, ft.Control] = {}
         self._on_change = on_change
         self.selected_key = ""
-        self.tab_bar = ft.TabBar(tabs=[], on_click=self._handle_tab_click, **(tab_bar_kwargs or {}))
+        self.tab_bar = ft.TabBar(tabs=[], **(tab_bar_kwargs or {}))
         self.tab_bar.visible = show_tab_bar
         self.content_stack = ft.Stack([], expand=True)
-        super().__init__([self.tab_bar, self.content_stack], spacing=0, expand=True)
+        self.tabs_controller = ft.Tabs(
+            content=ft.Column([self.tab_bar, self.content_stack], spacing=0, expand=True),
+            length=max(1, len(tabs)),
+            selected_index=0,
+            on_change=self._handle_tabs_change,
+            expand=True,
+        )
+        super().__init__([self.tabs_controller], spacing=0, expand=True)
         self.set_tabs(tabs, selected_key=selected_key)
 
     @property
@@ -55,6 +62,7 @@ class PersistentTabView(ft.Column):
                 self._built[spec.key] = old_built[spec.key]
         self.content_stack.controls = list(self._hosts.values())
         self.tab_bar.tabs = [ft.Tab(label=spec.label) for spec in tabs]
+        self.tabs_controller.length = max(1, len(tabs))
         target = selected_key if selected_key in self._spec_by_key else (tabs[0].key if tabs else "")
         if target:
             self.select(target, notify=False)
@@ -70,6 +78,7 @@ class PersistentTabView(ft.Column):
             self._hosts[key].content = control
         self.selected_key = key
         selected_index = self.keys.index(key)
+        self.tabs_controller.selected_index = selected_index
         self.tab_bar.selected_index = selected_index
         for host_key, host in self._hosts.items():
             selected = host_key == key
@@ -95,7 +104,7 @@ class PersistentTabView(ft.Column):
         if host is not None:
             host.content = None
 
-    def _handle_tab_click(self, e) -> None:
+    def _handle_tabs_change(self, e) -> None:
         index = int(getattr(e.control, "selected_index", 0) or 0)
         if 0 <= index < len(self._specs):
             self.select(self._specs[index].key)

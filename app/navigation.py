@@ -7,6 +7,16 @@ import flet as ft
 from app.debug_log import log_debug, log_exception
 
 
+def reading_label_for_index(pages, reading_indexes: list[int], selected_index: int) -> str | None:
+    """Resolve a reading-local tab index without exposing the global page index."""
+    if selected_index < 0 or selected_index >= len(reading_indexes):
+        return None
+    page_index = reading_indexes[selected_index]
+    if page_index < 0 or page_index >= len(pages):
+        return None
+    return pages[page_index][0]
+
+
 @dataclass(slots=True)
 class ViewEntry:
     route: str

@@ -6,6 +6,13 @@ from app.controls.persistent_tabs import PersistentTabSpec, PersistentTabView
 
 
 class PersistentTabViewTests(unittest.TestCase):
+    def test_uses_an_isolated_tabs_controller(self) -> None:
+        tabs = PersistentTabView([PersistentTabSpec("a", "A", lambda: ft.Text("A"))])
+
+        self.assertIsInstance(tabs.tabs_controller, ft.Tabs)
+        self.assertIs(tabs.controls[0], tabs.tabs_controller)
+        self.assertIs(tabs.tabs_controller.content.controls[0], tabs.tab_bar)
+
     def test_tabs_are_lazy_and_keep_built_controls(self):
         built = []
 
