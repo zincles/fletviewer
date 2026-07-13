@@ -32,6 +32,7 @@ import flet as ft
 
 from app.browser_session import browser_session
 from app.controls.task_debug_overlay import TaskDebugOverlay
+from app.controls.persistent_tabs import PersistentTabSpec, PersistentTabView
 from app.debug_log import configure_logging, format_duration_ms, log_debug, log_exception
 from app.local_gallery_manager import local_gallery_manager
 from app.image_results import image_result_pump
@@ -327,9 +328,8 @@ def main(page: ft.Page):
     bottom_nav_indicator_ref: dict[str, ft.Container | None] = {"value": None}
     root_tabs_ref: dict[str, ft.Tabs | None] = {"value": None}
     root_tabs_syncing = {"value": False}
-    reading_tabs_ref: dict[str, ft.Tabs | None] = {"value": None}
+    reading_tabs_ref: dict[str, PersistentTabView | None] = {"value": None}
     reading_tabs_syncing = {"value": False}
-    reading_tab_pages: list[ft.Container] = []
     reading_content_host: ft.Container | None = None
     reading_speed_dial_state = {"open": False}
     bottom_nav_for_page = {
@@ -391,35 +391,21 @@ def main(page: ft.Page):
         tabs = reading_tabs_ref.get("value")
         if tabs is None:
             return
-        pages = nav_state["pages"]
-        reading_indexes = nav_state["reading_indexes"]
-        try:
-            target_index = [pages[idx][0] for idx in reading_indexes].index(label)
-        except ValueError:
-            return
-        if tabs.selected_index != target_index:
-            reading_tabs_syncing["value"] = True
-            tabs.selected_index = target_index
-            reading_tabs_syncing["value"] = False
+        reading_tabs_syncing["value"] = True
+        tabs.select(label, notify=False)
+        if label in tabs.keys:
+            reading_tab_bar.selected_index = tabs.keys.index(label)
+        reading_tabs_syncing["value"] = False
 
     def set_reading_tab_content(label: str, control: ft.Control) -> None:
         """让阅读 Tab 持续持有自己的控件树，切换时不卸载和重绘。"""
-        pages = nav_state["pages"]
-        reading_indexes = nav_state["reading_indexes"]
-        try:
-            target_index = [pages[idx][0] for idx in reading_indexes].index(label)
-        except ValueError:
-            return
-        holder = reading_tab_pages[target_index]
-        if holder.content is not control:
-            holder.content = control
+        tabs = reading_tabs_ref.get("value")
+        if tabs is not None and tabs.control_for(label) is not control:
+            tabs.set_control(label, control)
 
     def show_shared_reading_content() -> None:
         """让非持久阅读入口使用当前阅读 Tab 的共享内容宿主。"""
-        tabs = reading_tabs_ref.get("value")
-        selected_index = int(getattr(tabs, "selected_index", 0) or 0)
-        if 0 <= selected_index < len(reading_tab_pages):
-            reading_tab_pages[selected_index].content = content
+        return
 
     def set_header(title: str, subtitle: str = "") -> None:
         return
@@ -608,11 +594,12 @@ def main(page: ft.Page):
             if key.startswith("page:"):
                 try:
                     page_index = int(key.split(":", 1)[1])
-                    reading_index = nav_state["reading_indexes"].index(page_index)
                 except (ValueError, IndexError):
                     continue
-                if reading_index < len(reading_tab_pages):
-                    reading_tab_pages[reading_index].content = None
+                if 0 <= page_index < len(nav_state["pages"]):
+                    tabs = reading_tabs_ref.get("value")
+                    if tabs is not None:
+                        tabs.clear_control(nav_state["pages"][page_index][0])
 
     page.fletviewer_invalidate_views = invalidate_views
 
@@ -718,7 +705,7 @@ def main(page: ft.Page):
             set_header(label, subtitle)
             set_header_actions([])
             if local_tabs_ref.get("value") is not None:
-                local_tabs_ref["value"].selected_index = 0
+                local_tabs_ref["value"].select("画廊")
             activate_root_section("本地")
             log_debug("导航", f"切换至本地主分区 耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
             return
@@ -738,7 +725,7 @@ def main(page: ft.Page):
             set_header("本地", "四域存储与本地画廊")
             set_header_actions([])
             if local_tabs_ref.get("value") is not None:
-                local_tabs_ref["value"].selected_index = 1
+                local_tabs_ref["value"].select("文件")
             activate_root_section("本地")
             return
         if label == "调试" and label in nav_state["section_indexes"]:
@@ -806,7 +793,7 @@ def main(page: ft.Page):
             set_header("本地", "四域存储与本地画廊")
             set_header_actions([])
             if local_tabs_ref.get("value") is not None:
-                local_tabs_ref["value"].selected_index = 1
+                local_tabs_ref["value"].select("文件")
             activate_root_section("本地")
             return
         for idx, (page_label, _subtitle, _icon, _view_fn) in enumerate(nav_state["pages"]):
@@ -928,20 +915,20 @@ def main(page: ft.Page):
         # 重建阅读 Tab 标题与页面槽位
         reading_indexes = nav_state["reading_indexes"]
         pages = nav_state["pages"]
-        reading_tab_pages[:] = [
-            ft.Container(expand=True, padding=ft.Padding(0, 8, 0, 0)) for _idx in reading_indexes
-        ]
         reading_tab_bar.tabs = [ft.Tab(label=pages[idx][0]) for idx in reading_indexes]
         tabs = reading_tabs_ref.get("value")
         if tabs is not None:
-            tabs.length = len(reading_indexes)
-            tabs.selected_index = 0
-            # TabBarView 需要同步控件数量
-            if isinstance(tabs.content, ft.Stack) and tabs.content.controls:
-                for control in tabs.content.controls:
-                    if isinstance(control, ft.TabBarView):
-                        control.controls = reading_tab_pages
-                        break
+            tabs.set_tabs(
+                [
+                    PersistentTabSpec(
+                        pages[idx][0],
+                        pages[idx][0],
+                        lambda: ft.Container(expand=True),
+                    )
+                    for idx in reading_indexes
+                ],
+                selected_key=_default_reading_label(provider),
+            )
 
         if top_search_hint_ref.get("value") is not None:
             top_search_hint_ref["value"].hint_text = (
@@ -1254,14 +1241,13 @@ def main(page: ft.Page):
             return
         render(reading_indexes[selected_index])
 
-    reading_tab_pages[:] = [ft.Container(expand=True, padding=ft.Padding(0, 8, 0, 0)) for _idx in nav_state["reading_indexes"]]
-
     reading_tab_bar = ft.TabBar(
         tabs=[ft.Tab(label=nav_state["pages"][idx][0]) for idx in nav_state["reading_indexes"]],
         divider_height=0,
         divider_color=ft.Colors.TRANSPARENT,
         indicator_thickness=3,
         label_padding=ft.Padding(14, 0, 14, 0),
+        on_click=on_reading_tabs_change,
     )
     reading_loading_indicator = ft.ProgressBar(
         value=None,
@@ -1341,46 +1327,39 @@ def main(page: ft.Page):
         bottom=92,
     )
 
-    reading_tabs = ft.Tabs(
-        content=ft.Stack(
-            controls=[
-                ft.TabBarView(
-                    controls=reading_tab_pages,
-                    expand=True,
-                ),
-                top_bar,
-                reading_speed_dial,
-            ],
-            expand=True,
-        ),
-        length=len(nav_state["reading_indexes"]),
-        selected_index=0,
-        animation_duration=160,
-        on_change=on_reading_tabs_change,
-        expand=True,
+    reading_tabs = PersistentTabView(
+        [
+            PersistentTabSpec(
+                nav_state["pages"][idx][0],
+                nav_state["pages"][idx][0],
+                lambda: ft.Container(expand=True),
+            )
+            for idx in nav_state["reading_indexes"]
+        ],
+        selected_key=active_page_label["value"],
+        show_tab_bar=False,
     )
     reading_tabs_ref["value"] = reading_tabs
-    reading_content_host = ft.Container(content=reading_tabs, expand=True)
-    reading_section = reading_content_host
-    local_tabs_ref = {"value": None}
-    local_tabs = ft.Tabs(
-        content=ft.Column(
-            [
-                ft.TabBar(tabs=[ft.Tab(label="画廊"), ft.Tab(label="文件")]),
-                ft.TabBarView(
-                    controls=[
-                        ft.Container(content=local_galleries_view(page), expand=True, padding=ft.Padding(8, 8, 8, 86)),
-                        ft.Container(content=file_manager_view(page), expand=True, padding=ft.Padding(8, 8, 8, 86)),
-                    ],
-                    expand=True,
-                ),
-            ],
-            spacing=0,
-            expand=True,
-        ),
-        length=2,
-        selected_index=0,
+    reading_content_host = ft.Container(
+        content=ft.Stack([reading_tabs, top_bar, reading_speed_dial], expand=True),
         expand=True,
+    )
+    reading_section = reading_content_host
+    local_tabs_ref: dict[str, PersistentTabView | None] = {"value": None}
+    local_tabs = PersistentTabView(
+        [
+            PersistentTabSpec(
+                "画廊",
+                "画廊",
+                lambda: ft.Container(content=local_galleries_view(page), expand=True, padding=ft.Padding(8, 8, 8, 86)),
+            ),
+            PersistentTabSpec(
+                "文件",
+                "文件",
+                lambda: ft.Container(content=file_manager_view(page), expand=True, padding=ft.Padding(8, 8, 8, 86)),
+            ),
+        ],
+        selected_key="画廊",
     )
     local_tabs_ref["value"] = local_tabs
     local_section = ft.Stack(

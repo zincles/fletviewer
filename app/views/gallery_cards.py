@@ -5,6 +5,7 @@ import flet as ft
 
 from app.controls.async_image import async_image
 from app.controls.masonry_gallery import MasonryGallery, MasonryItem
+from app.controls.paged_masonry import PagedMasonryView
 from app.browser_session import browser_session
 from app.debug_log import Timer, log_debug, log_exception
 from app.gallery_type_colors import gallery_type_color, gallery_type_foreground
@@ -22,6 +23,7 @@ from app.storage import (
 from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
 from core.provider.ehgrabber import EHentaiClient, Comic, SearchResult
+from core.paged_feed import PageBatch
 
 
 LANGUAGE_CODES = {
@@ -214,6 +216,41 @@ def create_gallery_cards_view(
     """创建可复用的在线画廊卡片列表页面工厂。"""
     def factory(page: ft.Page) -> ft.Control:
         """创建具体页面实例，并注册自适应列数 resize handler。"""
+        view_mode = get_gallery_view_mode()
+        if view_mode == "masonry":
+            def load_masonry_page(cursor: str | None) -> PageBatch[Comic, str]:
+                cfg = load_eh_config()
+                if needs_login and (not cfg.get("ipb_member_id") or not cfg.get("ipb_pass_hash")):
+                    raise RuntimeError("请先在账户页填写凭据")
+                client = browser_session.get_eh_client(require_login=needs_login)
+                with Timer("画廊", f"{title} 执行瀑布流加载 页面URL={cursor}"):
+                    result = load_fn(client, cursor)
+                return PageBatch(result.comics, result.next_url)
+
+            def show_masonry_error(ex: Exception) -> None:
+                show_error_toast(page, f"{title}加载失败", ex)
+                log_exception("画廊列表", f"{title} 瀑布流加载失败：{ex}")
+
+            def open_masonry_item(comic: Comic, _index: int) -> None:
+                open_detail = getattr(page, "fletviewer_open_gallery_detail", None)
+                if callable(open_detail):
+                    open_detail(comic)
+
+            masonry_view = PagedMasonryView[Comic, str](
+                page,
+                load_page=load_masonry_page,
+                build_image=lambda comic, _index: ft.Card(content=_gallery_cover(page, comic)),
+                item_key=lambda comic: comic.id,
+                aspect_ratio=lambda comic: comic.cover_aspect_ratio,
+                on_item_click=open_masonry_item,
+                spacing=0,
+                on_error=show_masonry_error,
+            )
+            set_refresh_action = getattr(page, "fletviewer_set_reading_refresh_action", None)
+            if callable(set_refresh_action):
+                set_refresh_action(masonry_view.reload)
+            return masonry_view
+
         grid_spacing = 0
         list_view = ft.ListView(
             expand=True,
@@ -239,7 +276,6 @@ def create_gallery_cards_view(
             "requested_urls": set(),
             "loading": False,
         }
-        view_mode = get_gallery_view_mode()
         column_state = {"value": runs_count_for_width(page.width, min_columns=2, max_columns=10)}
         masonry_gallery = MasonryGallery(column_count=column_state["value"], spacing=grid_spacing)
 

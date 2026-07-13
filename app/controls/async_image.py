@@ -33,8 +33,8 @@ def image_placeholder(width=None, height=None, *, loading: bool = False) -> ft.C
     )
 
 
-class _AsyncImage(ft.Container):
-    """挂载后才启动加载，卸载后丢弃后台结果。"""
+class CachedNetworkImage(ft.Container):
+    """带磁盘缓存、进度、取消/重试与挂载生命周期的网络图片控件。"""
 
     def __init__(
         self,
@@ -266,6 +266,10 @@ class _AsyncImage(ft.Container):
         return True
 
 
+# 迁移期兼容内部测试和旧调用；新代码使用 CachedNetworkImage。
+_AsyncImage = CachedNetworkImage
+
+
 def async_image(
     page: ft.Page,
     url: str | None,
@@ -287,7 +291,7 @@ def async_image(
     if not url:
         log_debug("异步图像", "URL 为空")
         return image_placeholder(width, height)
-    return _AsyncImage(
+    return CachedNetworkImage(
         page,
         url,
         width=width,
