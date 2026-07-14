@@ -61,6 +61,7 @@ from app.views.gallery_detail import create_view as gallery_detail_view
 from app.views.image_viewer import create_view as image_viewer_view
 from app.views.search import SearchContext, create_view as search_view
 from core.provider.ehgrabber import SearchResult
+from core.provider.booru import BOORU_PROVIDER_SPECS
 from app.views.settings import create_view as settings_view
 from app.views.history import create_view as history_view
 from app.history import record_gallery_history
@@ -133,21 +134,32 @@ def _pixiv_reading_labels():
 
 def _booru_reading_pages():
     return [
-        ("Safebooru", "Safebooru 标签搜索", ft.Icons.IMAGE_SEARCH, booru_pages.create_safebooru_view),
-        ("Gelbooru", "Gelbooru 标签搜索", ft.Icons.IMAGE_SEARCH, booru_pages.create_gelbooru_view),
-        ("Danbooru", "Danbooru 标签搜索", ft.Icons.IMAGE_SEARCH, booru_pages.create_danbooru_view),
+        (
+            _booru_tab_label(spec.id),
+            f"{spec.display_name} 标签搜索",
+            ft.Icons.IMAGE_SEARCH,
+            booru_pages.provider_view_factory(spec.id),
+        )
+        for spec in BOORU_PROVIDER_SPECS.values()
     ]
 
 
+def _booru_tab_label(provider_id: str) -> str:
+    spec = BOORU_PROVIDER_SPECS[provider_id]
+    if provider_id in {"danbooru", "konachan"}:
+        return f"{spec.display_name}（CF 拦截）"
+    return spec.display_name
+
+
 def _booru_reading_labels():
-    return {"Safebooru", "Gelbooru", "Danbooru"}
+    return {_booru_tab_label(provider_id) for provider_id in BOORU_PROVIDER_SPECS}
 
 
 def _default_reading_label(provider: str) -> str:
     if provider == "pixiv":
         return "推荐"
     if provider == "booru":
-        return "Safebooru"
+        return next(iter(BOORU_PROVIDER_SPECS.values())).display_name
     return "主页"
 
 
@@ -279,11 +291,12 @@ def main(page: ft.Page):
     saved_booru_provider = str(app_config.get("active_booru_provider") or "gelbooru")
     if saved_provider not in {"ehentai", "pixiv", "booru"}:
         saved_provider = "ehentai"
-    if saved_booru_provider not in {"safebooru", "gelbooru", "danbooru"}:
+    if saved_booru_provider not in BOORU_PROVIDER_SPECS:
         saved_booru_provider = "gelbooru"
     active_page_label = {"value": _default_reading_label(saved_provider)}
     top_search_hint_ref: dict[str, ft.TextField | None] = {"value": None}
     page.fletviewer_booru_search_actions = {}
+    page.fletviewer_pixiv_search_actions = {}
     nav_state = {
         "provider": saved_provider,
         "booru_provider": saved_booru_provider,
@@ -874,6 +887,11 @@ def main(page: ft.Page):
             if callable(action):
                 action(top_search_field.value or "")
             return
+        if nav_state.get("provider") == "pixiv":
+            action = page.fletviewer_pixiv_search_actions.get(active_page_label["value"])
+            if callable(action):
+                action(top_search_field.value or "")
+            return
         open_search_view(e)
 
     top_search_field = ft.TextField(
@@ -894,7 +912,6 @@ def main(page: ft.Page):
         return {
             "ehentai": "E-Hentai",
             "pixiv": "Pixiv",
-            "exhentai": "ExHentai",
             "booru": "Booru",
         }.get(key, key)
 
@@ -959,26 +976,9 @@ def main(page: ft.Page):
 
     def show_account_summary(e=None) -> None:
         """账户摘要 + Provider 切换入口。"""
-        logged_in = browser_session.login_status_level() in {"ok", "pending"}
-        value = "待同步" if logged_in else "--"
         current = active_provider["value"]
-
-        def metric(label: str, icon) -> ft.Control:
-            return ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Icon(icon, size=20, color=ft.Colors.PRIMARY),
-                        ft.Text(value, size=16, weight=ft.FontWeight.BOLD),
-                        ft.Text(label, size=11, color=ft.Colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER),
-                    ],
-                    spacing=4,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                width=112,
-                padding=10,
-                border_radius=14,
-                bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
-            )
+        balance_status = ft.Text("GP/Credit 尚未读取", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        archive_capacity_status = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
 
         def provider_tile(key: str, title: str, subtitle: str, icon, *, enabled: bool = True) -> ft.Control:
             selected = current == key
@@ -995,7 +995,42 @@ def main(page: ft.Page):
                 on_click=(lambda e, provider=key: apply_provider(provider)) if enabled else None,
             )
 
-        # TODO: 在 core provider 增加账户资产接口，填充 GP、Credit、HatH 和每周免费归档配额。
+        def refresh_balance(_event=None) -> None:
+            balance_status.value = "正在读取 GP/Credit..."
+            balance_status.color = ft.Colors.ON_SURFACE_VARIANT
+            request_update(page)
+
+            def worker():
+                try:
+                    balance = browser_session.get_eh_client(require_login=True).get_account_balance()
+                    balance_status.value = (
+                        f"GP {balance.gallery_points:,} · Credit {balance.credits:,} · Hath {balance.hath:,.2f}"
+                    )
+                    capacity_gib = balance.paid_archive_capacity_mib / 1024
+                    archive_capacity_status.value = (
+                        f"免费归档周配额 {balance.free_archive_quota_gb:g} GB（168h 滑动窗口） · "
+                        f"仅 GP 按 20 GP/MiB 可支付约 {capacity_gib:,.1f} GiB\n"
+                        f"约 {balance.estimated_gallery_count(100):,} 本 100 MiB / "
+                        f"{balance.estimated_gallery_count(250):,} 本 250 MiB / "
+                        f"{balance.estimated_gallery_count(500):,} 本 500 MiB"
+                    )
+                    balance_status.color = ft.Colors.PRIMARY
+                    archive_capacity_status.color = ft.Colors.ON_SURFACE_VARIANT
+                except Exception as ex:
+                    balance_status.value = "GP/Credit 读取失败；请确认 EH Cookie 有效"
+                    archive_capacity_status.value = ""
+                    balance_status.color = ft.Colors.ERROR
+                    log_exception("EH 账户", f"读取 GP/Credit 失败：{ex}")
+                request_update(page)
+
+            page.run_thread(worker)
+
+        def open_exchange(url: str) -> None:
+            try:
+                page.launch_url(url, web_popup_window_name=ft.UrlTarget.BLANK)
+            except Exception as ex:
+                log_exception("EH 账户", f"打开 Exchange 失败：{ex}")
+
         dialog = ft.AlertDialog(
             content=ft.Container(
                 content=ft.Column(
@@ -1004,44 +1039,49 @@ def main(page: ft.Page):
                             [ft.IconButton(ft.Icons.CLOSE, tooltip="关闭", on_click=lambda event: page.pop_dialog())],
                             alignment=ft.MainAxisAlignment.START,
                         ),
-                        ft.Container(
-                            content=ft.Icon(ft.Icons.PERSON, size=54, color=ft.Colors.ON_PRIMARY_CONTAINER),
-                            width=96,
-                            height=96,
-                            border_radius=999,
-                            bgcolor=ft.Colors.PRIMARY_CONTAINER,
-                            alignment=ft.Alignment(0, 0),
-                        ),
-                        ft.Text(
-                            browser_session.login_status_text(),
-                            size=14,
-                            color=ft.Colors.ON_SURFACE_VARIANT,
-                            text_align=ft.TextAlign.CENTER,
-                        ),
-                        ft.Text(f"当前平台：{provider_label(current)}", size=13, weight=ft.FontWeight.W_600),
                         ft.Row(
                             [
-                                metric("GP", ft.Icons.PAID),
-                                metric("Credit", ft.Icons.ACCOUNT_BALANCE_WALLET),
-                                metric("HatH", ft.Icons.DNS),
-                                metric("每周免费归档", ft.Icons.INVENTORY_2),
+                                ft.Icon(ft.Icons.ACCOUNT_CIRCLE, size=26, color=ft.Colors.PRIMARY),
+                                ft.Column(
+                                    [
+                                        ft.Text(browser_session.login_status_text(), size=14, weight=ft.FontWeight.W_600),
+                                        ft.Text(f"当前平台：{provider_label(current)}", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                ft.IconButton(ft.Icons.REFRESH, tooltip="刷新 GP/Credit", on_click=refresh_balance),
                             ],
                             spacing=8,
-                            run_spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        balance_status,
+                        archive_capacity_status,
+                        ft.Row(
+                            [
+                                ft.OutlinedButton(
+                                    "GP Exchange",
+                                    icon=ft.Icons.CURRENCY_EXCHANGE,
+                                    on_click=lambda _event: open_exchange("https://e-hentai.org/exchange.php?t=gp"),
+                                ),
+                                ft.OutlinedButton(
+                                    "Hath Exchange",
+                                    icon=ft.Icons.OPEN_IN_NEW,
+                                    on_click=lambda _event: open_exchange("https://e-hentai.org/exchange.php"),
+                                ),
+                            ],
+                            spacing=8,
                             wrap=True,
-                            alignment=ft.MainAxisAlignment.CENTER,
                         ),
                         ft.Text(
-                            "登录后可查看账户资产。" if not logged_in else "账户资产接口尚未接入。",
-                            size=12,
+                            "仅在系统浏览器中打开 Exchange；查看汇率和兑换均由用户手动完成。",
+                            size=11,
                             color=ft.Colors.ON_SURFACE_VARIANT,
-                            text_align=ft.TextAlign.CENTER,
                         ),
                         ft.Divider(),
                         ft.Text("切换平台", size=14, weight=ft.FontWeight.W_600),
                         provider_tile("ehentai", "E-Hentai", "EH 画廊浏览", ft.Icons.PUBLIC, enabled=True),
                         provider_tile("pixiv", "Pixiv", "主页骨架已就绪", ft.Icons.BRUSH, enabled=True),
-                        provider_tile("exhentai", "ExHentai", "尚未实现", ft.Icons.LOCK_OUTLINE, enabled=False),
                         provider_tile("booru", "Booru", "多站点 Provider 骨架", ft.Icons.IMAGE_SEARCH, enabled=True),
                     ],
                     spacing=10,
@@ -1050,7 +1090,7 @@ def main(page: ft.Page):
                     scroll=ft.ScrollMode.AUTO,
                 ),
                 width=500,
-                height=560,
+                height=450,
             ),
             content_padding=ft.Padding(8, 8, 8, 20),
         )
@@ -1549,7 +1589,7 @@ def main(page: ft.Page):
 
     navigator.set_root_view(ft.View(route="/", controls=[root], padding=0))
     initial_label = (
-        saved_booru_provider.capitalize()
+        _booru_tab_label(saved_booru_provider)
         if saved_provider == "booru"
         else _default_reading_label(saved_provider)
     )

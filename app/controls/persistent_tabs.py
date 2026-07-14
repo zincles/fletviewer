@@ -56,7 +56,12 @@ class PersistentTabView(ft.Column):
         self._hosts = {}
         self._built = {}
         for spec in tabs:
-            host = old_hosts.get(spec.key) or ft.Container(expand=True, visible=False, ignore_interactions=True)
+            host = old_hosts.get(spec.key) or ft.Container(
+                expand=True,
+                visible=True,
+                opacity=0.0,
+                ignore_interactions=True,
+            )
             self._hosts[spec.key] = host
             if spec.key in old_built:
                 self._built[spec.key] = old_built[spec.key]
@@ -82,7 +87,10 @@ class PersistentTabView(ft.Column):
         self.tab_bar.selected_index = selected_index
         for host_key, host in self._hosts.items():
             selected = host_key == key
-            host.visible = selected
+            # visible=False removes the subtree from the Flet client and remounts it
+            # when selected again, losing ListView position and image lifecycle.
+            host.visible = True
+            host.opacity = 1.0 if selected else 0.0
             host.ignore_interactions = not selected
         if notify and self._on_change is not None:
             self._on_change(key)

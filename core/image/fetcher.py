@@ -477,6 +477,8 @@ class ImageFetcherService:
         hostname = urlsplit(url).hostname or ""
         if hostname == "gelbooru.com" or hostname.endswith(".gelbooru.com"):
             referer = "https://gelbooru.com/"
+        elif hostname.endswith("pximg.net"):
+            referer = "https://www.pixiv.net/"
         elif hostname.endswith("e-hentai.org") or hostname.endswith("exhentai.org") or hostname.endswith("ehgt.org"):
             referer = "https://e-hentai.org/"
         else:

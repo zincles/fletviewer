@@ -34,6 +34,7 @@ EH_API_EX = "https://exhentai.org/api.php"
 EH_DOMAIN_EH = "e-hentai.org"
 EH_DOMAIN_EX = "exhentai.org"
 EH_MAX_GALLERY_PAGES = 2000
+EH_ARCHIVE_GP_PER_MIB = 20
 
 # CSS background-position → star rating
 STAR_POSITION_MAP: dict[str, float] = {
@@ -196,6 +197,22 @@ class KeyResult:
     image_keys: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class EHAccountBalance:
+    gallery_points: int
+    credits: int
+    hath: float
+    free_archive_quota_gb: float
+
+    @property
+    def paid_archive_capacity_mib(self) -> float:
+        """Capacity affordable with GP only at the standard 20 GP/MiB rate."""
+        return self.gallery_points / EH_ARCHIVE_GP_PER_MIB
+
+    def estimated_gallery_count(self, size_mib: float) -> int:
+        return int(self.paid_archive_capacity_mib // size_mib) if size_mib > 0 else 0
+
+
 # ---------------------------------------------------------------------------
 # 主客户端
 # ---------------------------------------------------------------------------
@@ -332,6 +349,38 @@ class EHentaiClient:
     def _post(self, url: str, data: Any = None, json_data: Any = None,
               headers: Optional[dict] = None) -> requests.Response:
         return self._session.post(url, data=data, json=json_data, headers=headers)
+
+    def get_account_balance(self) -> EHAccountBalance:
+        """Read balances from HentaiVerse pages without submitting forms."""
+        lottery = self._request("https://hentaiverse.org/?s=Bazaar&ss=lt", timeout=30)
+        gp_match = re.search(r"You currently have\s+([\d,]+)\s+GP\b", lottery.text, flags=re.IGNORECASE)
+        if not gp_match:
+            raise RuntimeError("HentaiVerse Lottery 页面未包含 GP 余额")
+
+        shop = self._request("https://hentaiverse.org/?s=Bazaar&ss=is", timeout=30)
+        soup = BeautifulSoup(shop.text, "html.parser")
+        networth = soup.select_one("div#networth")
+        credit_match = re.search(r"Credits?:\s*([\d,]+)", networth.get_text(" ", strip=True) if networth else "", flags=re.IGNORECASE)
+        if not credit_match:
+            raise RuntimeError("HentaiVerse Item Shop 页面未包含 Credit 余额")
+
+        perks = self._request(f"{self.base_url}/hathperks.php", timeout=30)
+        perks_text = BeautifulSoup(perks.text, "html.parser").get_text(" ", strip=True)
+        hath_match = re.search(r"You currently have\s+([\d,.]+)\s+Hath\b", perks_text, flags=re.IGNORECASE)
+        if not hath_match:
+            raise RuntimeError("EH Hath Perks 页面未包含 Hath 余额")
+
+        hath_home = self._request(f"{self.base_url}/hentaiathome.php", timeout=30)
+        quota_text = BeautifulSoup(hath_home.text, "html.parser").get_text(" ", strip=True)
+        quota_match = re.search(r"Free Archive Quota:\s*([\d,.]+)\s*GB per week", quota_text, flags=re.IGNORECASE)
+        if not quota_match:
+            raise RuntimeError("EH H@H 页面未包含每周免费归档配额")
+        return EHAccountBalance(
+            gallery_points=int(gp_match.group(1).replace(",", "")),
+            credits=int(credit_match.group(1).replace(",", "")),
+            hath=float(hath_match.group(1).replace(",", "")),
+            free_archive_quota_gb=float(quota_match.group(1).replace(",", "")),
+        )
 
     # -----------------------------------------------------------------------
     # 搜索 / 画廊列表

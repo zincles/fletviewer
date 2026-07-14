@@ -149,3 +149,141 @@ class PixivClient:
 
     def unfollow_user(self, user_id: str) -> None:
         self._not_ready("取消关注")
+
+
+class PixivWebClient(PixivClient):
+    """Pixiv 网页 AJAX client backed by a user-imported browser Cookie."""
+
+    base_url = "https://www.pixiv.net"
+
+    def __init__(self, *, transport, cookie: str = "", user_id: str = "", log_debug=None):
+        super().__init__(log_debug=log_debug)
+        self.transport = transport
+        self.cookie = cookie.strip()
+        self.user_id = user_id.strip()
+
+    def is_logged_in(self) -> bool:
+        return bool(self.cookie)
+
+    def _headers(self, *, referer: str = "") -> dict[str, str]:
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": referer or f"{self.base_url}/",
+        }
+        if self.cookie:
+            headers["Cookie"] = self.cookie
+        if self.user_id:
+            headers["X-User-Id"] = self.user_id
+        return headers
+
+    def _get_json(self, url: str, *, params: dict[str, Any] | None = None, referer: str = "") -> dict[str, Any]:
+        try:
+            response = self.transport.get(url, params=params, headers=self._headers(referer=referer), timeout=30)
+            if response.status_code in {401, 403}:
+                raise PixivProviderError("Pixiv 拒绝请求。请在设置中重新导入已登录浏览器的 Cookie。")
+            response.raise_for_status()
+            raw = response.json()
+        except PixivProviderError:
+            raise
+        except Exception as ex:
+            raise PixivProviderError(f"Pixiv 请求失败: {ex}") from ex
+        if not isinstance(raw, dict):
+            raise PixivProviderError("Pixiv 返回了无法识别的 JSON 响应。")
+        if raw.get("error"):
+            raise PixivProviderError(str(raw.get("message") or "Pixiv 网页 API 返回错误。"))
+        return raw
+
+    @staticmethod
+    def _text(value: Any) -> str:
+        return str(value or "")
+
+    @staticmethod
+    def _int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def _illust(self, item: dict[str, Any]) -> PixivIllust:
+        user_raw = item.get("user") if isinstance(item.get("user"), dict) else {}
+        user_id = item.get("userId") or item.get("user_id") or user_raw.get("id")
+        tags_raw = item.get("tags")
+        if isinstance(tags_raw, dict):
+            tags_raw = tags_raw.get("tags", [])
+        tags = [self._text(tag.get("tag") or tag.get("name")) if isinstance(tag, dict) else self._text(tag) for tag in tags_raw or []]
+        image_urls = item.get("urls") if isinstance(item.get("urls"), dict) else item.get("image_urls", {})
+        image_urls = {str(key): self._text(value) for key, value in image_urls.items()}
+        if item.get("url") and "square_medium" not in image_urls:
+            image_urls["square_medium"] = self._text(item.get("url"))
+        for camel_key, snake_key in (("squareMedium", "square_medium"), ("regular", "medium"), ("original", "large")):
+            if camel_key in image_urls and snake_key not in image_urls:
+                image_urls[snake_key] = image_urls[camel_key]
+        return PixivIllust(
+            id=self._text(item.get("id") or item.get("illustId")),
+            title=self._text(item.get("title")),
+            caption=self._text(item.get("description") or item.get("caption")),
+            type=self._text(item.get("illustType") or item.get("type") or "illust"),
+            page_count=self._int(item.get("pageCount") or item.get("page_count") or 1),
+            width=self._int(item.get("width")), height=self._int(item.get("height")),
+            restrict=self._int(item.get("restrict")), x_restrict=self._int(item.get("xRestrict") or item.get("x_restrict")),
+            total_view=self._int(item.get("viewCount") or item.get("total_view")),
+            total_bookmarks=self._int(item.get("bookmarkCount") or item.get("total_bookmarks")),
+            is_bookmarked=bool(item.get("bookmarkData") or item.get("is_bookmarked")),
+            create_date=self._text(item.get("createDate") or item.get("create_date")),
+            user=PixivUser(self._text(user_id), self._text(item.get("userName") or user_raw.get("name")), self._text(user_raw.get("account")), self._text(item.get("profileImageUrl") or user_raw.get("profile_image_urls", {}).get("medium") if isinstance(user_raw.get("profile_image_urls"), dict) else "")),
+            tags=[tag for tag in tags if tag], image_urls=image_urls, raw=item,
+        )
+
+    def search_illusts(self, word: str, *, sort: str = "date_desc", next_url: str | None = None) -> PixivSearchResult:
+        page = 1
+        if next_url:
+            url = next_url
+            params = None
+        else:
+            url = f"{self.base_url}/ajax/search/artworks/{word}"
+            params = {"word": word, "order": "date_d" if sort == "date_desc" else sort, "mode": "all", "p": page, "s_mode": "s_tag_full", "type": "all", "lang": "zh"}
+        raw = self._get_json(url, params=params, referer=f"{self.base_url}/tags/{word}/artworks")
+        body = raw.get("body") if isinstance(raw.get("body"), dict) else {}
+        feed = body.get("illustManga") if isinstance(body.get("illustManga"), dict) else {}
+        items = feed.get("data") if isinstance(feed.get("data"), list) else []
+        return PixivSearchResult([self._illust(item) for item in items if isinstance(item, dict)], self._text(body.get("next") or "") or None, query=word)
+
+    def get_recommended(self, *, next_url: str | None = None) -> PixivSearchResult:
+        if next_url:
+            raise PixivProviderError("Pixiv 网页发现流当前未提供可复用的下一页游标。")
+        raw = self._get_json(
+            f"{self.base_url}/ajax/illust/discovery",
+            params={"mode": "all", "limit": 100},
+            referer=f"{self.base_url}/",
+        )
+        body = raw.get("body") if isinstance(raw.get("body"), dict) else {}
+        items = body.get("illusts") if isinstance(body.get("illusts"), list) else []
+        return PixivSearchResult([self._illust(item) for item in items if isinstance(item, dict)], query="discovery")
+
+    def get_ranking(self, *, mode: str = "day", date: str = "", next_url: str | None = None) -> PixivRankingResult:
+        if next_url:
+            raw = self._get_json(next_url, referer=f"{self.base_url}/ranking.php")
+        else:
+            web_mode = {"day": "daily", "week": "weekly", "month": "monthly"}.get(mode, mode)
+            params = {"mode": web_mode, "content": "all", "p": 1, "format": "json"}
+            if date:
+                params["date"] = date.replace("-", "")
+            raw = self._get_json(f"{self.base_url}/ranking.php", params=params, referer=f"{self.base_url}/ranking.php")
+        items = raw.get("contents") if isinstance(raw.get("contents"), list) else []
+        return PixivRankingResult(mode, date, [self._illust(item) for item in items if isinstance(item, dict)])
+
+    def get_illust_detail(self, illust_id: str) -> PixivIllust:
+        raw = self._get_json(f"{self.base_url}/ajax/illust/{illust_id}", referer=f"{self.base_url}/artworks/{illust_id}")
+        body = raw.get("body")
+        if not isinstance(body, dict):
+            raise PixivProviderError(f"Pixiv 作品不存在或不可访问: {illust_id}")
+        return self._illust(body)
+
+    def get_illust_pages(self, illust_id: str) -> list[dict[str, str]]:
+        raw = self._get_json(f"{self.base_url}/ajax/illust/{illust_id}/pages", params={"lang": "zh"}, referer=f"{self.base_url}/artworks/{illust_id}")
+        body = raw.get("body") if isinstance(raw.get("body"), list) else []
+        return [
+            {str(key): self._text(value) for key, value in item.get("urls", {}).items()}
+            for item in body if isinstance(item, dict) and isinstance(item.get("urls"), dict)
+        ]

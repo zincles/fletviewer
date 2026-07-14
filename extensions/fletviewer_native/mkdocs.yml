@@ -1,0 +1,7 @@
+site_name: FletviewerNative
+
+theme:
+  name: "material"
+
+plugins:
+  - mkdocstrings

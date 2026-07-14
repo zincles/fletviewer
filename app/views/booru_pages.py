@@ -99,3 +99,7 @@ def create_gelbooru_view(page: ft.Page) -> ft.Control:
 
 def create_danbooru_view(page: ft.Page) -> ft.Control:
     return create_provider_view(page, "danbooru")
+
+
+def provider_view_factory(provider_id: str):
+    return lambda page: create_provider_view(page, provider_id)

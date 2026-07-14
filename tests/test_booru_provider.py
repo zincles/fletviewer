@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import Mock
 
 from core.provider.booru import (
+    BOORU_PROVIDER_SPECS,
     BOORU_PROVIDERS,
     BooruAccessDeniedError,
     BooruClient,
@@ -10,8 +11,13 @@ from core.provider.booru import (
     BooruPost,
     DanbooruClient,
     GelbooruClient,
+    MoebooruClient,
+    E621Client,
+    PhilomenaClient,
+    PahealClient,
     ImageVariant,
     SafebooruClient,
+    create_booru_client,
 )
 
 
@@ -19,8 +25,19 @@ class BooruProviderSkeletonTests(unittest.TestCase):
     def test_expected_provider_tabs_are_registered(self):
         self.assertEqual(
             list(BOORU_PROVIDERS),
-            ["safebooru", "gelbooru", "danbooru"],
+            [
+                "safebooru", "gelbooru", "danbooru", "rule34", "tbib", "xbooru",
+                "hypnohub", "yandere", "lolibooru", "konachan", "konachan_net", "e621", "e926",
+                "derpibooru", "furbooru", "behoimi",
+            ],
         )
+
+    def test_all_registered_providers_create_a_client(self):
+        transport = Mock()
+        for provider_id in BOORU_PROVIDER_SPECS:
+            with self.subTest(provider=provider_id):
+                client = create_booru_client(provider_id, transport=transport)
+                self.assertEqual(client.provider_id, provider_id)
 
     def test_image_url_fallbacks(self):
         post = BooruPost(
@@ -31,6 +48,11 @@ class BooruProviderSkeletonTests(unittest.TestCase):
         )
         self.assertEqual(post.thumbnail_url, "preview")
         self.assertEqual(post.image_url, "sample")
+
+    def test_all_tags_preserve_category_order_and_deduplicate(self):
+        post = BooruPost("test", 1, tags={"artist": ["a"], "general": ["x", "a"]})
+        self.assertEqual(post.all_tags, ["a", "x"])
+        self.assertEqual(post.tags_for("artist"), ["a"])
 
     def test_default_client_reserves_search_detail_and_suggestions(self):
         client = BooruClient("test", "Test")
@@ -54,6 +76,22 @@ class BooruProviderSkeletonTests(unittest.TestCase):
         transport.get.return_value = response
         with self.assertRaisesRegex(BooruAccessDeniedError, "HTTP 401"):
             GelbooruClient(transport=transport).search_posts("cat")
+
+    def test_xml_api_error_is_not_treated_as_an_empty_result(self):
+        response = Mock(status_code=200, text="<error>Missing authentication</error>")
+        transport = Mock()
+        transport.get.return_value = response
+        with self.assertRaisesRegex(BooruAccessDeniedError, "Missing authentication"):
+            create_booru_client("rule34", transport=transport).search_posts("cat")
+
+    def test_html_response_from_json_api_is_diagnostic(self):
+        response = Mock(status_code=200)
+        response.headers = {"Content-Type": "text/html"}
+        response.json.side_effect = ValueError("not JSON")
+        transport = Mock()
+        transport.get.return_value = response
+        with self.assertRaisesRegex(Exception, "非 JSON"):
+            DanbooruClient(transport=transport).search_posts("cat")
 
     def test_gelbooru_credentials_are_sent(self):
         response = Mock(status_code=200)
@@ -110,6 +148,62 @@ class BooruProviderSkeletonTests(unittest.TestCase):
         result = SafebooruClient(transport=transport).search_posts("cat")
         self.assertEqual(result.total_count, 1)
         self.assertEqual(result.posts[0].image_url, "https://img.test/8.jpg")
+
+    def test_moebooru_json_is_mapped(self):
+        response = Mock(status_code=200)
+        response.json.return_value = [{"id": 10, "file_url": "https://img.test/10.jpg", "tags": "cat solo"}]
+        transport = Mock()
+        transport.get.return_value = response
+        result = MoebooruClient("yandere", "Yande.re", "https://yande.re", transport=transport).search_posts("cat")
+        self.assertEqual(result.posts[0].provider, "yandere")
+        self.assertEqual(result.posts[0].all_tags, ["cat", "solo"])
+
+    def test_gelbooru_alike_result_keeps_preset_provider(self):
+        response = Mock(status_code=200, text='<posts count="1"><post id="10" file_url="https://img.test/10.jpg" /></posts>')
+        transport = Mock()
+        transport.get.return_value = response
+        client = create_booru_client("rule34", transport=transport)
+        result = client.search_posts("cat")
+        self.assertEqual(result.provider, "rule34")
+        self.assertEqual(result.posts[0].provider, "rule34")
+
+    def test_e621_json_preserves_tag_categories(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"posts": [{
+            "id": 11,
+            "file": {"url": "https://img.test/11.jpg", "width": 1000, "height": 800},
+            "preview": {"url": "https://img.test/11-preview.jpg"},
+            "tags": {"artist": ["artist_a"], "general": ["cat"]},
+            "score": {"total": 12},
+        }]}
+        transport = Mock()
+        transport.get.return_value = response
+        post = E621Client("e621", "E621", "https://e621.net", transport=transport).search_posts("cat").posts[0]
+        self.assertEqual(post.tags["artist"], ["artist_a"])
+        self.assertEqual(post.score, 12)
+
+    def test_philomena_json_is_mapped(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"total": 1, "images": [{
+            "id": 12,
+            "representations": {"full": "https://img.test/12.jpg", "thumb": "https://img.test/12-thumb.jpg"},
+            "tags": ["safe", "pony"],
+            "width": 900,
+            "height": 1200,
+        }]}
+        transport = Mock()
+        transport.get.return_value = response
+        result = PhilomenaClient("derpibooru", "Derpibooru", "https://derpibooru.org", transport=transport).search_posts("pony")
+        self.assertEqual(result.total_count, 1)
+        self.assertEqual(result.posts[0].thumbnail_url, "https://img.test/12-thumb.jpg")
+
+    def test_paheal_xml_is_mapped(self):
+        response = Mock(status_code=200, text='<posts><tag id="13" file_url="https://img.test/13.jpg" tags="cat solo" /></posts>')
+        transport = Mock()
+        transport.get.return_value = response
+        result = PahealClient(transport=transport).search_posts("cat")
+        self.assertEqual(result.posts[0].id, "13")
+        self.assertEqual(result.posts[0].all_tags, ["cat", "solo"])
 
 
 if __name__ == "__main__":

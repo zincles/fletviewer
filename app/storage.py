@@ -45,6 +45,7 @@ _storage_layout = StorageLayout(
 
 EH_CONFIG_KEYS = ("ipb_member_id", "ipb_pass_hash", "igneous", "star")
 BOORU_CONFIG_DEFAULTS = {"gelbooru_user_id": "", "gelbooru_api_key": ""}
+PIXIV_CONFIG_DEFAULTS = {"user_id": "", "cookie": ""}
 APP_CONFIG_DEFAULTS = {
     "enable_login": True,
     "load_images": True,
@@ -80,6 +81,7 @@ GALLERY_VIEW_MODES = {"card", "list", "masonry"}
 CONFIG_DEFAULTS = {
     "eh": {k: "" for k in EH_CONFIG_KEYS},
     "booru": dict(BOORU_CONFIG_DEFAULTS),
+    "pixiv": dict(PIXIV_CONFIG_DEFAULTS),
     "app": dict(APP_CONFIG_DEFAULTS),
 }
 
@@ -138,6 +140,7 @@ def _load_config() -> dict:
                 return {
                     "eh": {**CONFIG_DEFAULTS["eh"], **dict(data.get("eh") or {})},
                     "booru": {**CONFIG_DEFAULTS["booru"], **dict(data.get("booru") or {})},
+                    "pixiv": {**CONFIG_DEFAULTS["pixiv"], **dict(data.get("pixiv") or {})},
                     "app": {**CONFIG_DEFAULTS["app"], **dict(data.get("app") or {})},
                 }
             except (TypeError, ValueError):
@@ -160,6 +163,7 @@ def _save_config(data: dict) -> None:
     payload = {
         "eh": {**CONFIG_DEFAULTS["eh"], **dict(data.get("eh") or {})},
         "booru": {**CONFIG_DEFAULTS["booru"], **dict(data.get("booru") or {})},
+        "pixiv": {**CONFIG_DEFAULTS["pixiv"], **dict(data.get("pixiv") or {})},
         "app": {**CONFIG_DEFAULTS["app"], **dict(data.get("app") or {})},
     }
     atomic_write_json(config_path, payload)
@@ -184,6 +188,18 @@ def load_booru_config() -> dict:
 def save_booru_config(cfg: dict) -> None:
     data = _load_config()
     data["booru"] = {**BOORU_CONFIG_DEFAULTS, **cfg}
+    _save_config(data)
+
+
+def load_pixiv_config() -> dict:
+    """读取 Pixiv 网页会话凭据。"""
+    return _load_config()["pixiv"]
+
+
+def save_pixiv_config(cfg: dict) -> None:
+    """保存用户从已登录浏览器复制的 Pixiv Cookie。"""
+    data = _load_config()
+    data["pixiv"] = {**PIXIV_CONFIG_DEFAULTS, **cfg}
     _save_config(data)
 
 

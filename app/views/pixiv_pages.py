@@ -2,163 +2,130 @@ from __future__ import annotations
 
 import flet as ft
 
+from app.controls.async_image import async_image
+from app.controls.paged_masonry import PagedMasonryView
+from app.debug_log import log_exception
 from app.pixiv_session import get_pixiv_client
 from app.toast import show_toast
-from core.provider.pixiv import PixivNotImplementedError
+from app.views.image_viewer import ImageViewerItem
+from core.paged_feed import PageBatch
+from core.provider.pixiv import PixivIllust
 
 
-def _placeholder_page(
-    page: ft.Page,
-    *,
-    title: str,
-    subtitle: str,
-    icon,
-    bullets: list[str],
-    action_label: str,
-    action_feature: str,
-) -> ft.Control:
-    status = ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
+def _create_illust_feed(page: ft.Page, *, label: str, load_page) -> ft.Control:
+    viewer_state: dict[str, list[ImageViewerItem]] = {"items": []}
 
-    def try_call(_e=None):
-        client = get_pixiv_client()
-        try:
-            if action_feature == "recommended":
-                client.get_recommended()
-            elif action_feature == "following":
-                client.get_following()
-            elif action_feature == "ranking":
-                client.get_ranking()
-            elif action_feature == "bookmarks":
-                client.get_bookmarks()
-            elif action_feature == "search":
-                client.search_illusts("test")
-            elif action_feature == "history":
-                result = client.get_history_placeholder()
-                status.value = f"历史占位可用，当前 {len(result.illusts)} 条。"
-                status.color = ft.Colors.PRIMARY
-                page.update()
-                return
-            else:
-                raise PixivNotImplementedError(action_feature)
-        except PixivNotImplementedError as ex:
-            status.value = str(ex)
-            status.color = ft.Colors.ON_SURFACE_VARIANT
-            show_toast(page, "Pixiv 接口尚未实现")
-            page.update()
+    def update_viewer_items(illusts: list[PixivIllust]) -> None:
+        viewer_state["items"] = [
+            ImageViewerItem(
+                url=illust.cover_url,
+                title=illust.title or f"Pixiv #{illust.id}",
+                detail={
+                    "provider": "pixiv",
+                    "illust_id": illust.id,
+                    "page_url": f"https://www.pixiv.net/artworks/{illust.id}",
+                    "thumbnail_width": illust.width,
+                    "thumbnail_height": illust.height,
+                    "tags": illust.tags,
+                },
+            )
+            for illust in illusts
+            if illust.cover_url
+        ]
 
+    def build_image(illust: PixivIllust, _index: int) -> ft.Control:
+        return ft.Container(
+            content=async_image(page, illust.cover_url, width=float("inf"), height=float("inf"), fit=ft.BoxFit.COVER, cache_width=220),
+            expand=True,
+            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            border_radius=8,
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
+        )
+
+    def open_image(_illust: PixivIllust, index: int) -> None:
+        open_viewer = getattr(page, "fletviewer_open_image_viewer", None)
+        if callable(open_viewer):
+            open_viewer(viewer_state["items"], index)
+
+    def aspect_ratio(illust: PixivIllust) -> float:
+        return illust.width / illust.height if illust.width and illust.height else 0.72
+
+    def show_error(ex: Exception) -> None:
+        log_exception("Pixiv", f"{label} 加载失败：{ex}")
+        show_toast(page, f"Pixiv {label} 加载失败")
+
+    return PagedMasonryView[PixivIllust, str](
+        page,
+        load_page=load_page,
+        build_image=build_image,
+        item_key=lambda illust: f"pixiv:{illust.id}",
+        aspect_ratio=aspect_ratio,
+        on_item_click=open_image,
+        on_items_changed=update_viewer_items,
+        on_error=show_error,
+        loading_source=f"pixiv:{label}",
+    )
+
+
+def create_ranking_view(page: ft.Page) -> ft.Control:
+    def load_page(_cursor):
+        result = get_pixiv_client().get_ranking()
+        return PageBatch(result.illusts, result.next_url)
+
+    return _create_illust_feed(page, label="排行", load_page=load_page)
+
+
+def create_search_view(page: ft.Page) -> ft.Control:
+    query_state = {"value": ""}
+
+    def load_page(cursor):
+        result = get_pixiv_client().search_illusts(query_state["value"], next_url=cursor)
+        return PageBatch(result.illusts, result.next_url)
+
+    masonry = _create_illust_feed(page, label="搜索", load_page=load_page)
+
+    def search(query: str | None = None, **_kwargs) -> None:
+        query_state["value"] = (query or "").strip()
+        masonry.reload()
+
+    actions = getattr(page, "fletviewer_pixiv_search_actions", None)
+    if isinstance(actions, dict):
+        actions["搜索"] = search
+    return masonry
+
+
+def _placeholder_page(title: str, subtitle: str, icon) -> ft.Control:
     return ft.Container(
         expand=True,
-        padding=ft.Padding(16, 16, 16, 96),
+        padding=24,
+        alignment=ft.Alignment(0, 0),
         content=ft.Column(
             [
-                ft.Container(
-                    content=ft.Column(
-                        [
-                            ft.Icon(icon, size=40, color=ft.Colors.PRIMARY),
-                            ft.Text(title, size=26, weight=ft.FontWeight.BOLD),
-                            ft.Text(subtitle, size=14, color=ft.Colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER),
-                        ],
-                        spacing=8,
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    padding=22,
-                    border_radius=18,
-                    bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
-                    border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-                ),
-                ft.Text("预留能力", size=16, weight=ft.FontWeight.W_600),
-                *[
-                    ft.Container(
-                        content=ft.ListTile(
-                            leading=ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=ft.Colors.PRIMARY),
-                            title=ft.Text(item),
-                            dense=True,
-                        ),
-                        border=ft.border.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-                        border_radius=12,
-                    )
-                    for item in bullets
-                ],
-                ft.Row(
-                    [ft.FilledButton(action_label, icon=ft.Icons.PLAY_ARROW, on_click=try_call)],
-                    alignment=ft.MainAxisAlignment.START,
-                ),
-                status,
+                ft.Icon(icon, size=42, color=ft.Colors.PRIMARY),
+                ft.Text(title, size=24, weight=ft.FontWeight.BOLD),
+                ft.Text(subtitle, size=14, color=ft.Colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER),
             ],
-            spacing=12,
-            scroll=ft.ScrollMode.AUTO,
-            expand=True,
+            tight=True,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         ),
     )
 
 
 def create_home_view(page: ft.Page) -> ft.Control:
-    return _placeholder_page(
-        page,
-        title="Pixiv 推荐",
-        subtitle="推荐流入口。当前为 Provider 缺省骨架，不发起真实网络请求。",
-        icon=ft.Icons.HOME,
-        bullets=["推荐插画瀑布流", "限制模式过滤", "下拉刷新 / 分页"],
-        action_label="尝试加载推荐",
-        action_feature="recommended",
-    )
+    def load_page(_cursor):
+        result = get_pixiv_client().get_recommended()
+        return PageBatch(result.illusts, result.next_url)
+
+    return _create_illust_feed(page, label="推荐", load_page=load_page)
 
 
 def create_following_view(page: ft.Page) -> ft.Control:
-    return _placeholder_page(
-        page,
-        title="Pixiv 关注",
-        subtitle="关注画师更新流。后续接入 following illust feed。",
-        icon=ft.Icons.FAVORITE,
-        bullets=["公开/私人关注", "最新作品流", "未读更新提示"],
-        action_label="尝试加载关注",
-        action_feature="following",
-    )
-
-
-def create_ranking_view(page: ft.Page) -> ft.Control:
-    return _placeholder_page(
-        page,
-        title="Pixiv 排行榜",
-        subtitle="日榜 / 周榜 / 月榜等排行入口。",
-        icon=ft.Icons.LEADERBOARD,
-        bullets=["日/周/月模式", "日期选择", "R18 排行开关"],
-        action_label="尝试加载排行",
-        action_feature="ranking",
-    )
+    return _placeholder_page("Pixiv 关注", "需要已登录网页会话；接口尚未验证。", ft.Icons.FAVORITE)
 
 
 def create_bookmarks_view(page: ft.Page) -> ft.Control:
-    return _placeholder_page(
-        page,
-        title="Pixiv 收藏",
-        subtitle="用户收藏作品列表。",
-        icon=ft.Icons.BOOKMARK,
-        bullets=["公开/私人收藏", "标签筛选", "取消收藏"],
-        action_label="尝试加载收藏",
-        action_feature="bookmarks",
-    )
-
-
-def create_search_view(page: ft.Page) -> ft.Control:
-    return _placeholder_page(
-        page,
-        title="Pixiv 搜索",
-        subtitle="作品、用户、标签搜索入口。",
-        icon=ft.Icons.SEARCH,
-        bullets=["作品搜索", "用户搜索", "标签补全"],
-        action_label="尝试搜索",
-        action_feature="search",
-    )
+    return _placeholder_page("Pixiv 收藏", "需要已登录网页会话；接口尚未验证。", ft.Icons.BOOKMARK)
 
 
 def create_history_view(page: ft.Page) -> ft.Control:
-    return _placeholder_page(
-        page,
-        title="Pixiv 历史",
-        subtitle="后续复用应用历史仓库，按 provider=pixiv 过滤。",
-        icon=ft.Icons.HISTORY,
-        bullets=["本地浏览历史", "按用户/作品跳转", "清空历史"],
-        action_label="检查历史占位",
-        action_feature="history",
-    )
+    return _placeholder_page("Pixiv 历史", "本地历史接入尚未实现。", ft.Icons.HISTORY)

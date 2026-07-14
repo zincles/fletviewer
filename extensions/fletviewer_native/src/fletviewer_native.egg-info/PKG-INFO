@@ -1,0 +1,50 @@
+Metadata-Version: 2.4
+Name: fletviewer-native
+Version: 0.1.0
+Summary: Native Flutter controls for FletViewer
+Author-email: Flet contributors <you@example.com>
+Project-URL: Homepage, https://mydomain.dev
+Project-URL: Documentation, https://github.com/MyGithubAccount/fletviewer-native
+Project-URL: Repository, https://github.com/MyGithubAccount/fletviewer-native
+Project-URL: Issues, https://github.com/MyGithubAccount/fletviewer-native/issues
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: flet==0.85.3
+
+# fletviewer-native
+FletviewerNative control for Flet
+
+## Installation
+
+Add dependency to `pyproject.toml` of your Flet app:
+
+* **Git dependency**
+
+Link to git repository:
+
+```
+dependencies = [
+  "fletviewer-native @ git+https://github.com/MyGithubAccount/fletviewer-native",
+  "flet>=0.85.3",
+]
+```
+
+* **uv/pip dependency**
+
+If the package is published on pypi.org:
+
+```
+dependencies = [
+  "fletviewer-native",
+  "flet>=0.85.3",
+]
+```
+
+Build your app:
+```
+flet build macos -v
+```
+
+## Documentation
+
+[Link to documentation](https://MyGithubAccount.github.io/fletviewer-native/)

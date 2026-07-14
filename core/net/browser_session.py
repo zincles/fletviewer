@@ -175,7 +175,7 @@ class BrowserSessionService:
                 return True
             while self._active_requests:
                 self._request_idle.wait()
-            for domain in (".e-hentai.org", ".exhentai.org"):
+            for domain in (".e-hentai.org", ".exhentai.org", "hentaiverse.org"):
                 for key, value in zip(EH_COOKIE_KEYS, signature):
                     if value:
                         self.session.cookies.set(key, value, domain=domain)
@@ -258,7 +258,7 @@ class BrowserSessionService:
         return resp
 
     def _clear_eh_cookies_locked(self) -> None:
-        for domain in (".e-hentai.org", ".exhentai.org"):
+        for domain in (".e-hentai.org", ".exhentai.org", "hentaiverse.org"):
             for key in EH_COOKIE_KEYS:
                 try:
                     self.session.cookies.clear(domain=domain, path="/", name=key)

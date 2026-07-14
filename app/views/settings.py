@@ -18,9 +18,11 @@ from app.storage import (
     load_app_config,
     load_booru_config,
     load_eh_config,
+    load_pixiv_config,
     save_app_config,
     save_booru_config,
     save_eh_config,
+    save_pixiv_config,
 )
 from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
@@ -120,6 +122,7 @@ def create_view(page: ft.Page) -> ft.Control:
     """创建设置页，包含账户、显示、Linux 窗口和存储选项卡。"""
     cfg = load_eh_config()
     booru_cfg = load_booru_config()
+    pixiv_cfg = load_pixiv_config()
     app_cfg = load_app_config()
 
     fields = {}
@@ -149,6 +152,24 @@ def create_view(page: ft.Page) -> ft.Control:
         can_reveal_password=True,
         dense=True,
     )
+    pixiv_user_id = ft.TextField(
+        label="Pixiv User ID（可选）",
+        value=str(pixiv_cfg.get("user_id") or ""),
+        width=450,
+        dense=True,
+    )
+    pixiv_cookie = ft.TextField(
+        label="Pixiv Cookie",
+        value=str(pixiv_cfg.get("cookie") or ""),
+        width=450,
+        password=True,
+        can_reveal_password=True,
+        dense=True,
+        multiline=True,
+        min_lines=2,
+        max_lines=4,
+    )
+    pixiv_status = ft.Text("", size=14)
     display_status = ft.Text("", size=14)
     debug_status = ft.Text("", size=14)
     image_cache_size = _ImageCacheSizeText(page)
@@ -555,6 +576,18 @@ def create_view(page: ft.Page) -> ft.Control:
         booru_status.color = ft.Colors.PRIMARY
         page.update()
 
+    def on_save_pixiv(e):
+        from app.pixiv_session import invalidate_pixiv_client
+
+        save_pixiv_config({
+            "user_id": (pixiv_user_id.value or "").strip(),
+            "cookie": (pixiv_cookie.value or "").strip(),
+        })
+        invalidate_pixiv_client()
+        pixiv_status.value = "Pixiv Cookie 已保存；下次 Pixiv 请求会使用此网页登录会话"
+        pixiv_status.color = ft.Colors.PRIMARY
+        page.update()
+
     image_cache_state = {"busy": False}
     clear_image_cache_button = ft.OutlinedButton("清除所有图像缓存", icon=ft.Icons.DELETE_SWEEP)
 
@@ -632,6 +665,22 @@ def create_view(page: ft.Page) -> ft.Control:
                     [
                         ft.FilledButton("保存凭据", icon=ft.Icons.SAVE, on_click=on_save),
                         status,
+                    ],
+                    spacing=16,
+                ),
+                ft.Divider(),
+                ft.Text("Pixiv 网页会话", size=20, weight=ft.FontWeight.W_500),
+                ft.Text(
+                    "从已登录 pixiv.net 的浏览器请求中复制完整 Cookie。当前使用网页 AJAX 接口，不使用 OAuth 或模拟官方 App。User ID 仅在登录态/R18 请求要求时填写。",
+                    size=14,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+                pixiv_user_id,
+                pixiv_cookie,
+                ft.Row(
+                    [
+                        ft.FilledButton("保存 Pixiv 会话", icon=ft.Icons.SAVE, on_click=on_save_pixiv),
+                        pixiv_status,
                     ],
                     spacing=16,
                 ),

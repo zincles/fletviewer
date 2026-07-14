@@ -31,6 +31,21 @@ class PersistentTabViewTests(unittest.TestCase):
         self.assertIs(tabs.control_for("a"), first)
         self.assertEqual(built, ["a", "b"])
 
+    def test_switching_keeps_all_built_hosts_mounted(self):
+        tabs = PersistentTabView([
+            PersistentTabSpec("a", "A", lambda: ft.ListView([ft.Text("A")])),
+            PersistentTabSpec("b", "B", lambda: ft.ListView([ft.Text("B")])),
+        ], selected_key="a")
+        tabs.select("b")
+        hosts = tabs._hosts
+
+        self.assertTrue(hosts["a"].visible)
+        self.assertTrue(hosts["b"].visible)
+        self.assertEqual(hosts["a"].opacity, 0.0)
+        self.assertEqual(hosts["b"].opacity, 1.0)
+        self.assertTrue(hosts["a"].ignore_interactions)
+        self.assertFalse(hosts["b"].ignore_interactions)
+
     def test_dynamic_tabs_reuse_matching_key(self):
         tabs = PersistentTabView([PersistentTabSpec("a", "A", lambda: ft.Text("old"))])
         old = tabs.control_for("a")
