@@ -1,4 +1,5 @@
 from app.debug_log import log_exception
+from app.backend import runtime
 from app.download_manager import download_manager
 from app.lazy import LazyProxy
 from app.notifications import notifier
@@ -20,6 +21,7 @@ def _create_local_gallery_manager() -> LocalGalleryManager:
 
 
 local_gallery_manager = LazyProxy(_create_local_gallery_manager)
+runtime.configure_local_gallery_manager(local_gallery_manager)
 
 
 __all__ = ["LocalGallery", "LocalGalleryManager", "local_gallery_manager"]

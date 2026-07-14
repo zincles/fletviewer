@@ -32,6 +32,20 @@ class StorageAdapterTests(unittest.TestCase):
 
         instance.get.assert_called_once_with("key")
 
+    def test_lazy_proxy_reset_does_not_construct_and_allows_recreation(self):
+        first = Mock()
+        second = Mock()
+        factory = Mock(side_effect=[first, second])
+        proxy = LazyProxy(factory)
+
+        self.assertIsNone(proxy.resolve_if_created())
+        self.assertIsNone(proxy.reset())
+        self.assertIs(proxy.resolve(), first)
+        self.assertIs(proxy.reset(), first)
+        self.assertIs(proxy.resolve(), second)
+
+        self.assertEqual(factory.call_count, 2)
+
     def test_adapter_factories_use_current_layout(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

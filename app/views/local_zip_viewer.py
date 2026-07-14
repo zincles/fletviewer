@@ -1,3 +1,4 @@
+import base64
 import re
 import threading
 import zipfile
@@ -5,6 +6,7 @@ from pathlib import Path
 
 import flet as ft
 
+from app.backend import backend
 from core.image.fetcher import ImageFetchCancelled
 from app.views.image_viewer import ImageViewerItem, ViewerImageResult, create_view as create_image_viewer
 
@@ -73,25 +75,29 @@ def _read_member(zip_path: Path, member: str, cancel_event: threading.Event | No
         return b"".join(chunks)
 
 
-def create_view(page: ft.Page, zip_path: Path, title_text: str, on_back) -> ft.Control:
+def create_view(page: ft.Page, gallery_id: str, title_text: str, on_back) -> ft.Control:
     try:
-        members = _list_images(zip_path) if zip_path.is_file() else []
-    except (OSError, ValueError, zipfile.BadZipFile):
-        members = []
+        pages = backend.list_local_gallery_pages(gallery_id)
+    except Exception:
+        pages = []
     items = [
         ImageViewerItem(
-            url=f"zip://{zip_path.name}/{member}",
-            title=f"{title_text} #{index + 1}",
-            detail={"provider": "local_zip", "archive": str(zip_path), "member": member},
+            url=f"local-gallery://{gallery_id}/{page_item.index}",
+            title=page_item.title or f"{title_text} #{page_item.index + 1}",
+            detail={"provider": "local_zip", "gallery_id": gallery_id, "member_id": page_item.member_id},
         )
-        for index, member in enumerate(members)
+        for page_item in pages
     ]
 
     def load_image(item: ImageViewerItem, _index: int, cancel_event: threading.Event) -> ViewerImageResult:
-        member = str(item.detail["member"])
+        result = backend.read_local_gallery_page(
+            str(item.detail["gallery_id"]),
+            str(item.detail["member_id"]),
+            cancel_event=cancel_event,
+        )
         return ViewerImageResult(
-            data=_read_member(zip_path, member, cancel_event),
-            mime=_mime_for_name(member),
+            data=base64.b64decode(result.data_base64),
+            mime=result.mime,
             url=item.url,
         )
 

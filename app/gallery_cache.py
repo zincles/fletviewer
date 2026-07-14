@@ -3,12 +3,13 @@ from datetime import timedelta
 from app.debug_log import log_debug, log_exception
 from app.lazy import LazyProxy
 from app.storage import ensure_gallery_cache_dirs, get_storage_layout
+from core.api.dto import MediaDetailDTO
 from core.cache.gallery_cache import EHGalleryCache, GalleryCacheEntry
-from core.provider.ehgrabber import ComicDetails, ThumbnailsResult
+from core.provider.ehgrabber import ThumbnailsResult
 
 
 GALLERY_CACHE_TTL = timedelta(days=1)
-GALLERY_CACHE_SCHEMA_VERSION = 2
+GALLERY_CACHE_SCHEMA_VERSION = 3
 
 
 def _create_gallery_cache() -> EHGalleryCache:
@@ -32,7 +33,7 @@ def get_eh_gallery_cache(comic_url: str) -> GalleryCacheEntry | None:
         return None
 
 
-def put_eh_gallery_cache(comic_url: str, details: ComicDetails, thumbnails: ThumbnailsResult):
+def put_eh_gallery_cache(comic_url: str, details: MediaDetailDTO, thumbnails: ThumbnailsResult):
     try:
         return gallery_cache.put(comic_url, details, thumbnails)
     except Exception as ex:

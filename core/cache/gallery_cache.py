@@ -10,16 +10,17 @@ from pathlib import Path
 from typing import Callable, Iterator
 from urllib.parse import urlsplit
 
-from core.provider.ehgrabber import Comment, ComicDetails, EHentaiClient, GalleryVersion, ThumbnailItem, ThumbnailsResult
+from core.api.dto import CommentDTO, MediaDetailDTO, RelatedMediaDTO
+from core.provider.ehgrabber import EHentaiClient, ThumbnailItem, ThumbnailsResult
 from core.sqlite_recovery import run_with_corruption_recovery
 
 
-GALLERY_CACHE_SCHEMA_VERSION = 2
+GALLERY_CACHE_SCHEMA_VERSION = 3
 
 
 @dataclass(slots=True)
 class GalleryCacheEntry:
-    details: ComicDetails
+    details: MediaDetailDTO
     thumbnails: ThumbnailsResult
     path: Path
     from_cache: bool = True
@@ -72,7 +73,7 @@ class EHGalleryCache:
             self._exception(f"读取缓存失败 {comic_url}：{ex}")
             return None
 
-    def put(self, comic_url: str, details: ComicDetails, thumbnails: ThumbnailsResult) -> Path:
+    def put(self, comic_url: str, details: MediaDetailDTO, thumbnails: ThumbnailsResult) -> Path:
         self._ensure()
         now = _now()
         gid, token = EHentaiClient.parse_url(comic_url)
@@ -131,7 +132,7 @@ class EHGalleryCache:
                     thumbnails_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
-                    schema_version INTEGER NOT NULL DEFAULT 2,
+                    schema_version INTEGER NOT NULL DEFAULT 3,
                     PRIMARY KEY (gid, token)
                 )
                 """
@@ -175,32 +176,40 @@ def _parse_iso(value: str) -> datetime | None:
         return None
 
 
-def _dataclass_fields(cls) -> set[str]:
-    return {field.name for field in dataclasses.fields(cls)}
-
-
-def _comment_from_dict(value) -> Comment:
-    if isinstance(value, Comment):
+def _comment_from_dict(value) -> CommentDTO:
+    if isinstance(value, CommentDTO):
         return value
     data = value if isinstance(value, dict) else {}
-    fields = _dataclass_fields(Comment)
-    return Comment(**{key: data.get(key) for key in fields if key in data})
+    return CommentDTO(
+        id=str(data.get("id") or ""),
+        author=str(data.get("author") or ""),
+        content=str(data.get("content") or ""),
+        created_at=str(data.get("created_at") or ""),
+        score=data.get("score"),
+        metadata=dict(data.get("metadata") or {}),
+    )
 
 
-def _gallery_version_from_dict(value) -> GalleryVersion:
-    if isinstance(value, GalleryVersion):
+def _related_from_dict(value) -> RelatedMediaDTO:
+    if isinstance(value, RelatedMediaDTO):
         return value
     data = value if isinstance(value, dict) else {}
-    fields = _dataclass_fields(GalleryVersion)
-    return GalleryVersion(**{key: data.get(key) for key in fields if key in data})
+    return RelatedMediaDTO(
+        id=str(data.get("id") or ""),
+        title=str(data.get("title") or ""),
+        page_url=str(data.get("page_url") or ""),
+        relation=str(data.get("relation") or "related"),
+        subtitle=str(data.get("subtitle") or ""),
+        metadata=dict(data.get("metadata") or {}),
+    )
 
 
-def _comic_details_from_dict(value) -> ComicDetails:
+def _comic_details_from_dict(value) -> MediaDetailDTO:
     data = dict(value or {})
     data["comments"] = [_comment_from_dict(item) for item in data.get("comments", [])]
-    data["newer_versions"] = [_gallery_version_from_dict(item) for item in data.get("newer_versions", [])]
-    fields = _dataclass_fields(ComicDetails)
-    return ComicDetails(**{key: data.get(key) for key in fields if key in data})
+    data["related"] = [_related_from_dict(item) for item in data.get("related", [])]
+    fields = {field.name for field in dataclasses.fields(MediaDetailDTO)}
+    return MediaDetailDTO(**{key: data.get(key) for key in fields if key in data})
 
 
 def _thumbnails_result_from_dict(value) -> ThumbnailsResult:

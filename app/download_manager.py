@@ -1,4 +1,5 @@
 from app.browser_session import browser_session
+from app.backend import runtime
 from app.debug_log import Timer, log_exception
 from app.lazy import LazyProxy
 from app.notifications import notifier
@@ -25,6 +26,7 @@ def _create_download_manager() -> DownloadManager:
 
 
 download_manager = LazyProxy(_create_download_manager)
+runtime.configure_download_manager(download_manager)
 
 
 __all__ = [

@@ -1,9 +1,171 @@
 # TODO
 
+- **当前首要目标：让 `core/` 成为可独立启动、可通过稳定 JSON 契约集成到 Flutter + Serious Python 的后端；现有 Flet `app/` 必须逐步成为该后端的普通消费者。**
 - UX 优先级切到整体体验重设计：主题基础采用 Material 3，颜色走设置驱动的自适应/手动色种，后续页面只使用语义色和主题入口。
 - 下一步先重做主浏览体验的信息架构：阅读首页、搜索、详情页、查看器、下载/本地画廊之间的动线要比 provider 功能更优先。
 - 画廊列表仍需补回分页能力：支持自动加载下一页，并保留手动翻页按钮作为显式控制。
 - 存储可靠性完成后增加受限的“存储浏览器”页面：仅浏览 Data/Cache/Downloads/Temp 四域，支持路径、大小、mtime、JSON/文本预览、ZIP 文件列表、缓存/临时文件维护和导出诊断；不得允许路径逃逸，Android 外部文件继续通过 FilePicker/SAF 交换，Web 端明确展示的是服务器文件而非浏览器设备文件。
+
+## 下次首要任务：Core 独立化与 Flutter 后端契约
+
+### 重构进度表
+
+| 阶段 | 状态 | 当前产物 | 下一验收点 |
+|---|---|---|---|
+| 1. Core 依赖边界 | 已完成 | `app -> core`；`core/` 无 `app`/`flet` import | 持续由依赖扫描守护 |
+| 2. 搜索/Feed API | 已完成 | `BackendFacade`、JSON-safe `MediaItemDTO`/`PageResultDTO`、稳定错误 | 后续 Provider 继续复用同一契约 |
+| 3. 独立 Runtime | 已完成 | `BackendRuntime` 拥有共享网络会话和 Provider client registry | 后续补完整 `initialize/shutdown` |
+| 4. 后端配置契约 | 已完成 | `core/config/` 模型、Repository Protocol、内存仓库、旧 JSON adapter | Flutter 实现自己的安全存储 adapter |
+| 5. 详情 API | API 已完成 | `MediaDetailDTO`、评论/关系 DTO、三 Provider 详情 Facade；EH metadata 已切换 | 图片/Archive 下沉后移除页面最后的 client 访问 |
+| 6. EH Archive API | 已完成 | Core Archive 服务、option/task DTO、Runtime manager port；Flet 只提交 archive ID | 后续复用通用任务查询 DTO |
+| 7. 下载任务 API | 已完成 | 丰富 `DownloadTaskDTO`、任务 service、Facade 操作；Flet 下载页只消费 DTO | 后续补速度/ETA 和本地画廊跳转字段 |
+| 8. 图片任务 API | API 已完成 | `ImageTaskDTO`/result DTO、轮询命令、Runtime 注入；Flet 保留高效本地 adapter | Serious Python 原型验证 bytes/base64 传输成本 |
+| 9. 本地画廊/历史 API | 已完成 | DTO、封面/ZIP 页资源服务、历史 service；Flet 页面只用 Facade | 后续补本地画廊删除/导出命令 |
+| 10. Runtime 生命周期 | 已完成 | 幂等 initialize/shutdown、失败重试、executor 重建；Flet 统一装配/退出 | Core-only Runtime 可统一启动/关闭 |
+| 11. Flutter bridge 原型 | 下一步 | 通信机制暂不锁定 | Serious Python 中跑通搜索、详情、图片、取消 |
+
+### 最终目标与边界
+
+- Flutter UI 只调用稳定的 Backend Facade/bridge，不直接持有 `EHentaiClient`、`PixivWebClient`、Booru client、`requests.Response`、Python `Future`、`Path`、线程事件或 SQLite 连接。
+- `core/` 必须能在不 import `app`、`flet` 或 Flutter 包的情况下独立构造和真实调用；平台通过普通回调、Protocol、路径和 JSON-safe 配置注入。
+- EH、Pixiv、Booru 只统一应用服务入口和最小公共 DTO，不强行统一底层协议；provider-specific metadata 必须保留，但跨 bridge 前必须 JSON-safe。
+- Python 后端独占网络会话、Cookie、SQLite、缓存和下载任务；Flutter 不并行直接操作这些资源。
+- 长任务统一为 `start/status/cancel/retry/list` 和稳定任务 DTO；不得跨 bridge 暴露 callback、Python Future 或线程对象。
+- 外部错误使用稳定的 `code/message/provider/retryable`；Flutter 不解析中文异常文本决定业务状态。
+- 当前阶段不选定 JSON-RPC、FFI 或 Serious Python channel 的具体实现；先稳定 Python API，再包装 bridge。
+
+### 已完成基线
+
+- `core/` 已无 `app`/`flet` 反向 import；完整扫描与测试已验证。
+- 已新增 `core/api/`：
+  - `BackendFacade`
+  - `MediaItemDTO`、`PageResultDTO`、`MediaDetailDTO`、评论/关系 DTO
+  - `BackendError` 与稳定错误 payload
+  - `to_dict()` 结果可直接 JSON 序列化，不泄漏 Provider `raw`
+- 已新增 `core/runtime/BackendRuntime`，独立拥有：
+  - `BrowserSessionService`
+  - EH client 创建
+  - Pixiv/Booru client registry、复用、配置签名和失效
+  - `BackendFacade`
+- `BackendRuntime` 只依赖四个配置 loader 以及可选日志/计时器；不知道配置文件位置和 UI 框架。
+- 已用仅 import `core.runtime` 的真实脚本验证 EH、Pixiv、Safebooru 搜索和 JSON-safe 输出。
+- Flet 已通过 Facade 调用 EH 搜索、Pixiv 搜索/推荐/关注/排行/收藏及全部 Booru 搜索。
+- `app/backend.py` 现在是 Flet composition root；`app/browser_session.py`、`app/pixiv_session.py`、`app/booru_session.py` 仅保留兼容 re-export。
+- 已新增 `core/config/`：`BackendConfig`、EH/Pixiv/Booru/Proxy 配置 dataclass、`BackendConfigRepository` Protocol 和内存仓库。
+- `app/backend_config.py` 将现有 `Data/config.json` schema 映射到 Core 配置模型，保存后端配置时保留主题、网格等 UI 偏好。
+- 设置页通过 Runtime 保存 EH/Pixiv/Booru/Proxy 配置并失效 client，不再调用 Pixiv/Booru session 兼容模块。
+- Backend Facade 已提供 EH/Pixiv/Booru 通用详情入口；Provider `raw` 不进入详情 DTO。
+- EH 详情缓存 schema 已升级到 v3 并存储 `MediaDetailDTO`；旧 v2 Provider 对象缓存自动失效重拉。
+- Flet EH 详情 metadata 网络读取已切到 Facade；缩略图、原图解析和 Archive 仍暂时直接使用共享 client，分别在后续批次下沉。
+- 已新增 UI-independent `EHArchiveService`、`ArchiveOptionDTO` 和 `TaskStartedDTO`；下载 manager 通过 Core Protocol/Runtime 注入。
+- Flet Archive 页面只调用 `list_eh_archives()` / `start_eh_archive_download()`，不再组装 Referer、gid/token、有效期或 `tag_data`。
+- 已新增丰富 `DownloadTaskDTO` 和 `DownloadTaskService`，保留任务进度、业务 gallery token、Archive、有效期、恢复能力、错误和时间字段。
+- Flet 下载页只消费 DTO/Facade，不再 import manager、内部 `DownloadTask`、tag_data、下载 URL、headers 或磁盘路径。
+- 已新增 `ImageTaskDTO`、`ImageResultDTO` 和 `ImageTaskService`，支持 `start/status/list/cancel/retry/result/remove`，公开结果不含 Future、订阅、Event 或本地 Path。
+- Runtime 已可注入 image fetcher；禁图开关在 Core task 入口返回稳定 `images_disabled`，图片结果暂以 base64 DTO 供 Serious Python 原型使用。
+- Flet 图片控件暂时保留本地 Future/结果泵 adapter，以维持共享请求、最后订阅者取消、批量 UI 更新和防闪烁性能；该 adapter 属于 App 实现，不进入跨语言 API。
+- 已新增本地画廊/历史 DTO 和 application service；封面、ZIP 页列表与受限单页解压均由 Core 按稳定 gallery ID 执行。
+- Flet 本地画廊、ZIP 阅读器和历史页已通过 Facade 获取数据，不再直接扫描目录、读取 SQLite 或把 archive Path 放入页面状态。
+- Runtime 统一管理下载、本地画廊和图片执行 service 生命周期；关闭不会触发懒 service 创建，图片 executor 关闭后可在同进程重建。
+- Flet `main()` 只调用 `runtime.initialize()`，composition root 统一注册 `runtime.shutdown()`，不再由图片 adapter 单独注册退出回调。
+- 当前自动测试基线：`200 tests passed`；测试中的失效 EH 封面 404 是允许失败的旧 smoke probe。
+
+### 已完成批次：后端配置与凭据仓库
+
+1. 已在 `core/config/` 定义 JSON-safe 后端配置模型，覆盖：
+   - EH Cookie 与登录开关
+   - Pixiv Cookie/User ID
+   - Booru API 凭据
+   - 代理 mode/URL
+2. 已定义小型 `BackendConfigRepository` Protocol；Core Runtime 依赖该接口，不依赖 `app/storage.py`。
+3. 已开始将当前混合配置拆为两类所有权：
+   - 后端配置：Provider 凭据、代理、下载/缓存业务设置
+   - UI 偏好：主题、颜色、网格、窗口、Flet 调试开关
+4. 第一版继续兼容现有 `FletViewer/Data/config.json`，不迁移、不打印或丢失真实 Cookie；Flet adapter 负责旧 schema 映射。
+5. 凭据保存后通过 Runtime 正式方法失效相关 client；设置页已不再 import Pixiv/Booru session 兼容函数。
+6. 已覆盖内存仓库、旧 JSON adapter、默认值、UI 偏好保留、凭据更新和 client 重建测试；损坏 JSON 继续由现有 storage quarantine 测试覆盖。
+
+### 已完成批次：详情 Facade
+
+1. 已新增最小 `MediaDetailDTO`、`CommentDTO` 和 `RelatedMediaDTO`；公共字段 JSON-safe，Provider 差异位于受控 `metadata`。
+2. `BackendFacade` 已增加 `get_media_detail` 以及 EH/Pixiv/Booru 专用详情方法，并继续输出稳定 `BackendError`。
+3. EH 详情 metadata 已通过 Facade 获取并以 DTO 缓存；Pixiv/Booru 详情 API 已具备，但当前 Flet 尚无对应通用详情页面。
+4. 已覆盖三 Provider 映射、评论/版本关系、图片 variants、provider-specific metadata、`raw` 隔离、JSON 序列化和错误码。
+5. 未在本批迁移 Archive、缩略图和原图解析，因此 `gallery_detail.py` 仍会为这些职责访问共享 EH client；这是明确的后续边界，不属于详情 DTO 回退。
+
+### 已完成批次：EH Archive 服务
+
+1. Core 已定义 JSON-safe `ArchiveOptionDTO`、`TaskStartedDTO` 和 `EHArchiveService`；不返回 Provider `Archive`、manager task 或 `Path`。
+2. Runtime 通过小型 `ArchiveDownloadManager` Protocol 延迟注入下载 manager；Core-only 可使用自有实现或 fake，不依赖 App。
+3. `list_eh_archives` 和 `start_eh_archive_download` 已进入 Facade；Flet 只展示 DTO 并提交 gallery URL/archive ID。
+4. 保留原始 ZIP、共享 browser session、Referer、有效期 86400 秒、最大 IP 数 2、详情/缩略图快照和现有本地画廊消费契约。
+5. 已覆盖 Core-only 列表、H@H 排除、任务 metadata、未知选项、登录错误、DTO JSON 序列化和 Runtime manager 注入测试。
+
+### 已完成批次：下载任务 API
+
+1. 已定义 JSON-safe `DownloadTaskDTO`，包含 task ID、Provider、kind、状态、进度、标题、错误、时间、恢复能力、media 和 expiry。
+2. 业务 gallery token、gallery URL、gid 和 Archive 字段明确保留；只隔离签名下载 URL、HTTP headers/Cookie、内部路径、ETag、Future 和 manager 对象。
+3. Core service/Facade 已提供 `list_download_tasks`、`get_download_task`、`cancel_download_task`、`retry_download_task`、`delete_download_task`。
+4. 未知 task 使用稳定 `task_not_found`；状态继续兼容 `queued/running/completed/failed/cancelled/consumed`。
+5. `app/views/downloads.py` 已只消费 DTO/Facade，现有刷新、进度、取消、重试和删除交互保持。
+6. 已覆盖 JSON 序列化、丰富业务字段、执行秘密隔离、历史 EH task provider 推导、状态命令和未知 task。
+
+### 已完成批次：图片任务 API 基础
+
+1. 已盘点缩略图和查看器两类语义；缩略图共享同 URL 请求并按订阅取消，查看器原图支持独立任务和协作取消，未强行抹平两者。
+2. 已定义 JSON-safe `ImageTaskDTO`/`ImageResultDTO`，提供 `start/status/list/cancel/retry/result/remove`。
+3. 图片结果目前使用 base64，包含 MIME、byte length 和 cache 命中；不暴露 cache Path、Future、Event 或订阅对象。
+4. 相同 URL 的多个 task ID 共享底层请求；单个 task 取消立即显示 cancelled，仅最后消费者取消时停止底层请求。
+5. Runtime 已支持 image fetcher 与禁图策略注入，Core-only fake 验证不依赖 App/Flet。
+6. Flet 本地 adapter 暂不改为 DTO 轮询，因为现有 Future callback + result pump 能批量更新并避免高频 bridge/页面 diff；Flutter 使用轮询 API，最终传输方式在 Serious Python 原型中实测。
+
+### 已完成批次：本地画廊与历史 API
+
+1. 已定义 JSON-safe `LocalGalleryDTO`、`LocalGalleryPageDTO`、`LocalResourceDTO` 和 `HistoryItemDTO`；内部 archive/cover Path 不进入 DTO。
+2. Core service 通过稳定 `provider:gid:token` ID 提供本地画廊列表/详情、封面、ZIP 页列表和受限单页解压。
+3. ZIP 继续限制 member 数量、单页/总大小、重复文件名、隐藏文件和路径逃逸；页面只提交 gallery ID/member ID。
+4. 历史 service 输出嵌套 `MediaItemDTO`，支持 record/list/clear，并兼容已有 `Comic` metadata 快照和 GID 去重。
+5. Runtime 已支持 manager/repository port 注入；Flet 本地画廊、ZIP 阅读器和历史页均已迁移到 Facade。
+6. 本批未增加危险的本地画廊删除；删除/导出需在后续定义确认、任务占用和平台文件交换语义后加入。
+
+### 已完成批次：Runtime 完整生命周期与独立装配
+
+1. `BackendRuntime.initialize()` 按下载、本地画廊顺序幂等启动；初始化异常不标记成功，允许调用方修复后重试。
+2. `BackendRuntime.shutdown()` 关闭图片/下载 executor、清理 Provider client，并允许同进程再次 initialize。
+3. Flet 图片 adapter 关闭时只处理已创建实例，不因退出创建缓存目录或线程池；关闭后释放 fetcher/coordinator 以支持完整重建。
+4. Flet `main()` 已改为统一调用 Runtime 初始化，composition root 统一注册退出回调；本地画廊仍通过模块 import 注册现有 manager port。
+5. Runtime lifecycle 测试覆盖幂等启动、失败重试、反序关闭、参数传递和重启；LazyProxy 测试覆盖无副作用检查、释放和重建。
+6. 具体 Core service factory 暂不固化；在 Serious Python 原型中根据 Flutter 提供的存储路径、日志/通知 callback 和 bridge 线程模型设计。
+
+### 下一批：Flutter + Serious Python Bridge 原型
+
+1. 建立最小 Flutter shell 和 Serious Python Python package，先只装配内存配置与 Core Runtime，不引入 Flet adapter。
+2. 定义单一 JSON command envelope 和稳定错误 envelope，首批覆盖 initialize、search、detail、image task status/result/cancel、shutdown。
+3. Flutter 侧只保存 task ID 和 DTO；Python 侧独占 session、Future、Cookie、Path、SQLite 和 executor。
+4. 对同一张图片实测 base64 JSON 与原生 bytes/临时受控资源通道的耗时、峰值内存和 Android 可用性，再确定正式结果传输。
+5. 用 Flutter lifecycle 验证重复 initialize、App pause/resume、shutdown、Python 异常和取消竞态。
+6. 原型通过后再补文件选择器、系统浏览器、通知和平台存储 callback，不将 Flutter 包 import 到 `core/`。
+
+### 后续批次
+
+1. **Runtime 完整生命周期**：统一 `initialize/shutdown`，管理图片 executor、下载 manager、数据库和缓存；支持测试重建。
+2. **Bridge 原型**：使用 Flutter + Serious Python 对搜索、详情、图片和取消做最小端到端验证，并比较 base64/bytes 传输成本。
+
+### 下次开始顺序
+
+1. 确认 Flutter/Serious Python 原型目录、构建方式和目标平台版本；不得把实验依赖直接加入 Android Core 正式依赖。
+2. 建立最小 bridge command/error envelope，复用现有 DTO `to_dict()`，不为 Flutter 再建第二套业务模型。
+3. 首先跑通 Core-only initialize/search/detail/shutdown，再接图片 task ID、轮询、取消和结果读取。
+4. 记录 base64/bytes 的 Android 真机传输数据后选择机制，不凭桌面结果锁定移动端接口。
+5. 验证 Python Runtime 不 import `app`/`flet`/Flutter，Flutter 不读取配置凭据、SQLite、缓存 Path 或下载内部状态。
+6. 运行 Core-only 真实 smoke、完整测试、`compileall`、`git diff --check` 和 `core -> app/flet` 依赖扫描。
+
+### 验收标准
+
+- 删除或不导入 Flet 模块时，可构造 Runtime、读取/保存后端配置并调用三类 Provider。
+- Backend API 的所有公开输入输出均可 JSON 序列化，且不含 Cookie value、`raw`、`Path`、Response、Future 或控件。
+- Flutter adapter 只需要实现配置、平台路径、通知和 bridge，不重新实现 Provider client registry。
+- Flet 行为不回退；凭据保存、Provider 搜索、Pixiv feeds 和 EH 登录继续工作。
 
 ## 未来目标：单文件画廊与 CBZ
 
@@ -24,7 +186,7 @@
 5. 增加受四域根目录限制的微型文件管理器/存储浏览器，主要用于 Android、Web/server 和桌面存储诊断；危险删除需确认，Data/Downloads 不提供无保护批量删除。
 6. 完成 Linux、Windows、Android、Web/server 的存储、通知、代理、下载恢复和外部文件交换验收。
 
-## 下次首要任务：平台存储拆分
+## 平台存储拆分（代码已落地，待 Android 真机验收）
 
 ### 背景与已确认事实
 
@@ -247,7 +409,7 @@ Android正式APK手工测试：
 - 不要为了“统一”同时重构下载模型、缓存数据库和Provider协议；路径拆分优先小改、可迁移、可验证。
 - `cache.db`虽然可重建，但其中若未来加入不可重建信息，必须拆表或迁入Data，不能依赖系统cache持久性。
 
-### 下次开始时的执行顺序
+### Android 验收继续顺序
 
 1. 检查当前工作树和本TODO，确认缩略图并发修复、下载页三Provider Tab、默认瀑布流、Temp日志和启动路径print仍在。
 2. 读取`app/storage.py`以及所有路径常量调用点，建立完整路径消费者清单。

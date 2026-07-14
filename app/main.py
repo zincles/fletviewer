@@ -31,10 +31,11 @@ if sys.platform.startswith("linux") and "--web" not in sys.argv and "--server" n
 import flet as ft
 
 from app.browser_session import browser_session
+from app.backend import runtime
 from app.controls.task_debug_overlay import TaskDebugOverlay
 from app.controls.persistent_tabs import PersistentTabSpec, PersistentTabView
 from app.debug_log import configure_logging, format_duration_ms, log_debug, log_exception
-from app.local_gallery_manager import local_gallery_manager
+import app.local_gallery_manager  # Register the gallery service with BackendRuntime.
 from app.image_results import image_result_pump
 from app.navigation import AppNavigator, reading_label_for_index
 from app.notifications import Notification, notifier
@@ -256,7 +257,7 @@ def main(page: ft.Page):
         os.environ["FLETVIEWER_WEB"] = "1"
     page.fletviewer_storage_error = None
     try:
-        local_gallery_manager.initialize()
+        runtime.initialize()
     except Exception as ex:
         page.fletviewer_storage_error = str(ex)
         log_exception("存储", f"数据存储不可用，将以受限模式启动：{ex}")

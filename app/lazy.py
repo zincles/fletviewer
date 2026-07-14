@@ -22,5 +22,17 @@ class LazyProxy(Generic[T]):
                     self._instance = self._factory()
         return self._instance
 
+    def resolve_if_created(self) -> T | None:
+        """Return the instance without triggering lazy construction."""
+        with self._lock:
+            return self._instance
+
+    def reset(self) -> T | None:
+        """Release and return the current instance without creating one."""
+        with self._lock:
+            instance = self._instance
+            self._instance = None
+            return instance
+
     def __getattr__(self, name: str):
         return getattr(self.resolve(), name)

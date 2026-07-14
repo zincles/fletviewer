@@ -5,7 +5,7 @@ from typing import Callable
 
 import flet as ft
 
-from app.browser_session import browser_session
+from app.backend import backend
 from app.controls.masonry_gallery import MasonryGallery, MasonryItem
 from app.debug_log import Timer, log_debug, log_exception
 from app.grid_layout import runs_count_for_width
@@ -202,9 +202,8 @@ def create_view(page: ft.Page, context: SearchContext | None = None) -> ft.Contr
         def worker():
             try:
                 log_debug("搜索", f"开始搜索 关键词={kw} 页面URL={page_url}")
-                client = browser_session.get_eh_client(require_login=context.needs_login)
                 with Timer("搜索", f"执行搜索 关键词={kw} 页面URL={page_url}"):
-                    result = context.load(client, kw, page_url)
+                    result = backend.search_eh(kw, cursor=page_url, scope=context.key)
                 log_debug(
                     "搜索",
                     f"搜索结果 数量={len(result.comics)} 上一页={result.prev_url} 下一页={result.next_url}",

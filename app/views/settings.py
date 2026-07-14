@@ -1,7 +1,9 @@
 import json
+from dataclasses import replace
 
 import flet as ft
 
+from app.backend import runtime
 from app.browser_session import browser_session
 from app.debug_log import log_exception
 from app.gallery_cache import clear_gallery_cache
@@ -20,12 +22,10 @@ from app.storage import (
     load_eh_config,
     load_pixiv_config,
     save_app_config,
-    save_booru_config,
-    save_eh_config,
-    save_pixiv_config,
 )
 from app.toast import show_error_toast, show_toast
 from app.ui_update import request_update
+from core.config import BooruConfig, EHConfig, PixivConfig, ProxyConfig
 
 COOKIE_FIELDS = [
     ("ipb_member_id", "ipb_member_id", "EH 会员 ID", True),
@@ -522,7 +522,11 @@ def create_view(page: ft.Page) -> ft.Control:
 
     def apply_login_mode(reason: str) -> None:
         save_app_config(current_app_config())
-        browser_session.set_login_enabled(bool(enable_login_switch.value))
+        current = runtime.config_repository.load().eh
+        runtime.save_eh_config(
+            replace(current, login_enabled=bool(enable_login_switch.value)),
+            verify=bool(enable_login_switch.value),
+        )
         login_status.value = browser_session.login_status_text()
         update_login_status_lamp()
         _invalidate_gallery_views(page, reason)
@@ -558,32 +562,31 @@ def create_view(page: ft.Page) -> ft.Control:
             status.color = ft.Colors.ERROR
             page.update()
             return
-        save_eh_config(data)
-        apply_login_mode("eh_config_saved")
+        runtime.save_eh_config(
+            EHConfig(**data, login_enabled=bool(enable_login_switch.value)),
+            verify=bool(enable_login_switch.value),
+        )
+        _invalidate_gallery_views(page, "eh_config_saved")
+        login_status.value = browser_session.login_status_text()
+        update_login_status_lamp()
         status.value = f"已保存到 {get_storage_layout().config_file}"
         status.color = ft.Colors.PRIMARY
         page.update()
 
     def on_save_booru(e):
-        from app.booru_session import invalidate_booru_clients
-
-        save_booru_config({
-            "gelbooru_user_id": (gelbooru_user_id.value or "").strip(),
-            "gelbooru_api_key": (gelbooru_api_key.value or "").strip(),
-        })
-        invalidate_booru_clients()
+        runtime.save_booru_config(BooruConfig(
+            gelbooru_user_id=(gelbooru_user_id.value or "").strip(),
+            gelbooru_api_key=(gelbooru_api_key.value or "").strip(),
+        ))
         booru_status.value = "Gelbooru API 凭据已保存"
         booru_status.color = ft.Colors.PRIMARY
         page.update()
 
     def on_save_pixiv(e):
-        from app.pixiv_session import invalidate_pixiv_client
-
-        save_pixiv_config({
-            "user_id": (pixiv_user_id.value or "").strip(),
-            "cookie": (pixiv_cookie.value or "").strip(),
-        })
-        invalidate_pixiv_client()
+        runtime.save_pixiv_config(PixivConfig(
+            user_id=(pixiv_user_id.value or "").strip(),
+            cookie=(pixiv_cookie.value or "").strip(),
+        ))
         pixiv_status.value = "Pixiv Cookie 已保存；下次 Pixiv 请求会使用此网页登录会话"
         pixiv_status.color = ft.Colors.PRIMARY
         page.update()
@@ -643,7 +646,10 @@ def create_view(page: ft.Page) -> ft.Control:
     def apply_proxy(e):
         try:
             save_app_config(current_app_config())
-            browser_session.configure_proxy_from_storage()
+            runtime.save_proxy_config(ProxyConfig(
+                mode=proxy_mode_dropdown.value or "disabled",
+                url=(proxy_url_field.value or "").strip(),
+            ))
             proxy_status.value = browser_session.proxy_status_text()
             proxy_status.color = ft.Colors.PRIMARY
         except Exception as ex:

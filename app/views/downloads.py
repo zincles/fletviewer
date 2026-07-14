@@ -2,8 +2,9 @@ import time
 
 import flet as ft
 
+from app.backend import backend
 from app.debug_log import format_duration_ms, log_debug
-from app.download_manager import DownloadTask, download_manager
+from core.api import DownloadTaskDTO
 
 
 def _format_bytes(value: int) -> str:
@@ -15,13 +16,11 @@ def _format_bytes(value: int) -> str:
     return f"{int(value)} B"
 
 
-def _archive_progress(task: DownloadTask) -> float | None:
-    if task.bytes_total <= 0:
-        return None
-    return max(0.0, min(1.0, task.bytes_done / task.bytes_total))
+def _archive_progress(task: DownloadTaskDTO) -> float | None:
+    return task.progress
 
 
-def _archive_status(task: DownloadTask) -> str:
+def _archive_status(task: DownloadTaskDTO) -> str:
     text = task.status
     if task.error:
         text += f": {task.error}"
@@ -30,9 +29,8 @@ def _archive_status(task: DownloadTask) -> str:
     return text
 
 
-def _archive_task_card(task: DownloadTask, refresh) -> ft.Control:
-    gallery = task.tag_data.get("gallery_details", {})
-    title = gallery.get("title") or task.tag_data.get("archive_title") or task.filename
+def _archive_task_card(task: DownloadTaskDTO, refresh) -> ft.Control:
+    title = task.title
     progress_text = (
         f"{_format_bytes(task.bytes_done)} / {_format_bytes(task.bytes_total)}"
         if task.bytes_total
@@ -40,16 +38,16 @@ def _archive_task_card(task: DownloadTask, refresh) -> ft.Control:
     )
     actions: list[ft.Control] = []
     if task.status in {"failed", "cancelled", "completed"}:
-        actions.append(ft.Button("重试", icon=ft.Icons.RESTART_ALT, on_click=lambda e, task_id=task.id: (download_manager.retry_task(task_id), refresh())))
+        actions.append(ft.Button("重试", icon=ft.Icons.RESTART_ALT, on_click=lambda e, task_id=task.id: (backend.retry_download_task(task_id), refresh())))
     if task.status in {"queued", "running"}:
-        actions.append(ft.Button("取消", icon=ft.Icons.CANCEL, on_click=lambda e, task_id=task.id: (download_manager.cancel_task(task_id), refresh())))
+        actions.append(ft.Button("取消", icon=ft.Icons.CANCEL, on_click=lambda e, task_id=task.id: (backend.cancel_download_task(task_id), refresh())))
     if task.status != "running":
-        actions.append(ft.Button("删除", icon=ft.Icons.DELETE_OUTLINE, on_click=lambda e, task_id=task.id: (download_manager.delete_task(task_id), refresh())))
+        actions.append(ft.Button("删除", icon=ft.Icons.DELETE_OUTLINE, on_click=lambda e, task_id=task.id: (backend.delete_download_task(task_id), refresh())))
     return ft.Container(
         content=ft.Column(
             [
                 ft.Row([ft.Text(title, size=16, weight=ft.FontWeight.BOLD, expand=True, selectable=True), ft.Text(task.status, size=13)]),
-                ft.Text(task.tag_data.get("gallery_url", task.url), size=12, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+                ft.Text(str(task.media.get("gallery_url") or ""), size=12, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
                 ft.ProgressBar(value=_archive_progress(task)),
                 ft.Row([ft.Text(progress_text, size=12), ft.Text(_archive_status(task), size=12, expand=True)]),
                 ft.Row(actions, spacing=8, wrap=True),
@@ -130,7 +128,7 @@ class _DownloadsView(ft.Container):
 
     def refresh_archives(self, *, update: bool = True) -> None:
         started_at = time.perf_counter()
-        tasks = [task for task in download_manager.list_tasks() if "eh_archive" in task.tags]
+        tasks = backend.list_download_tasks(provider="ehentai", kind="eh_archive")
         self._archive_status_text.value = f"共 {len(tasks)} 个归档任务"
         self._archive_tasks.controls = [_archive_task_card(task, self.refresh_archives) for task in tasks] or [
             ft.Text("暂无归档任务", color=ft.Colors.ON_SURFACE_VARIANT)

@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import flet as ft
 
-from app.booru_session import get_booru_client
+from app.backend import backend
 from app.controls.async_image import async_image
 from app.controls.paged_masonry import PagedMasonryView
 from app.debug_log import log_exception
 from app.toast import show_toast
 from app.views.image_viewer import ImageViewerItem
 from core.paged_feed import PageBatch
-from core.provider.booru import BOORU_PROVIDERS, BooruPost
+from core.api.dto import MediaItemDTO
+from core.provider.booru import BOORU_PROVIDERS
 
 
 def create_provider_view(page: ft.Page, provider_id: str) -> ft.Control:
@@ -18,14 +19,14 @@ def create_provider_view(page: ft.Page, provider_id: str) -> ft.Control:
     viewer_state: dict[str, list[ImageViewerItem]] = {"items": []}
 
     def load_page(cursor):
-        result = get_booru_client(provider_id).search_posts(query_state["value"], page=cursor)
-        return PageBatch(result.posts, result.next_page)
+        result = backend.search_booru(provider_id, query_state["value"], cursor=cursor)
+        return PageBatch(result.items, result.next_cursor)
 
-    def update_viewer_items(posts: list[BooruPost]) -> None:
+    def update_viewer_items(posts: list[MediaItemDTO]) -> None:
         viewer_state["items"] = [
             ImageViewerItem(
                 url=post.image_url,
-                title=f"{display_name} #{post.id}",
+                title=post.title,
                 detail={
                     "provider": provider_id,
                     "post_id": str(post.id),
@@ -39,7 +40,7 @@ def create_provider_view(page: ft.Page, provider_id: str) -> ft.Control:
             if post.image_url
         ]
 
-    def build_image(post: BooruPost, index: int) -> ft.Control:
+    def build_image(post: MediaItemDTO, index: int) -> ft.Control:
         return ft.Container(
             content=async_image(
                 page,
@@ -55,19 +56,19 @@ def create_provider_view(page: ft.Page, provider_id: str) -> ft.Control:
             bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
         )
 
-    def open_image(_post: BooruPost, index: int) -> None:
+    def open_image(_post: MediaItemDTO, index: int) -> None:
         open_viewer = getattr(page, "fletviewer_open_image_viewer", None)
         if callable(open_viewer):
             open_viewer(viewer_state["items"], index)
 
-    def aspect_ratio(post: BooruPost) -> float:
-        return post.original.width / post.original.height if post.original.width and post.original.height else 0.72
+    def aspect_ratio(post: MediaItemDTO) -> float:
+        return post.aspect_ratio or 0.72
 
     def show_error(ex: Exception) -> None:
         log_exception("Booru", f"{display_name} 搜索失败：{ex}")
         show_toast(page, f"{display_name} 搜索失败")
 
-    masonry = PagedMasonryView[BooruPost, int](
+    masonry = PagedMasonryView[MediaItemDTO, int | str](
         page,
         load_page=load_page,
         build_image=build_image,

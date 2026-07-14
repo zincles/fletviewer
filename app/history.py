@@ -1,10 +1,12 @@
 import dataclasses
 
 from app.lazy import LazyProxy
+from app.backend import backend, runtime
 from app.storage import ensure_dirs, get_storage_layout
 from core.data.data_db import AppDataDB
 from core.data.history import HistoryEntry, HistoryRepository
 from core.download.manager import now_iso
+from core.api import HistoryItemDTO, MediaItemDTO
 from core.provider.ehgrabber import Comic, EHentaiClient
 
 
@@ -13,21 +15,23 @@ def _create_history_repository() -> HistoryRepository:
 
 
 history_repository = LazyProxy(_create_history_repository)
+runtime.configure_history_repository(history_repository)
 
 
-def record_gallery_history(comic: Comic) -> HistoryEntry:
+def record_gallery_history(comic: Comic | MediaItemDTO) -> HistoryItemDTO:
     """保存画廊列表 Comic 快照，供历史页重建统一画廊卡片。"""
     gid, _token = EHentaiClient.parse_url(comic.id)
-    return history_repository.record(
-        HistoryEntry(
-            provider="ehentai",
-            kind="gallery",
-            source_id=str(gid),
-            title=comic.title,
-            url=comic.id,
-            metadata=dataclasses.asdict(comic),
-            created_at=now_iso(),
-        )
+    if isinstance(comic, MediaItemDTO):
+        item = comic
+    else:
+        from core.api.backend import BackendFacade
+
+        item = BackendFacade._eh_item(comic)
+    return backend.record_history_media(
+        item,
+        kind="gallery",
+        source_id=str(gid),
+        created_at=now_iso(),
     )
 
 

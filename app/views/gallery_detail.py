@@ -1,13 +1,12 @@
 import dataclasses
 import json
-from urllib.parse import urlsplit
 
 import flet as ft
 
+from app.backend import backend
 from app.browser_session import browser_session
 from app.controls.async_image import async_image, image_placeholder
 from app.debug_log import Timer, log_debug, log_exception
-from app.download_manager import download_manager, now_iso
 from app.gallery_cache import get_eh_gallery_cache, put_eh_gallery_cache
 from app.gallery_type_colors import gallery_type_color, gallery_type_foreground
 from app.storage import get_gallery_detail_preview_rows, get_gallery_grid_columns, should_render_gallery_cards
@@ -541,46 +540,10 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
 
     def create_archive_task(archive):
         try:
-            client = browser_session.get_eh_client(require_login=True)
-            details = state["details"]
-            thumbs = state["thumbs"]
-            if details is None:
-                with Timer("详情", f"下载：加载画廊信息 {comic.id}"):
-                    details = client.load_comic_info(comic.id)
-            if thumbs is None:
-                with Timer("详情", f"下载：加载缩略图 {comic.id}"):
-                    thumbs = client.load_thumbnails(comic.id)
-            with Timer("详情", f"获取归档 URL 画廊={comic.id} 归档={archive.id}"):
-                download_url = client.get_archive_download_url(comic.id, archive.id)
-            if not download_url:
-                raise RuntimeError("该 Archive 选项未返回可下载 URL")
-
-            gid, token = client.parse_url(comic.id)
-            domain = urlsplit(comic.id).netloc or "e-hentai.org"
-            task = download_manager.create_task(
-                download_url,
-                "archive.zip",
-                tags=["eh_archive"],
-                headers={"Referer": comic.id},
-                tag_data={
-                    "provider": "ehentai",
-                    "domain": domain,
-                    "gallery_url": comic.id,
-                    "gid": str(gid),
-                    "token": token,
-                    "archive_id": archive.id,
-                    "archive_title": archive.title,
-                    "archive_description": archive.description,
-                    "download_url_acquired_at": now_iso(),
-                    "download_url_valid_seconds": 86400,
-                    "max_ip_count": 2,
-                    "gallery_details": dataclasses.asdict(details) if dataclasses.is_dataclass(details) else {},
-                    "thumbnails_result": dataclasses.asdict(thumbs) if dataclasses.is_dataclass(thumbs) else {},
-                },
-            )
-            download_manager.start_task(task.id)
+            with Timer("详情", f"创建归档任务 画廊={comic.id} 归档={archive.id}"):
+                task = backend.start_eh_archive_download(comic.id, archive.id)
             download_status.value = f"已加入下载队列: {archive.title}"
-            log_debug("详情", f"归档任务已创建 任务={task.id} 画廊={comic.id}")
+            log_debug("详情", f"归档任务已创建 任务={task.task_id} 画廊={comic.id}")
         except Exception as ex:
             download_status.value = f"创建下载任务失败: {ex}"
             show_error_toast(page, "创建下载任务失败", ex)
@@ -594,9 +557,8 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
 
         def archive_worker():
             try:
-                client = browser_session.get_eh_client(require_login=True)
                 with Timer("详情", f"获取归档列表 {comic.id}"):
-                    archives = client.get_archives(comic.id)
+                    archives = backend.list_eh_archives(comic.id)
                 show_archive_dialog(archives)
             except Exception as ex:
                 download_status.value = f"加载 Archive 失败: {ex}"
@@ -620,7 +582,7 @@ def create_view(page: ft.Page, comic: Comic, on_back, register_refresh=None) -> 
                 log_debug("详情", f"已使用画廊缓存 {comic.id}")
             else:
                 with Timer("详情", f"加载画廊信息 {comic.id}"):
-                    details = client.load_comic_info(comic.id)
+                    details = backend.get_eh_detail(comic.id)
                 with Timer("详情", f"加载缩略图 {comic.id}"):
                     thumbs = client.load_thumbnails(comic.id)
                 put_eh_gallery_cache(comic.id, details, thumbs)

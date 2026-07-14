@@ -1,65 +1,31 @@
+import base64
 import json
-import zipfile
-from pathlib import Path
 
 import flet as ft
 
+from app.backend import backend
 from app.controls.async_image import image_placeholder, image_src_for_page
 from app.grid_layout import runs_count_for_width
-from app.local_gallery_manager import LocalGallery, local_gallery_manager
 from app.storage import should_render_gallery_cards
 from app.toast import show_error_toast
 from app.views.local_zip_viewer import create_view as local_zip_viewer
+from core.api import LocalGalleryDTO
 
 
-def _gallery_title(gallery: LocalGallery) -> str:
-    """从 metadata 中取本地画廊标题，缺失时回退到目录名。"""
-    metadata = gallery.metadata
-    title = metadata.get("gallery", {}).get("title")
-    return title or gallery.dir_path.name
-
-
-def _archive_path(gallery: LocalGallery) -> Path | None:
-    """返回本地画廊 ZIP 路径；文件不存在时返回 None。"""
-    archive = gallery.metadata.get("files", {}).get("archive")
-    if not archive:
-        return None
-    path = gallery.dir_path / archive
-    return path if path.exists() else None
-
-
-def _mime_for_path(path: Path) -> str:
-    """根据本地封面路径推断 MIME。"""
-    return {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-    }.get(path.suffix.lower(), "application/octet-stream")
-
-
-def _cover_control(page: ft.Page, gallery: LocalGallery) -> ft.Control:
+def _cover_control(page: ft.Page, gallery: LocalGalleryDTO) -> ft.Control:
     """创建本地画廊封面控件；Web/桌面统一使用 data URI。"""
-    cover = gallery.metadata.get("files", {}).get("cover")
-    if cover:
-        path = gallery.dir_path / cover
-        if path.exists():
-            try:
-                return ft.Image(
-                    src=image_src_for_page(page, path.read_bytes(), _mime_for_path(path)),
-                    width=float("inf"),
-                    height=float("inf"),
-                    fit=ft.BoxFit.COVER,
-                )
-            except Exception:
-                return image_placeholder(width=float("inf"), height=float("inf"))
+    if gallery.cover_available:
+        try:
+            resource = backend.get_local_gallery_cover(gallery.id)
+            return ft.Image(
+                src=image_src_for_page(page, base64.b64decode(resource.data_base64), resource.mime),
+                width=float("inf"),
+                height=float("inf"),
+                fit=ft.BoxFit.COVER,
+            )
+        except Exception:
+            return image_placeholder(width=float("inf"), height=float("inf"))
     return image_placeholder(width=float("inf"), height=float("inf"))
-
-
-def _gallery_details(gallery: LocalGallery) -> dict:
-    value = gallery.metadata.get("gallery")
-    return value if isinstance(value, dict) else {}
 
 
 def _meta_pill(text: str, icon: str | None = None) -> ft.Control:
@@ -103,32 +69,18 @@ def _format_bytes(value: int) -> str:
     return f"{int(value)} B"
 
 
-def _zip_summary(path: Path | None) -> str:
-    """读取 ZIP 摘要信息，包括大小和图片数量。"""
-    if path is None:
+def _zip_summary(gallery: LocalGalleryDTO) -> str:
+    if not gallery.archive_available:
         return "ZIP 文件不存在"
-    try:
-        with zipfile.ZipFile(path) as zf:
-            image_count = sum(
-                1 for name in zf.namelist()
-                if name.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
-                and "__MACOSX" not in Path(name).parts
-            )
-        return f"{path.name} · {_format_bytes(path.stat().st_size)} · {image_count} 张图片"
-    except Exception as ex:
-        return f"{path.name} · 读取 ZIP 失败: {ex}"
+    return f"{gallery.archive_filename} · {_format_bytes(gallery.archive_bytes)} · {gallery.page_count or '?'} 张图片"
 
 
-def _gallery_card(page: ft.Page, gallery: LocalGallery, open_detail) -> ft.Control:
+def _gallery_card(page: ft.Page, gallery: LocalGalleryDTO, open_detail) -> ft.Control:
     """创建本地画廊列表卡片。"""
-    metadata = gallery.metadata
-    source = metadata.get("source", {})
-    archive = metadata.get("archive", {})
-    details = _gallery_details(gallery)
-    title = _gallery_title(gallery)
-    category = str(details.get("category") or details.get("type") or "本地")
-    language = str(details.get("language") or details.get("language_detail") or "")
-    pages = details.get("pages") or details.get("max_page") or "?"
+    title = gallery.title
+    category = gallery.category or "本地"
+    language = gallery.language
+    pages = gallery.page_count or "?"
     cover = ft.Stack(
         [
             _cover_control(page, gallery),
@@ -148,7 +100,7 @@ def _gallery_card(page: ft.Page, gallery: LocalGallery, open_detail) -> ft.Contr
                         clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
                     ),
                     ft.Text(title, size=14, weight=ft.FontWeight.W_600, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Text(f"{language or '未知语言'} · {pages} 页 · {_format_bytes(archive.get('bytes_total', 0))}", size=11, color=ft.Colors.ON_SURFACE_VARIANT, max_lines=1),
+                    ft.Text(f"{language or '未知语言'} · {pages} 页 · {_format_bytes(gallery.archive_bytes)}", size=11, color=ft.Colors.ON_SURFACE_VARIANT, max_lines=1),
                 ],
                 spacing=8,
             ),
@@ -186,7 +138,7 @@ def create_view(page: ft.Page) -> ft.Control:
         add_resize_handler(update_grid_columns)
 
     def show_list(update: bool = True, *, force: bool = False):
-        galleries = local_gallery_manager.scan_local_galleries(force=force)
+        galleries = backend.list_local_galleries(force=force)
         status.value = f"共 {len(galleries)} 个本地画廊"
         grid.controls = [_gallery_card(page, gallery, show_detail) for gallery in galleries]
         if not galleries:
@@ -200,28 +152,24 @@ def create_view(page: ft.Page) -> ft.Control:
         if update:
             page.update()
 
-    def show_detail(gallery: LocalGallery):
-        archive_path = _archive_path(gallery)
-        details = _gallery_details(gallery)
-        source = gallery.metadata.get("source", {})
-        archive = gallery.metadata.get("archive", {})
-        metadata_text = ft.Text(json.dumps(gallery.metadata, ensure_ascii=False, indent=2), size=12, selectable=True)
+    def show_detail(gallery: LocalGalleryDTO):
+        metadata_text = ft.Text(json.dumps(gallery.to_dict(), ensure_ascii=False, indent=2), size=12, selectable=True)
 
         def open_zip_reader(e):
-            if archive_path is None:
+            if not gallery.archive_available:
                 status.value = "ZIP 文件不存在，无法阅读"
                 show_error_toast(page, "ZIP 文件不存在，无法阅读")
                 page.update()
                 return
-            content.content = local_zip_viewer(page, archive_path, _gallery_title(gallery), lambda: show_detail(gallery))
+            content.content = local_zip_viewer(page, gallery.id, gallery.title, lambda: show_detail(gallery))
             page.update()
 
         summary = ft.Wrap(
             [
-                _meta_pill(str(details.get("category") or details.get("type") or "本地")),
-                _meta_pill(f"{details.get('pages') or details.get('max_page') or '?'} 页", ft.Icons.IMAGE_OUTLINED),
-                _meta_pill(str(details.get("language") or details.get("language_detail") or "未知语言"), ft.Icons.LANGUAGE),
-                _meta_pill(f"评分 {details.get('rating') or details.get('rating_average') or '-'}", ft.Icons.STAR_OUTLINE),
+                _meta_pill(gallery.category or "本地"),
+                _meta_pill(f"{gallery.page_count or '?'} 页", ft.Icons.IMAGE_OUTLINED),
+                _meta_pill(gallery.language or "未知语言", ft.Icons.LANGUAGE),
+                _meta_pill(f"评分 {gallery.rating or '-'}", ft.Icons.STAR_OUTLINE),
             ],
             spacing=8,
             run_spacing=8,
@@ -232,10 +180,10 @@ def create_view(page: ft.Page) -> ft.Control:
                     ft.Container(content=_cover_control(page, gallery), width=280, height=390, border_radius=16, clip_behavior=ft.ClipBehavior.ANTI_ALIAS),
                     ft.Column(
                         [
-                            ft.Text(_gallery_title(gallery), size=28, weight=ft.FontWeight.W_600, selectable=True),
-                            ft.Text(str(details.get("uploader") or "未知上传者"), size=14, color=ft.Colors.ON_SURFACE_VARIANT),
+                            ft.Text(gallery.title, size=28, weight=ft.FontWeight.W_600, selectable=True),
+                            ft.Text(gallery.creator_name or "未知上传者", size=14, color=ft.Colors.ON_SURFACE_VARIANT),
                             summary,
-                            ft.FilledButton("开始阅读", icon=ft.Icons.MENU_BOOK, disabled=archive_path is None, on_click=open_zip_reader),
+                            ft.FilledButton("开始阅读", icon=ft.Icons.MENU_BOOK, disabled=not gallery.archive_available, on_click=open_zip_reader),
                         ],
                         spacing=16,
                         expand=True,
@@ -263,11 +211,10 @@ def create_view(page: ft.Page) -> ft.Control:
                         ft.Container(
                             content=ft.Column(
                             [
-                                _info_item("目录", gallery.dir_path, selectable=True),
-                                _info_item("归档", _zip_summary(archive_path), selectable=True),
-                                _info_item("来源", source.get("gallery_url", ""), selectable=True),
-                                _info_item("GID / Token", f"{source.get('gid', '')} / {source.get('token', '')}", selectable=True),
-                                _info_item("创建时间", gallery.metadata.get("created_at", "")),
+                                _info_item("归档", _zip_summary(gallery), selectable=True),
+                                _info_item("来源", gallery.page_url, selectable=True),
+                                _info_item("GID / Token", f"{gallery.source_id} / {gallery.source_token}", selectable=True),
+                                _info_item("创建时间", gallery.created_at),
                             ],
                             spacing=10,
                             ),
@@ -276,7 +223,7 @@ def create_view(page: ft.Page) -> ft.Control:
                     ],
                 ),
         ]
-        tags = _tag_controls(details.get("tags"))
+        tags = _tag_controls(gallery.tags)
         if tags:
             detail_controls.append(ft.ExpansionTile(title=ft.Text("标签", weight=ft.FontWeight.W_500), controls=[ft.Container(content=ft.Wrap(tags, spacing=8, run_spacing=8), padding=16)]))
         if show_raw_json:

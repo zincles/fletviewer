@@ -1,8 +1,8 @@
 import flet as ft
 
 from app.controls.masonry_gallery import MasonryGallery, MasonryItem
+from app.backend import backend
 from app.grid_layout import runs_count_for_width
-from app.history import history_entry_to_comic, history_repository
 from app.storage import get_gallery_view_mode
 from app.views.gallery_cards import make_gallery_card
 
@@ -38,8 +38,7 @@ def create_view(page: ft.Page) -> ft.Control:
         )
 
     def refresh(e=None):
-        entries = history_repository.list_entries(kind="gallery")
-        comics = [history_entry_to_comic(entry) for entry in entries]
+        comics = [entry.media for entry in backend.list_history(kind="gallery")]
         status.value = f"共 {len(comics)} 条画廊浏览记录"
         content.content = build_content(comics) if comics else ft.Container(
             content=ft.Text("暂无画廊浏览历史", color=ft.Colors.ON_SURFACE_VARIANT),
@@ -50,7 +49,7 @@ def create_view(page: ft.Page) -> ft.Control:
             page.update()
 
     def clear(e=None):
-        history_repository.clear(kind="gallery")
+        backend.clear_history(kind="gallery")
         refresh(e)
 
     refresh_btn = ft.Button("刷新", icon=ft.Icons.REFRESH, on_click=refresh)
