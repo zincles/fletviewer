@@ -124,7 +124,11 @@ def create_following_view(page: ft.Page) -> ft.Control:
 
 
 def create_bookmarks_view(page: ft.Page) -> ft.Control:
-    return _placeholder_page("Pixiv 收藏", "需要已登录网页会话；接口尚未验证。", ft.Icons.BOOKMARK)
+    def load_page(cursor):
+        result = get_pixiv_client().get_bookmarks(next_url=cursor)
+        return PageBatch(result.illusts, result.next_url)
+
+    return _create_illust_feed(page, label="收藏", load_page=load_page)
 
 
 def create_history_view(page: ft.Page) -> ft.Control:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse
 
 
 @dataclass(slots=True)
@@ -159,8 +161,20 @@ class PixivWebClient(PixivClient):
     def __init__(self, *, transport, cookie: str = "", user_id: str = "", log_debug=None):
         super().__init__(log_debug=log_debug)
         self.transport = transport
-        self.cookie = cookie.strip()
-        self.user_id = user_id.strip()
+        self.cookie = self._normalize_cookie(cookie)
+        self.user_id = user_id.strip() or self._user_id_from_cookie(self.cookie)
+
+    @staticmethod
+    def _normalize_cookie(cookie: str) -> str:
+        value = cookie.strip()
+        if value.lower().startswith("cookie:"):
+            value = value.split(":", 1)[1].strip()
+        return value
+
+    @staticmethod
+    def _user_id_from_cookie(cookie: str) -> str:
+        match = re.search(r"(?:^|;\s*)PHPSESSID=(\d+)(?:_|%5F)", cookie, flags=re.IGNORECASE)
+        return match.group(1) if match else ""
 
     def is_logged_in(self) -> bool:
         return bool(self.cookie)
@@ -260,6 +274,36 @@ class PixivWebClient(PixivClient):
         body = raw.get("body") if isinstance(raw.get("body"), dict) else {}
         items = body.get("illusts") if isinstance(body.get("illusts"), list) else []
         return PixivSearchResult([self._illust(item) for item in items if isinstance(item, dict)], query="discovery")
+
+    def get_bookmarks(self, *, user_id: str = "me", restrict: str = "public", next_url: str | None = None) -> PixivSearchResult:
+        if not self.cookie:
+            raise PixivProviderError("Pixiv 收藏需要已登录浏览器的 Cookie。")
+        target_user_id = self.user_id if user_id == "me" else user_id.strip()
+        if not target_user_id:
+            raise PixivProviderError("无法从 Pixiv Cookie 识别 User ID，请在设置中手动填写。")
+        limit = 48
+        if next_url:
+            url = next_url
+            params = None
+            offset = self._int(parse_qs(urlparse(next_url).query).get("offset", [0])[0])
+        else:
+            url = f"{self.base_url}/ajax/user/{target_user_id}/illusts/bookmarks"
+            params = {"tag": "", "offset": 0, "limit": limit, "rest": "hide" if restrict == "private" else "show", "lang": "zh"}
+            offset = 0
+        raw = self._get_json(url, params=params, referer=f"{self.base_url}/users/{target_user_id}/bookmarks/artworks")
+        body = raw.get("body") if isinstance(raw.get("body"), dict) else {}
+        items = body.get("works") if isinstance(body.get("works"), list) else []
+        total = self._int(body.get("total"))
+        next_offset = offset + limit
+        next_bookmarks_url = None
+        if items and next_offset < total:
+            query = urlencode({"tag": "", "offset": next_offset, "limit": limit, "rest": "hide" if restrict == "private" else "show", "lang": "zh"})
+            next_bookmarks_url = f"{self.base_url}/ajax/user/{target_user_id}/illusts/bookmarks?{query}"
+        return PixivSearchResult(
+            [self._illust(item) for item in items if isinstance(item, dict)],
+            next_bookmarks_url,
+            query="bookmarks",
+        )
 
     def get_ranking(self, *, mode: str = "day", date: str = "", next_url: str | None = None) -> PixivRankingResult:
         if next_url:

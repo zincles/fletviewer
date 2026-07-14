@@ -978,6 +978,7 @@ def main(page: ft.Page):
         """账户摘要 + Provider 切换入口。"""
         current = active_provider["value"]
         balance_status = ft.Text("GP/Credit 尚未读取", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        image_limit_status = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         archive_capacity_status = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
 
         def provider_tile(key: str, title: str, subtitle: str, icon, *, enabled: bool = True) -> ft.Control:
@@ -1006,6 +1007,11 @@ def main(page: ft.Page):
                     balance_status.value = (
                         f"GP {balance.gallery_points:,} · Credit {balance.credits:,} · Hath {balance.hath:,.2f}"
                     )
+                    image_limit_status.value = (
+                        f"图像配额 当前 {balance.image_limit_used:,} / 上限 {balance.image_limit_total:,} · "
+                        f"重置费用 {balance.image_limit_reset_cost_gp:,} GP\n"
+                        "配额会自动恢复；数值和 Hath Perk 提升后的上限仅在手动刷新时从 EH 重新读取"
+                    )
                     capacity_gib = balance.paid_archive_capacity_mib / 1024
                     archive_capacity_status.value = (
                         f"免费归档周配额 {balance.free_archive_quota_gb:g} GB（168h 滑动窗口） · "
@@ -1015,9 +1021,11 @@ def main(page: ft.Page):
                         f"{balance.estimated_gallery_count(500):,} 本 500 MiB"
                     )
                     balance_status.color = ft.Colors.PRIMARY
+                    image_limit_status.color = ft.Colors.ON_SURFACE_VARIANT
                     archive_capacity_status.color = ft.Colors.ON_SURFACE_VARIANT
                 except Exception as ex:
                     balance_status.value = "GP/Credit 读取失败；请确认 EH Cookie 有效"
+                    image_limit_status.value = ""
                     archive_capacity_status.value = ""
                     balance_status.color = ft.Colors.ERROR
                     log_exception("EH 账户", f"读取 GP/Credit 失败：{ex}")
@@ -1056,6 +1064,7 @@ def main(page: ft.Page):
                             vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
                         balance_status,
+                        image_limit_status,
                         archive_capacity_status,
                         ft.Row(
                             [
@@ -1090,7 +1099,7 @@ def main(page: ft.Page):
                     scroll=ft.ScrollMode.AUTO,
                 ),
                 width=500,
-                height=450,
+                height=500,
             ),
             content_padding=ft.Padding(8, 8, 8, 20),
         )

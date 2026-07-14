@@ -671,7 +671,7 @@ def create_view(page: ft.Page) -> ft.Control:
                 ft.Divider(),
                 ft.Text("Pixiv 网页会话", size=20, weight=ft.FontWeight.W_500),
                 ft.Text(
-                    "从已登录 pixiv.net 的浏览器请求中复制完整 Cookie。当前使用网页 AJAX 接口，不使用 OAuth 或模拟官方 App。User ID 仅在登录态/R18 请求要求时填写。",
+                    "从已登录 pixiv.net 的浏览器请求中复制完整 Cookie。当前使用网页 AJAX 接口，不使用 OAuth 或模拟官方 App。通常会从 PHPSESSID 自动识别 User ID，识别失败时再手动填写。",
                     size=14,
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 ),

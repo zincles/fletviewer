@@ -85,6 +85,42 @@ class PixivProviderSkeletonTests(unittest.TestCase):
         self.assertEqual(result.illusts[0].cover_url, "https://i.pximg.net/cover.jpg")
         self.assertEqual(transport.get.call_args.kwargs["params"], {"mode": "all", "limit": 100})
 
+    def test_web_client_normalizes_cookie_header_and_derives_user_id(self):
+        client = PixivWebClient(transport=Mock(), cookie="Cookie: PHPSESSID=123456_abcd; p_ab_id=1")
+        self.assertEqual(client.cookie, "PHPSESSID=123456_abcd; p_ab_id=1")
+        self.assertEqual(client.user_id, "123456")
+
+    def test_web_bookmarks_map_works_and_build_next_page(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "error": False,
+            "body": {
+                "works": [{"id": "7", "title": "Saved", "url": "https://i.pximg.net/saved.jpg"}],
+                "total": 50,
+                "offset": 0,
+            },
+        }
+        transport = Mock()
+        transport.get.return_value = response
+        result = PixivWebClient(transport=transport, cookie="PHPSESSID=42_token").get_bookmarks()
+        self.assertEqual(result.illusts[0].title, "Saved")
+        self.assertIn("/ajax/user/42/illusts/bookmarks?", result.next_url)
+        self.assertIn("offset=48", result.next_url)
+        self.assertEqual(transport.get.call_args.kwargs["params"]["limit"], 48)
+
+    def test_web_bookmarks_advance_offset_from_next_url(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"error": False, "body": {"works": [{"id": "8"}], "total": 120}}
+        transport = Mock()
+        transport.get.return_value = response
+        client = PixivWebClient(transport=transport, cookie="PHPSESSID=42_token")
+        result = client.get_bookmarks(next_url="https://www.pixiv.net/ajax/user/42/illusts/bookmarks?offset=48&limit=48")
+        self.assertIn("offset=96", result.next_url)
+
+    def test_web_bookmarks_require_cookie(self):
+        with self.assertRaisesRegex(Exception, "Cookie"):
+            PixivWebClient(transport=Mock()).get_bookmarks()
+
 
 if __name__ == "__main__":
     unittest.main()

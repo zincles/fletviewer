@@ -203,6 +203,9 @@ class EHAccountBalance:
     credits: int
     hath: float
     free_archive_quota_gb: float
+    image_limit_used: int
+    image_limit_total: int
+    image_limit_reset_cost_gp: int
 
     @property
     def paid_archive_capacity_mib(self) -> float:
@@ -211,7 +214,6 @@ class EHAccountBalance:
 
     def estimated_gallery_count(self, size_mib: float) -> int:
         return int(self.paid_archive_capacity_mib // size_mib) if size_mib > 0 else 0
-
 
 # ---------------------------------------------------------------------------
 # 主客户端
@@ -375,11 +377,28 @@ class EHentaiClient:
         quota_match = re.search(r"Free Archive Quota:\s*([\d,.]+)\s*GB per week", quota_text, flags=re.IGNORECASE)
         if not quota_match:
             raise RuntimeError("EH H@H 页面未包含每周免费归档配额")
+
+        home = self._request(f"{self.base_url}/home.php", timeout=30)
+        home_soup = BeautifulSoup(home.text, "html.parser")
+        image_limits_heading = home_soup.find("h2", string=lambda value: value and value.strip() == "Image Limits")
+        image_limits_box = image_limits_heading.find_next_sibling("div", class_="homebox") if image_limits_heading else None
+        image_limits_text = image_limits_box.get_text(" ", strip=True) if image_limits_box else ""
+        image_limit_match = re.search(
+            r"currently at\s+([\d,]+)\s+towards your account limit of\s+([\d,]+)",
+            image_limits_text,
+            flags=re.IGNORECASE,
+        )
+        reset_cost_match = re.search(r"reset your image quota by spending\s+([\d,]+)\s+GP", image_limits_text, flags=re.IGNORECASE)
+        if not image_limit_match or not reset_cost_match:
+            raise RuntimeError("EH My Home 页面未包含图像浏览配额")
         return EHAccountBalance(
             gallery_points=int(gp_match.group(1).replace(",", "")),
             credits=int(credit_match.group(1).replace(",", "")),
             hath=float(hath_match.group(1).replace(",", "")),
             free_archive_quota_gb=float(quota_match.group(1).replace(",", "")),
+            image_limit_used=int(image_limit_match.group(1).replace(",", "")),
+            image_limit_total=int(image_limit_match.group(2).replace(",", "")),
+            image_limit_reset_cost_gp=int(reset_cost_match.group(1).replace(",", "")),
         )
 
     # -----------------------------------------------------------------------
