@@ -159,7 +159,7 @@ def create_view(page: ft.Page) -> ft.Control:
         dense=True,
     )
     pixiv_cookie = ft.TextField(
-        label="Pixiv Cookie",
+        label="Pixiv Cookie（优先仅填 PHPSESSID）",
         value=str(pixiv_cfg.get("cookie") or ""),
         width=450,
         password=True,
@@ -671,7 +671,7 @@ def create_view(page: ft.Page) -> ft.Control:
                 ft.Divider(),
                 ft.Text("Pixiv 网页会话", size=20, weight=ft.FontWeight.W_500),
                 ft.Text(
-                    "从已登录 pixiv.net 的浏览器请求中复制完整 Cookie。当前使用网页 AJAX 接口，不使用 OAuth 或模拟官方 App。通常会从 PHPSESSID 自动识别 User ID，识别失败时再手动填写。",
+                    "优先仅填写 PHPSESSID=...，不要粘贴开发者工具的整张 Cookie 表。当前使用网页 AJAX 接口，不使用 OAuth 或模拟官方 App；通常会从 PHPSESSID 自动识别 User ID，识别失败时再手动填写。",
                     size=14,
                     color=ft.Colors.ON_SURFACE_VARIANT,
                 ),

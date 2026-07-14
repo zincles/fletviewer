@@ -120,7 +120,11 @@ def create_home_view(page: ft.Page) -> ft.Control:
 
 
 def create_following_view(page: ft.Page) -> ft.Control:
-    return _placeholder_page("Pixiv 关注", "需要已登录网页会话；接口尚未验证。", ft.Icons.FAVORITE)
+    def load_page(cursor):
+        result = get_pixiv_client().get_following(next_url=cursor)
+        return PageBatch(result.illusts, result.next_url)
+
+    return _create_illust_feed(page, label="关注", load_page=load_page)
 
 
 def create_bookmarks_view(page: ft.Page) -> ft.Control:

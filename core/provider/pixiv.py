@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 
 @dataclass(slots=True)
@@ -234,46 +234,88 @@ class PixivWebClient(PixivClient):
             if camel_key in image_urls and snake_key not in image_urls:
                 image_urls[snake_key] = image_urls[camel_key]
         return PixivIllust(
-            id=self._text(item.get("id") or item.get("illustId")),
+            id=self._text(item.get("id") or item.get("illustId") or item.get("illust_id")),
             title=self._text(item.get("title")),
             caption=self._text(item.get("description") or item.get("caption")),
-            type=self._text(item.get("illustType") or item.get("type") or "illust"),
-            page_count=self._int(item.get("pageCount") or item.get("page_count") or 1),
+            type=self._text(item.get("illustType") or item.get("illust_type") or item.get("type") or "illust"),
+            page_count=self._int(item.get("pageCount") or item.get("page_count") or item.get("illust_page_count") or 1),
             width=self._int(item.get("width")), height=self._int(item.get("height")),
             restrict=self._int(item.get("restrict")), x_restrict=self._int(item.get("xRestrict") or item.get("x_restrict")),
-            total_view=self._int(item.get("viewCount") or item.get("total_view")),
+            total_view=self._int(item.get("viewCount") or item.get("view_count") or item.get("total_view")),
             total_bookmarks=self._int(item.get("bookmarkCount") or item.get("total_bookmarks")),
             is_bookmarked=bool(item.get("bookmarkData") or item.get("is_bookmarked")),
-            create_date=self._text(item.get("createDate") or item.get("create_date")),
-            user=PixivUser(self._text(user_id), self._text(item.get("userName") or user_raw.get("name")), self._text(user_raw.get("account")), self._text(item.get("profileImageUrl") or user_raw.get("profile_image_urls", {}).get("medium") if isinstance(user_raw.get("profile_image_urls"), dict) else "")),
+            create_date=self._text(item.get("createDate") or item.get("create_date") or item.get("date")),
+            user=PixivUser(
+                self._text(user_id),
+                self._text(item.get("userName") or item.get("user_name") or user_raw.get("name")),
+                self._text(user_raw.get("account")),
+                self._text(item.get("profileImageUrl") or item.get("profile_img")),
+            ),
             tags=[tag for tag in tags if tag], image_urls=image_urls, raw=item,
         )
 
     def search_illusts(self, word: str, *, sort: str = "date_desc", next_url: str | None = None) -> PixivSearchResult:
-        page = 1
+        word = word.strip()
+        if not word:
+            return PixivSearchResult(query="")
         if next_url:
             url = next_url
             params = None
+            page = self._int(parse_qs(urlparse(next_url).query).get("p", [1])[0]) or 1
         else:
-            url = f"{self.base_url}/ajax/search/artworks/{word}"
+            page = 1
+            url = f"{self.base_url}/ajax/search/artworks/{quote(word, safe='')}"
             params = {"word": word, "order": "date_d" if sort == "date_desc" else sort, "mode": "all", "p": page, "s_mode": "s_tag_full", "type": "all", "lang": "zh"}
-        raw = self._get_json(url, params=params, referer=f"{self.base_url}/tags/{word}/artworks")
+        encoded_word = quote(word, safe="")
+        raw = self._get_json(url, params=params, referer=f"{self.base_url}/tags/{encoded_word}/artworks")
         body = raw.get("body") if isinstance(raw.get("body"), dict) else {}
         feed = body.get("illustManga") if isinstance(body.get("illustManga"), dict) else {}
         items = feed.get("data") if isinstance(feed.get("data"), list) else []
-        return PixivSearchResult([self._illust(item) for item in items if isinstance(item, dict)], self._text(body.get("next") or "") or None, query=word)
+        last_page = self._int(feed.get("lastPage"))
+        next_search_url = None
+        if items and page < last_page:
+            query = urlencode({"word": word, "order": "date_d" if sort == "date_desc" else sort, "mode": "all", "p": page + 1, "s_mode": "s_tag_full", "type": "all", "lang": "zh"})
+            next_search_url = f"{self.base_url}/ajax/search/artworks/{encoded_word}?{query}"
+        return PixivSearchResult([self._illust(item) for item in items if isinstance(item, dict)], next_search_url, query=word)
 
     def get_recommended(self, *, next_url: str | None = None) -> PixivSearchResult:
         if next_url:
             raise PixivProviderError("Pixiv 网页发现流当前未提供可复用的下一页游标。")
         raw = self._get_json(
-            f"{self.base_url}/ajax/illust/discovery",
-            params={"mode": "all", "limit": 100},
-            referer=f"{self.base_url}/",
+            f"{self.base_url}/ajax/discovery/artworks",
+            params={"mode": "all", "limit": 100, "lang": "zh"},
+            referer=f"{self.base_url}/discovery",
         )
         body = raw.get("body") if isinstance(raw.get("body"), dict) else {}
-        items = body.get("illusts") if isinstance(body.get("illusts"), list) else []
+        thumbnails = body.get("thumbnails") if isinstance(body.get("thumbnails"), dict) else {}
+        items = thumbnails.get("illust") if isinstance(thumbnails.get("illust"), list) else []
         return PixivSearchResult([self._illust(item) for item in items if isinstance(item, dict)], query="discovery")
+
+    def get_following(self, *, restrict: str = "public", next_url: str | None = None) -> PixivSearchResult:
+        if not self.cookie:
+            raise PixivProviderError("Pixiv 关注动态需要已登录浏览器的 Cookie。")
+        if next_url:
+            url = next_url
+            params = None
+            current_page = self._int(parse_qs(urlparse(next_url).query).get("p", [1])[0]) or 1
+        else:
+            url = f"{self.base_url}/ajax/follow_latest/illust"
+            current_page = 1
+            params = {"p": current_page, "mode": "r18" if restrict == "private" else "all", "lang": "zh"}
+        raw = self._get_json(url, params=params, referer=f"{self.base_url}/bookmark_new_illust.php")
+        body = raw.get("body") if isinstance(raw.get("body"), dict) else {}
+        thumbnails = body.get("thumbnails") if isinstance(body.get("thumbnails"), dict) else {}
+        items = thumbnails.get("illust") if isinstance(thumbnails.get("illust"), list) else []
+        page_info = body.get("page") if isinstance(body.get("page"), dict) else {}
+        next_following_url = None
+        if items and not bool(page_info.get("isLastPage")):
+            query = urlencode({"p": current_page + 1, "mode": "r18" if restrict == "private" else "all", "lang": "zh"})
+            next_following_url = f"{self.base_url}/ajax/follow_latest/illust?{query}"
+        return PixivSearchResult(
+            [self._illust(item) for item in items if isinstance(item, dict)],
+            next_following_url,
+            query="following",
+        )
 
     def get_bookmarks(self, *, user_id: str = "me", restrict: str = "public", next_url: str | None = None) -> PixivSearchResult:
         if not self.cookie:
@@ -315,7 +357,15 @@ class PixivWebClient(PixivClient):
                 params["date"] = date.replace("-", "")
             raw = self._get_json(f"{self.base_url}/ranking.php", params=params, referer=f"{self.base_url}/ranking.php")
         items = raw.get("contents") if isinstance(raw.get("contents"), list) else []
-        return PixivRankingResult(mode, date, [self._illust(item) for item in items if isinstance(item, dict)])
+        next_page = self._int(raw.get("next"))
+        next_ranking_url = None
+        if next_page:
+            web_mode = {"day": "daily", "week": "weekly", "month": "monthly"}.get(mode, mode)
+            query_params = {"mode": web_mode, "content": "all", "p": next_page, "format": "json"}
+            if date:
+                query_params["date"] = date.replace("-", "")
+            next_ranking_url = f"{self.base_url}/ranking.php?{urlencode(query_params)}"
+        return PixivRankingResult(mode, date, [self._illust(item) for item in items if isinstance(item, dict)], next_ranking_url)
 
     def get_illust_detail(self, illust_id: str) -> PixivIllust:
         raw = self._get_json(f"{self.base_url}/ajax/illust/{illust_id}", referer=f"{self.base_url}/artworks/{illust_id}")

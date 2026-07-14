@@ -39,15 +39,30 @@ class PixivProviderSkeletonTests(unittest.TestCase):
 
     def test_web_search_maps_ajax_illusts_and_next_page(self):
         response = Mock(status_code=200)
-        response.json.return_value = {"error": False, "body": {"next": "https://www.pixiv.net/ajax/search/artworks/cat?p=2", "illustManga": {"data": [{"id": "1", "title": "Cat", "userId": "2", "userName": "Artist", "pageCount": 2, "url": "https://i.pximg.net/cover.jpg", "tags": ["cat"]}]}}}
+        response.json.return_value = {"error": False, "body": {"illustManga": {"data": [{"id": "1", "title": "Cat", "userId": "2", "userName": "Artist", "pageCount": 2, "url": "https://i.pximg.net/cover.jpg", "tags": ["cat"]}], "lastPage": 2}}}
         transport = Mock()
         transport.get.return_value = response
         result = PixivWebClient(transport=transport, cookie="PHPSESSID=abc").search_illusts("cat")
         self.assertEqual(result.illusts[0].title, "Cat")
         self.assertEqual(result.illusts[0].user.name, "Artist")
         self.assertEqual(result.illusts[0].cover_url, "https://i.pximg.net/cover.jpg")
-        self.assertEqual(result.next_url, "https://www.pixiv.net/ajax/search/artworks/cat?p=2")
+        self.assertIn("/ajax/search/artworks/cat?", result.next_url)
+        self.assertIn("p=2", result.next_url)
         self.assertEqual(transport.get.call_args.kwargs["headers"]["Cookie"], "PHPSESSID=abc")
+
+    def test_web_search_encodes_non_ascii_path(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"error": False, "body": {"illustManga": {"data": [], "lastPage": 0}}}
+        transport = Mock()
+        transport.get.return_value = response
+        PixivWebClient(transport=transport).search_illusts("初音ミク")
+        self.assertIn("%E5%88%9D%E9%9F%B3%E3%83%9F%E3%82%AF", transport.get.call_args.args[0])
+
+    def test_web_empty_search_does_not_request(self):
+        transport = Mock()
+        result = PixivWebClient(transport=transport).search_illusts("  ")
+        self.assertEqual(result.illusts, [])
+        transport.get.assert_not_called()
 
     def test_web_illust_pages_maps_original_urls(self):
         response = Mock(status_code=200)
@@ -68,22 +83,25 @@ class PixivProviderSkeletonTests(unittest.TestCase):
 
     def test_web_ranking_converts_app_mode_to_web_mode(self):
         response = Mock(status_code=200)
-        response.json.return_value = {"contents": [{"illust_id": "1", "title": "Ranked"}]}
+        response.json.return_value = {"contents": [{"illust_id": "1", "title": "Ranked"}], "next": 2}
         transport = Mock()
         transport.get.return_value = response
         result = PixivWebClient(transport=transport).get_ranking(mode="day")
         self.assertEqual(result.illusts[0].title, "Ranked")
+        self.assertEqual(result.illusts[0].id, "1")
+        self.assertIn("p=2", result.next_url)
         self.assertEqual(transport.get.call_args.kwargs["params"]["mode"], "daily")
 
     def test_web_recommendations_map_discovery_illusts(self):
         response = Mock(status_code=200)
-        response.json.return_value = {"error": False, "body": {"illusts": [{"id": "1", "title": "Discovery", "url": "https://i.pximg.net/cover.jpg"}]}}
+        response.json.return_value = {"error": False, "body": {"thumbnails": {"illust": [{"id": "1", "title": "Discovery", "url": "https://i.pximg.net/cover.jpg"}]}}}
         transport = Mock()
         transport.get.return_value = response
         result = PixivWebClient(transport=transport).get_recommended()
         self.assertEqual(result.query, "discovery")
         self.assertEqual(result.illusts[0].cover_url, "https://i.pximg.net/cover.jpg")
-        self.assertEqual(transport.get.call_args.kwargs["params"], {"mode": "all", "limit": 100})
+        self.assertEqual(transport.get.call_args.kwargs["params"], {"mode": "all", "limit": 100, "lang": "zh"})
+        self.assertEqual(transport.get.call_args.args[0], "https://www.pixiv.net/ajax/discovery/artworks")
 
     def test_web_client_normalizes_cookie_header_and_derives_user_id(self):
         client = PixivWebClient(transport=Mock(), cookie="Cookie: PHPSESSID=123456_abcd; p_ab_id=1")
@@ -120,6 +138,32 @@ class PixivProviderSkeletonTests(unittest.TestCase):
     def test_web_bookmarks_require_cookie(self):
         with self.assertRaisesRegex(Exception, "Cookie"):
             PixivWebClient(transport=Mock()).get_bookmarks()
+
+    def test_web_following_maps_thumbnails_and_builds_next_page(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "error": False,
+            "body": {
+                "thumbnails": {"illust": [{"id": "9", "title": "Followed", "url": "https://i.pximg.net/followed.jpg"}]},
+                "page": {"isLastPage": False},
+            },
+        }
+        transport = Mock()
+        transport.get.return_value = response
+        result = PixivWebClient(transport=transport, cookie="PHPSESSID=42_token").get_following()
+        self.assertEqual(result.illusts[0].title, "Followed")
+        self.assertIn("p=2", result.next_url)
+        self.assertEqual(transport.get.call_args.kwargs["params"]["mode"], "all")
+
+    def test_web_following_stops_on_last_page(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"error": False, "body": {"thumbnails": {"illust": [{"id": "10"}]}, "page": {"isLastPage": True}}}
+        transport = Mock()
+        transport.get.return_value = response
+        result = PixivWebClient(transport=transport, cookie="PHPSESSID=42_token").get_following(
+            next_url="https://www.pixiv.net/ajax/follow_latest/illust?p=2&mode=all&lang=zh"
+        )
+        self.assertIsNone(result.next_url)
 
 
 if __name__ == "__main__":
