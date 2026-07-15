@@ -58,7 +58,7 @@
 
 ### Flutter 扩展实验
 
-1. 从 [Creating an Extension](flet/extend/user-extensions.md) 开始，参考 `extensions/fletviewer_native/` 的实际模板结构。
+1. 从 [Creating an Extension](flet/extend/user-extensions.md) 开始；需要实验时按官方模板在 `extensions/` 下重新创建独立扩展包。
 2. 可视控件继承 `LayoutControl` 并由 Dart `LayoutControl(...)` 包装；弹出控件继承 `DialogControl`；服务继承 `Service` 并在 Dart 中注册服务。
 3. Python dataclass 默认属性没有显式修改时不会传给 Flutter，Dart 读取时必须给出同值默认值。
 4. 新增第三方 Flutter 包前检查 Windows、Linux、Android 的可用性，尤其避免将 native/Rust/C 依赖直接引入 Android 核心路径。
