@@ -15,8 +15,6 @@ dependencies = [
 [project.optional-dependencies]
 web = [
     "flet-web==0.85.3",
-    "fastapi",
-    "uvicorn",
 ]
 
 [tool.flet.app]

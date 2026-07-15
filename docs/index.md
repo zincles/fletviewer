@@ -14,7 +14,7 @@
 
 | 需求 | 优先查阅 | 本项目提示 |
 |---|---|---|
-| 了解 Flet、安装、创建或运行应用 | [官方首页](flet/index.md)、[安装](flet/getting-started/installation.md)、[创建应用](flet/getting-started/create-flet-app.md)、[运行与热重载](flet/getting-started/running-app.md) | 根入口是 `main.py`，实际装配入口为 `app/main.py`。Web 开发使用 `python scripts/dev_web.py`，不要在自动化工具中直接启动阻塞的 Web 服务。 |
+| 了解 Flet、安装、创建或运行应用 | [官方首页](flet/index.md)、[安装](flet/getting-started/installation.md)、[创建应用](flet/getting-started/create-flet-app.md)、[运行与热重载](flet/getting-started/running-app.md) | 根入口是 `main.py`，实际装配入口为 `app/main.py`。Web 开发使用 `flet run --web --recursive`，不要在自动化工具中启动阻塞的 Web 服务。 |
 | 找某个控件或属性 | [`flet/controls/`](flet/controls/)、[类型总览](flet/types/index.md) | 控件目录由网站生成分类入口，本地副本可从具体控件页面开始；再查关联类型页面，不要按旧 Flutter/Flet 记忆猜测参数名。 |
 | 选择页面布局 | [Container](flet/controls/container.md)、[Row](flet/controls/row.md)、[Column](flet/controls/column.md)、[Stack](flet/controls/stack.md)、[ResponsiveRow](flet/controls/responsiverow.md)、[SafeArea](flet/controls/safearea.md) | 保持现有页面的视觉语言和自适应策略；移动端与桌面端都要验证。 |
 | 构建大列表、图库或瀑布流 | [Large Lists](flet/cookbook/large-lists.md)、[ListView](flet/controls/listview.md)、[GridView](flet/controls/gridview.md) | 避免一次创建整本真实图片或大量卡片；使用分页、窗口化和分批更新。 |

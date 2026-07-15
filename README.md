@@ -60,16 +60,16 @@ python main.py
 python -m pip install -e ".[web]"
 ```
 
-然后运行：
+然后使用 Flet 的标准 Web 启动命令运行：
 
 ```bash
-python scripts/dev_web.py
+flet run --web --recursive
 ```
 
-默认地址：
+如需固定端口：
 
-```text
-http://localhost:8765
+```bash
+flet run --web --recursive --port 8765
 ```
 
 ## Android APK

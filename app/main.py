@@ -21,7 +21,7 @@ if _STORAGE_MIGRATION.performed:
 elif _STORAGE_MIGRATION.notes:
     print(f"[存储迁移] 跳过：{'; '.join(_STORAGE_MIGRATION.notes)}")
 
-if sys.platform.startswith("linux") and "--web" not in sys.argv and "--server" not in sys.argv:
+if sys.platform.startswith("linux"):
     from app.storage import should_prefer_linux_wayland_window_backend
 
     backend = "wayland" if should_prefer_linux_wayland_window_backend() else "x11"
@@ -51,6 +51,7 @@ from app.ui_update import request_update
 from app.views.downloads import create_view as downloads_view
 from app.views.debug import create_view as debug_view
 from app.views.file_manager import create_view as file_manager_view
+from app.views.flet_extension_debug import create_view as flet_extension_debug_view
 from app.views.home import create_view as home_view
 from app.views import booru_pages, pixiv_pages
 from app.views.subscriptions import create_view as subscriptions_view
@@ -68,6 +69,7 @@ from app.views.history import create_view as history_view
 from app.history import record_gallery_history
 
 BASE_PAGES = [
+    ("Flet扩展调试", "测试 Flutter 扩展", ft.Icons.EXTENSION, flet_extension_debug_view),
     ("主页", "最新画廊", ft.Icons.HOME, home_view),
     ("订阅", "关注的标签画廊（需登录）", ft.Icons.SUBSCRIPTIONS, subscriptions_view),
     ("热门", "近期热门画廊", ft.Icons.LOCAL_FIRE_DEPARTMENT, popular_view),
@@ -92,7 +94,8 @@ def _enabled_extra_sections() -> list[str]:
 
 def _build_pages(extra_sections: list[str], *, provider: str = "ehentai") -> list[tuple[str, str, object, object]]:
     if provider == "pixiv":
-        pages = list(_pixiv_reading_pages())
+        pages = [("Flet扩展调试", "测试 Flutter 扩展", ft.Icons.EXTENSION, flet_extension_debug_view)]
+        pages.extend(_pixiv_reading_pages())
         # Keep shared app sections.
         pages.extend([
             ("本地画廊", "已下载 Archive", ft.Icons.FOLDER, local_galleries_view),
@@ -100,7 +103,8 @@ def _build_pages(extra_sections: list[str], *, provider: str = "ehentai") -> lis
             ("设置", "应用设置", ft.Icons.SETTINGS, settings_view),
         ])
     elif provider == "booru":
-        pages = list(_booru_reading_pages())
+        pages = [("Flet扩展调试", "测试 Flutter 扩展", ft.Icons.EXTENSION, flet_extension_debug_view)]
+        pages.extend(_booru_reading_pages())
         pages.extend([
             ("本地画廊", "已下载 Archive", ft.Icons.FOLDER, local_galleries_view),
             ("下载", "下载任务", ft.Icons.DOWNLOAD, downloads_view),
@@ -320,7 +324,7 @@ def main(page: ft.Page):
             labels = _booru_reading_labels()
         else:
             labels = _eh_reading_labels()
-        order = ["阅读", "本地", "下载", *extras, "设置"]
+        order = ["扩展", "首页", "本地", "下载", *extras, "设置"]
         nav_state["pages"] = pages
         nav_state["reading_labels"] = set(labels)
         nav_state["reading_indexes"] = [
@@ -337,7 +341,7 @@ def main(page: ft.Page):
     root_section_order = nav_state["root_section_order"]
     section_indexes = nav_state["section_indexes"]
     bottom_nav_indexes = nav_state["bottom_nav_indexes"]
-    bottom_nav_state = {"value": "阅读"}
+    bottom_nav_state = {"value": "扩展"}
     bottom_nav_visibility_action = {"value": None}
     bottom_nav_segments: dict[str, ft.Container] = {}
     bottom_nav_indicator_ref: dict[str, ft.Container | None] = {"value": None}
@@ -349,6 +353,7 @@ def main(page: ft.Page):
     reading_content_host: ft.Container | None = None
     reading_speed_dial_state = {"open": False}
     bottom_nav_for_page = {
+        "Flet扩展调试": "扩展",
         "本地画廊": "本地",
         "下载": "下载",
         "文件": "本地",
@@ -729,6 +734,12 @@ def main(page: ft.Page):
             activate_root_section("本地")
             log_debug("导航", f"切换至本地主分区 耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
             return
+        if label == "Flet扩展调试":
+            set_header(label, subtitle)
+            set_header_actions([])
+            activate_root_section("扩展")
+            log_debug("导航", f"切换至 Flet 扩展调试分区 耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
+            return
         if label == "设置":
             set_header(label, subtitle)
             set_header_actions([])
@@ -755,10 +766,10 @@ def main(page: ft.Page):
             log_debug("导航", f"切换至附加主分区 {label} 耗时={format_duration_ms((time.perf_counter() - started_at) * 1000)}")
             return
         set_header(label, subtitle)
-        set_bottom_nav(bottom_nav_for_page.get(label, "阅读"))
+        set_bottom_nav(bottom_nav_for_page.get(label, "首页"))
         if label in nav_state["reading_labels"]:
             sync_reading_tab(label)
-        activate_root_section("阅读", update=False, sync_bottom_nav=False)
+        activate_root_section("首页", update=False, sync_bottom_nav=False)
         cache_key = f"page:{idx}"
         active_cache_key["value"] = cache_key
         set_header_actions(header_action_cache.get(cache_key, []))
@@ -1187,7 +1198,7 @@ def main(page: ft.Page):
             ink=True,
             on_click=lambda e: render_label(
                 _default_reading_label(str(nav_state.get("provider") or "ehentai"))
-                if target == "阅读"
+                if target == "首页"
                 else target
             ),
             on_long_press=None,
@@ -1206,11 +1217,12 @@ def main(page: ft.Page):
         ignore_interactions=True,
     )
     bottom_nav_indicator_ref["value"] = bottom_nav_indicator
-    planned_count = 4 + len(nav_state["extra_sections"])
+    planned_count = 5 + len(nav_state["extra_sections"])
     item_width, spacing, stride = bottom_nav_layout(planned_count)
     bottom_nav_indicator.width = item_width
     bottom_nav_items = [
-        bottom_nav_segment("阅读", ft.Icons.PUBLIC, "阅读"),
+        bottom_nav_segment("扩展", ft.Icons.EXTENSION, "Flet扩展调试"),
+        bottom_nav_segment("首页", ft.Icons.PUBLIC, "首页"),
         bottom_nav_segment("本地", ft.Icons.FOLDER, "本地画廊"),
         bottom_nav_segment("下载", ft.Icons.DOWNLOAD, "下载"),
     ]
@@ -1280,7 +1292,9 @@ def main(page: ft.Page):
             render_label(_default_reading_label(str(nav_state.get("provider") or "ehentai")))
             return
         section = order[selected_index]
-        if section == "本地":
+        if section == "扩展":
+            render_label("Flet扩展调试")
+        elif section == "本地":
             render_label("本地画廊")
         elif section == "下载":
             render_label("下载")
@@ -1414,6 +1428,13 @@ def main(page: ft.Page):
         expand=True,
     )
     reading_tab_controller_ref["value"] = reading_section
+    extension_debug_section = ft.Stack(
+        controls=[
+            ft.Container(content=flet_extension_debug_view(page), expand=True, padding=ft.Padding(8, 50, 8, 86)),
+            section_top_bar("Flet扩展调试"),
+        ],
+        expand=True,
+    )
     local_tabs_ref: dict[str, PersistentTabView | None] = {"value": None}
     local_tabs = PersistentTabView(
         [
@@ -1461,7 +1482,7 @@ def main(page: ft.Page):
         ],
         expand=True,
     )
-    root_tab_controls = [reading_section, local_section, downloads_section]
+    root_tab_controls = [extension_debug_section, reading_section, local_section, downloads_section]
     for key in nav_state["extra_sections"]:
         root_tab_controls.append(extra_sections_map[key])
     root_tab_controls.append(settings_section)
@@ -1471,7 +1492,7 @@ def main(page: ft.Page):
             expand=True,
         ),
         length=len(root_tab_controls),
-        selected_index=0,
+        selected_index=nav_state["section_indexes"]["扩展"],
         animation_duration=180,
         on_change=on_root_tabs_change,
         expand=True,
@@ -1482,7 +1503,7 @@ def main(page: ft.Page):
     def rebuild_extra_sections(*, update: bool = True) -> None:
         """根据设置立即重建底栏附加面板和根分区。"""
         nonlocal PAGES, READING_PAGE_INDEXES, root_section_order, section_indexes, bottom_nav_indexes, root_tabs
-        previous = bottom_nav_state.get("value") or "阅读"
+        previous = bottom_nav_state.get("value") or "扩展"
         nav_state["extra_sections"] = _enabled_extra_sections()
         refresh_nav_maps()
         PAGES = nav_state["pages"]
@@ -1492,11 +1513,12 @@ def main(page: ft.Page):
         bottom_nav_indexes = nav_state["bottom_nav_indexes"]
 
         bottom_nav_segments.clear()
-        planned = 4 + len(nav_state["extra_sections"])
+        planned = 5 + len(nav_state["extra_sections"])
         item_width, spacing, stride = bottom_nav_layout(planned)
         bottom_nav_indicator.width = item_width
         items = [
-            bottom_nav_segment("阅读", ft.Icons.PUBLIC, "阅读"),
+            bottom_nav_segment("扩展", ft.Icons.EXTENSION, "Flet扩展调试"),
+            bottom_nav_segment("首页", ft.Icons.PUBLIC, "首页"),
             bottom_nav_segment("本地", ft.Icons.FOLDER, "本地画廊"),
             bottom_nav_segment("下载", ft.Icons.DOWNLOAD, "下载"),
         ]
@@ -1513,7 +1535,7 @@ def main(page: ft.Page):
             height=54,
         )
 
-        controls = [reading_section, local_section, downloads_section]
+        controls = [extension_debug_section, reading_section, local_section, downloads_section]
         for key in nav_state["extra_sections"]:
             controls.append(extra_sections_map[key])
         controls.append(settings_section)
@@ -1598,12 +1620,7 @@ def main(page: ft.Page):
         root = ft.SafeArea(content=root, expand=True)
 
     navigator.set_root_view(ft.View(route="/", controls=[root], padding=0))
-    initial_label = (
-        _booru_tab_label(saved_booru_provider)
-        if saved_provider == "booru"
-        else _default_reading_label(saved_provider)
-    )
-    render_label(initial_label)
+    render_label("Flet扩展调试")
     navigator.rebuild(page.route or "/")
 
     def initialize_browser_session():
@@ -1615,28 +1632,5 @@ def main(page: ft.Page):
     page.run_thread(initialize_browser_session)
 
 
-# Flet build 的入口要求顶层即调用 ft.run，不能包在 if __name__ == "__main__": 内。
-# 通过 sys.argv 的 --web 判断走 web 模式还是桌面模式。
-web_mode = "--web" in sys.argv or "--server" in sys.argv
-if web_mode:
-    import uvicorn
-    import flet_web.fastapi as flet_fastapi
-
-    os.environ["FLETVIEWER_WEB"] = "1"
-
-    app = flet_fastapi.FastAPI()
-
-    app.mount(
-        "/",
-        flet_fastapi.app(
-            main,
-            upload_dir=None,
-            assets_dir=str(Path(__file__).resolve().parent / "assets"),
-            web_renderer=ft.WebRenderer.AUTO,
-            route_url_strategy=ft.RouteUrlStrategy.PATH,
-            no_cdn=False,
-        ),
-    )
-    uvicorn.run(app, host="0.0.0.0", port=8765)
-else:
-    ft.run(main)
+# Flet build 的入口要求顶层调用 ft.run；Web 模式由 `flet run --web` 选择。
+ft.run(main)

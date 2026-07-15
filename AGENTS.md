@@ -33,7 +33,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 
 - Windows 默认 `bash` 会被 WSL2 劫持且当前 WSL 不可用；需要类 Unix shell 时用 `sh -c "..."`。
 - 中文/日文输出用 UTF-8：`sh -c "export PYTHONIOENCODING=utf-8 LANG=zh_CN.UTF-8; python script.py"`。
-- 不要在工具里启动 Flet Web：`python app/main.py --web` 会阻塞；Web 模式由用户手动测试。
+- 不要在工具里启动 Flet Web：`flet run --web --recursive` 会阻塞；Web 模式由用户手动测试。
 - Flet Web 异常缓存可能来自 `~/.flet`；必要时用户手动删：`Remove-Item -LiteralPath "$env:USERPROFILE\.flet" -Recurse -Force`。
 
 ## Flet API 坑
@@ -116,7 +116,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - 正式核心依赖不要轻易加入 Android 不可构建包；`curl_cffi`、`camoufox`、`playwright` 只能用于隔离的 PC/server challenge backend 或 `tmp/` 实验，不能进 Android 核心。
 - `lxml` 优先替换：HTML 用 `BeautifulSoup(..., "html.parser")`，XML 用 `xml.etree.ElementTree`；替换后跑 EH 搜索、详情、缩略图、归档 smoke test。
 - `Pillow` 用于 EH sprite crop 和封面处理，是 Android build 风险；先实测，失败时 Android 降级/禁用相关功能，不要引入更大的 native 图像依赖。
-- `flet-web`、`fastapi`、`uvicorn` 不应默认进入 Android target；若带来 `pydantic_core` 等 native/Rust 依赖，拆到 optional dependencies 或 server-only 入口。
+- `flet-web` 不应默认进入 Android target；Server 若引入 `fastapi`、`uvicorn` 等依赖，必须拆到 optional dependencies 或 server-only 入口。
 - 平台相关能力通过小接口注入，例如 challenge solver、文件选择器、WebView、系统下载目录；核心 provider、缓存、下载、数据模型尽量纯 Python。
 
 ## tmp 实验区
