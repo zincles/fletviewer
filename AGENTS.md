@@ -38,6 +38,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 
 ## Flet API 坑
 
+- 查询 Flet 控件、方法、属性、类型、CLI 或平台行为时，优先检索 `docs/index.md` 的项目索引和 `docs/flet/` 的本地官方文档副本，不要凭记忆猜测 API；项目锁定 `flet==0.85.3`，采用副本中较新 API 前必须确认版本并实测。
 - 不用 `ft.alignment.center`；居中写 `ft.Alignment(0, 0)`。
 - `ft.Image` 必须有有效 `src`；占位统一用 `app.controls.async_image.image_placeholder()` 或 `Container + Icon`，不要 `ft.Image(src=None)`，不要 1x1 base64 空图。
 - 图片展示统一走 `app.controls.async_image.image_src_for_page(page, data, mime)`，不要直接把 bytes 或本地文件路径塞给 `ft.Image(src=...)`；Web 端读不了服务器本地路径。

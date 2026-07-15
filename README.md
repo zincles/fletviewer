@@ -40,10 +40,10 @@ app -> core
 
 需要Python 3.10或更高版本。
 
-安装依赖：
+安装项目及桌面端依赖：
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install -e .
 ```
 
 运行桌面应用：
@@ -54,10 +54,16 @@ python main.py
 
 ## Web 服务
 
-依赖安装完成后运行：
+安装 Web 可选依赖：
 
 ```bash
-python dev_web.py
+python -m pip install -e ".[web]"
+```
+
+然后运行：
+
+```bash
+python scripts/dev_web.py
 ```
 
 默认地址：
@@ -121,5 +127,5 @@ python -m compileall -q app core tests
 | `README.md` | 当前能力、运行和构建入口 |
 | `TODO.md` | 当前决策、下一步及平台存储实施方案 |
 | `AGENTS.md` | 长期架构边界、平台约束和协作规则 |
-| `SOLITAIRE_LEARN.md` | Flet布局与瀑布流实验结论 |
+| `docs/flet/index.md` | Flet 官方文档本地副本入口 |
 | `tmp/README.md` | 隔离实验区说明 |

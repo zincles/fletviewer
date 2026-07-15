@@ -31,7 +31,7 @@ exclude = [
     "tmp",
     "*.ipynb",
     "debug_log.md",
-    "dev_web.py",
+    "scripts",
     "core/provider/eh_grabber.js",
     "storage_demo.py",
 ]
