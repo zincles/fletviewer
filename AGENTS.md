@@ -4,6 +4,8 @@
 
 FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Windows / Linux / Android / Web / Server；核心能力包括 provider 抓取、登录/API/Cookie、标签检索、图片缓存、批量下载、本地画廊管理。
 
+正式技术路线是 Python + Flet：Flet 同时承担桌面、Android 和 Web UI，Web/NAS 是一等部署目标。项目不再迁移到独立 Flutter UI，也不再推进 Flutter + Serious Python bridge。
+
 参考方向：Pix-Ez Viewer、Imgur Grabber、EHViewer、Venera、Mihon/Tachiyomi、Emby。
 
 ## 协作风格
@@ -28,6 +30,22 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - 依赖方向固定为 `app -> core`；`core/` 不得 import `app`、`flet` 或其他具体前端，也不得通过 fallback import 绕过该边界。
 - `core/` 的公开输入输出使用普通 Python 类型、dataclass、枚举、dict、bytes 和 Path；不得返回或持有 Flet 控件。
 - 平台相关能力由 `core/` 定义小接口/回调并由 `app/` 注入；不要让核心业务直接调用 Toast、Dialog、页面导航或 UI 更新。
+
+## Flet 与 Flutter 扩展
+
+- `app/` 是正式产品前端，不是等待独立 Flutter UI 替换的兼容层；已完成的 Core/Facade 解耦用于控制业务边界、测试和跨平台复用。
+- 不创建独立 Flutter shell、Serious Python bridge、JSON-RPC/FFI 通道或第二套 Dart 业务模型，除非未来有新的明确架构决策。
+- 优先使用 Flet 内建跨平台能力。只有 Flet API 经实测无法可靠满足具体平台需求时，才增加小型 Flutter extension。
+- Flutter extension 必须提供 Python wrapper，以窄接口接入 `app/`；`core/` 不得 import extension、Flutter/Dart 包或 Flet 控件。
+- 每个 extension 在引入前必须确认 Windows、Linux、Android 和 Web 的支持矩阵。Web 无法使用时必须有 fallback、明确禁用状态或服务器侧替代，不能阻断 Web 应用启动。
+- Dart 端只实现平台机制，不复制 Provider、网络会话、Cookie、缓存、数据库、下载任务或画廊业务。
+
+## Web / NAS
+
+- Web/NAS 是正式运行模式，不是只用于调试的附属目标；桌面、Android 和 Web 应复用同一 Core/Facade 与主要页面结构。
+- Web 模式的 Data、Cache、Downloads、Temp、Cookie 和下载任务属于服务器。浏览器本地文件只能通过上传、下载或文件选择能力交换，不得伪装为服务器 `Path`。
+- 当前优先支持可信环境中的单用户或共享实例。在实现用户隔离前，不得假定 Cookie、历史、任务和本地画廊按浏览器用户隔离。
+- 暴露到不可信网络前必须考虑反向代理 TLS、认证、访问控制、上传限制和敏感日志；应用文档不得暗示当前实例天然适合公网多用户部署。
 
 ## Shell / 环境
 
@@ -56,7 +74,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 ## 图像与缓存
 
 - 不要恢复本地 HTTP 图片代理，不要恢复 `/thumb?url=...`；当前链路是 `UI -> async_image/image_viewer -> ImageFetcherService -> JSON index -> HatH-style disk cache -> bytes -> ft.Image`。
-- `app/image_cache.py` 是 provider-agnostic；index 为 `url -> filename`，文件位于 `Data/ImageCache/files/<hash[0:2]>/<hash[2:4]>/<filename>`。
+- `app/image_cache.py` 是 provider-agnostic；index 为 `url -> filename`，文件位于 Cache 域的 `files/<hash[0:2]>/<hash[2:4]>/<filename>`。
 - 文件名当前为 `sha256(normalized_url) + ext`；index 指向文件不存在时按 stale repair 删除映射后重拉。
 - EH sprite crop URL 形如 `https://...webp@x=1800-2000&y=0-282`，`@x/y` 是本地裁剪指令，不是真实远端 URL；`app/image_fetcher.py` 先拉原 sprite，再用 Pillow 裁剪并按完整 crop URL 缓存。
 - 设置页“是否加载图像”关闭后，`async_image()` 和图像查看器不得读缓存、不得请求远端，只显示占位；该开关只影响图片资源，不影响列表 HTML/JSON 请求。
@@ -128,7 +146,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 
 ## Android 构建
 
-- 平台存储拆分尚未落地：当前配置、数据库、缓存和下载路径仍处于迁移前/过渡状态，目标为 Data、Cache、Downloads、Temp 四域；详细决策、迁移步骤和验收矩阵以 `TODO.md` 为准。完成 Windows/Android 覆盖升级与“清除缓存”真机验证前，不要把计划路径当成稳定接口，也不要新增依赖旧 `FletViewer/` 相对根目录的业务代码。
+- 平台存储拆分尚未完成验收：Data、Cache、Downloads、Temp 四域和桌面迁移代码已落地，但 Android 覆盖升级与“清除缓存”真机验证仍待完成；详细决策和验收矩阵以 `TODO.md` 为准。验收完成前不要把 Android 实际路径当成稳定接口，也不要新增依赖旧 `FletViewer/` 相对根目录的业务代码。
 - Flet 0.85.3 配套 Flutter 3.41.7；不要用 scoop/winget 装 Flutter，版本不匹配或源不存在。
 - 不要用 Puro；Flet CLI 调用的 `flutter` 子进程不会自动拿到 Puro 环境。
 - 推荐让 `flet build apk` 自动下载配套 Flutter 到 `C:\Users\<用户名>\flutter\3.41.7\`；PATH 上不要有其他 Flutter 干扰。

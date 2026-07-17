@@ -1,12 +1,25 @@
 # TODO
 
-- **当前首要目标：让 `core/` 成为可独立启动、可通过稳定 JSON 契约集成到 Flutter + Serious Python 的后端；现有 Flet `app/` 必须逐步成为该后端的普通消费者。**
+- **当前首要目标：以 Python + Flet 完成主浏览体验重设计，并把 Web/NAS、桌面和 Android 作为同一正式产品线持续验证。**
+- 已终止独立 Flutter UI 与 Flutter + Serious Python bridge 路线；Flet 是正式 UI，不是待替换的过渡前端。
+- 已完成的 `core/`、Runtime、Facade 和 JSON-safe DTO 继续作为稳定业务边界，避免页面直接持有 Provider client、网络响应、数据库连接和任务内部对象。
+- Flet 缺失的原生能力只通过带 Python wrapper 的小型 Flutter extension 补齐；extension 不得进入 `core/`，且必须为 Web/不支持平台提供 fallback、禁用状态或服务器侧实现。
 - UX 优先级切到整体体验重设计：主题基础采用 Material 3，颜色走设置驱动的自适应/手动色种，后续页面只使用语义色和主题入口。
 - 下一步先重做主浏览体验的信息架构：阅读首页、搜索、详情页、查看器、下载/本地画廊之间的动线要比 provider 功能更优先。
 - 画廊列表仍需补回分页能力：支持自动加载下一页，并保留手动翻页按钮作为显式控制。
 - 存储可靠性完成后增加受限的“存储浏览器”页面：仅浏览 Data/Cache/Downloads/Temp 四域，支持路径、大小、mtime、JSON/文本预览、ZIP 文件列表、缓存/临时文件维护和导出诊断；不得允许路径逃逸，Android 外部文件继续通过 FilePicker/SAF 交换，Web 端明确展示的是服务器文件而非浏览器设备文件。
 
-## 下次首要任务：Core 独立化与 Flutter 后端契约
+## 正式架构决策：Python + Flet
+
+- Flet 同时承担桌面、Android 和 Web UI；Web 可部署到 NAS/server，让用户通过浏览器远程使用同一应用实例。
+- `app/` 是正式 Flet 前端和 composition root，负责页面、主题、导航、平台能力、路径注入和 UI 更新；不再以“逐步被 Flutter 替换”为目标。
+- `core/` 保持 UI-independent；Provider、网络会话、Cookie、SQLite、缓存、下载和任务执行仍由 Python Core/Runtime 独占。
+- Web/NAS 中的配置、Cookie、缓存、下载和本地画廊均属于服务器，不代表浏览器设备本地状态；文件交换使用上传、下载或文件选择流程。
+- 当前 Web/NAS 首先面向可信网络中的单用户或共享实例。若开放到不可信网络，必须先明确用户隔离、凭据所有权和任务可见性，并由反向代理提供 TLS、认证和访问控制。
+- Flutter extension 仅用于 Flet API 无法可靠覆盖的原生能力，例如未来的大文件 SAF 流或特定系统集成；优先使用 Flet 内建跨平台 API，不为普通业务逻辑编写 Dart 副本。
+- 独立 Flutter shell、Serious Python package、跨语言 command envelope 和图片 base64/bytes bridge 对比均不再是项目任务；如无新的书面架构决策，不恢复该路线。
+
+## Core 独立化进度
 
 ### 重构进度表
 
@@ -14,25 +27,25 @@
 |---|---|---|---|
 | 1. Core 依赖边界 | 已完成 | `app -> core`；`core/` 无 `app`/`flet` import | 持续由依赖扫描守护 |
 | 2. 搜索/Feed API | 已完成 | `BackendFacade`、JSON-safe `MediaItemDTO`/`PageResultDTO`、稳定错误 | 后续 Provider 继续复用同一契约 |
-| 3. 独立 Runtime | 已完成 | `BackendRuntime` 拥有共享网络会话和 Provider client registry | 后续补完整 `initialize/shutdown` |
-| 4. 后端配置契约 | 已完成 | `core/config/` 模型、Repository Protocol、内存仓库、旧 JSON adapter | Flutter 实现自己的安全存储 adapter |
+| 3. 独立 Runtime | 已完成 | `BackendRuntime` 拥有共享网络会话和 Provider client registry | 持续验证初始化、关闭和恢复 |
+| 4. 后端配置契约 | 已完成 | `core/config/` 模型、Repository Protocol、内存仓库、旧 JSON adapter | 继续由 Flet adapter 注入平台存储 |
 | 5. 详情 API | API 已完成 | `MediaDetailDTO`、评论/关系 DTO、三 Provider 详情 Facade；EH metadata 已切换 | 图片/Archive 下沉后移除页面最后的 client 访问 |
 | 6. EH Archive API | 已完成 | Core Archive 服务、option/task DTO、Runtime manager port；Flet 只提交 archive ID | 后续复用通用任务查询 DTO |
 | 7. 下载任务 API | 已完成 | 丰富 `DownloadTaskDTO`、任务 service、Facade 操作；Flet 下载页只消费 DTO | 后续补速度/ETA 和本地画廊跳转字段 |
-| 8. 图片任务 API | API 已完成 | `ImageTaskDTO`/result DTO、轮询命令、Runtime 注入；Flet 保留高效本地 adapter | Serious Python 原型验证 bytes/base64 传输成本 |
+| 8. 图片任务 API | API 已完成 | `ImageTaskDTO`/result DTO、轮询命令、Runtime 注入；Flet 保留高效本地 adapter | 按 Flet 桌面/Android/Web 性能继续优化 |
 | 9. 本地画廊/历史 API | 已完成 | DTO、封面/ZIP 页资源服务、历史 service；Flet 页面只用 Facade | 后续补本地画廊删除/导出命令 |
 | 10. Runtime 生命周期 | 已完成 | 幂等 initialize/shutdown、失败重试、executor 重建；Flet 统一装配/退出 | Core-only Runtime 可统一启动/关闭 |
-| 11. Flutter bridge 原型 | 下一步 | 通信机制暂不锁定 | Serious Python 中跑通搜索、详情、图片、取消 |
+| 11. Flet 产品化 | 进行中 | Core API 已由 Flet 消费，Flet 继续作为正式 UI | 重做主浏览动线、补回分页并完成 Web/NAS 验收 |
 
-### 最终目标与边界
+### 持续边界
 
-- Flutter UI 只调用稳定的 Backend Facade/bridge，不直接持有 `EHentaiClient`、`PixivWebClient`、Booru client、`requests.Response`、Python `Future`、`Path`、线程事件或 SQLite 连接。
-- `core/` 必须能在不 import `app`、`flet` 或 Flutter 包的情况下独立构造和真实调用；平台通过普通回调、Protocol、路径和 JSON-safe 配置注入。
-- EH、Pixiv、Booru 只统一应用服务入口和最小公共 DTO，不强行统一底层协议；provider-specific metadata 必须保留，但跨 bridge 前必须 JSON-safe。
-- Python 后端独占网络会话、Cookie、SQLite、缓存和下载任务；Flutter 不并行直接操作这些资源。
-- 长任务统一为 `start/status/cancel/retry/list` 和稳定任务 DTO；不得跨 bridge 暴露 callback、Python Future 或线程对象。
-- 外部错误使用稳定的 `code/message/provider/retryable`；Flutter 不解析中文异常文本决定业务状态。
-- 当前阶段不选定 JSON-RPC、FFI 或 Serious Python channel 的具体实现；先稳定 Python API，再包装 bridge。
+- Flet 页面优先调用稳定 Backend Facade，不直接持有 `EHentaiClient`、`PixivWebClient`、Booru client、`requests.Response`、线程事件或 SQLite 连接。
+- `core/` 必须能在不 import `app`、`flet` 或 Flutter extension 包的情况下独立构造和真实调用；平台通过普通回调、Protocol、路径和配置注入。
+- EH、Pixiv、Booru 只统一应用服务入口和最小公共 DTO，不强行统一底层协议；provider-specific metadata 必须保留。
+- Python Runtime 独占网络会话、Cookie、SQLite、缓存和下载任务；Flet 页面及 Flutter extension 不并行直接操作这些资源。
+- 长任务统一为 `start/status/cancel/retry/list` 和稳定任务 DTO；页面不得依赖 manager 内部 Future、线程对象或磁盘实现细节。
+- UI 可见错误使用稳定的 `code/message/provider/retryable`，页面不解析中文异常文本决定业务状态。
+- Flutter extension 通过 Python wrapper 和窄接口接入 `app/`；Dart 端不得复制 Provider、缓存、下载或数据库业务。
 
 ### 已完成基线
 
@@ -62,8 +75,8 @@
 - 已新增丰富 `DownloadTaskDTO` 和 `DownloadTaskService`，保留任务进度、业务 gallery token、Archive、有效期、恢复能力、错误和时间字段。
 - Flet 下载页只消费 DTO/Facade，不再 import manager、内部 `DownloadTask`、tag_data、下载 URL、headers 或磁盘路径。
 - 已新增 `ImageTaskDTO`、`ImageResultDTO` 和 `ImageTaskService`，支持 `start/status/list/cancel/retry/result/remove`，公开结果不含 Future、订阅、Event 或本地 Path。
-- Runtime 已可注入 image fetcher；禁图开关在 Core task 入口返回稳定 `images_disabled`，图片结果暂以 base64 DTO 供 Serious Python 原型使用。
-- Flet 图片控件暂时保留本地 Future/结果泵 adapter，以维持共享请求、最后订阅者取消、批量 UI 更新和防闪烁性能；该 adapter 属于 App 实现，不进入跨语言 API。
+- Runtime 已可注入 image fetcher；禁图开关在 Core task 入口返回稳定 `images_disabled`，图片结果 DTO 保留 base64 形式用于 JSON-safe 调试和非本地调用。
+- Flet 图片控件保留本地 Future/结果泵 adapter，以维持共享请求、最后订阅者取消、批量 UI 更新和防闪烁性能；该 adapter 属于 App 实现，不进入 Core 公开 API。
 - 已新增本地画廊/历史 DTO 和 application service；封面、ZIP 页列表与受限单页解压均由 Core 按稳定 gallery ID 执行。
 - Flet 本地画廊、ZIP 阅读器和历史页已通过 Facade 获取数据，不再直接扫描目录、读取 SQLite 或把 archive Path 放入页面状态。
 - Runtime 统一管理下载、本地画廊和图片执行 service 生命周期；关闭不会触发懒 service 创建，图片 executor 关闭后可在同进程重建。
@@ -117,7 +130,7 @@
 3. 图片结果目前使用 base64，包含 MIME、byte length 和 cache 命中；不暴露 cache Path、Future、Event 或订阅对象。
 4. 相同 URL 的多个 task ID 共享底层请求；单个 task 取消立即显示 cancelled，仅最后消费者取消时停止底层请求。
 5. Runtime 已支持 image fetcher 与禁图策略注入，Core-only fake 验证不依赖 App/Flet。
-6. Flet 本地 adapter 暂不改为 DTO 轮询，因为现有 Future callback + result pump 能批量更新并避免高频 bridge/页面 diff；Flutter 使用轮询 API，最终传输方式在 Serious Python 原型中实测。
+6. Flet 本地 adapter 继续使用 Future callback + result pump，以维持共享请求、批量更新、防闪烁和低页面 diff；DTO 轮询 API 保留给调试、远程 API 或未来非 UI 消费者。
 
 ### 已完成批次：本地画廊与历史 API
 
@@ -135,37 +148,39 @@
 3. Flet 图片 adapter 关闭时只处理已创建实例，不因退出创建缓存目录或线程池；关闭后释放 fetcher/coordinator 以支持完整重建。
 4. Flet `main()` 已改为统一调用 Runtime 初始化，composition root 统一注册退出回调；本地画廊仍通过模块 import 注册现有 manager port。
 5. Runtime lifecycle 测试覆盖幂等启动、失败重试、反序关闭、参数传递和重启；LazyProxy 测试覆盖无副作用检查、释放和重建。
-6. 具体 Core service factory 暂不固化；在 Serious Python 原型中根据 Flutter 提供的存储路径、日志/通知 callback 和 bridge 线程模型设计。
+6. 具体 Core service factory 暂不固化；继续由 Flet composition root 根据平台存储路径、日志/通知 callback 和运行模式装配。
 
-### 下一批：Flutter + Serious Python Bridge 原型
+### 下一批：Flet 主浏览体验与 Web/NAS
 
-1. 建立最小 Flutter shell 和 Serious Python Python package，先只装配内存配置与 Core Runtime，不引入 Flet adapter。
-2. 定义单一 JSON command envelope 和稳定错误 envelope，首批覆盖 initialize、search、detail、image task status/result/cancel、shutdown。
-3. Flutter 侧只保存 task ID 和 DTO；Python 侧独占 session、Future、Cookie、Path、SQLite 和 executor。
-4. 对同一张图片实测 base64 JSON 与原生 bytes/临时受控资源通道的耗时、峰值内存和 Android 可用性，再确定正式结果传输。
-5. 用 Flutter lifecycle 验证重复 initialize、App pause/resume、shutdown、Python 异常和取消竞态。
-6. 原型通过后再补文件选择器、系统浏览器、通知和平台存储 callback，不将 Flutter 包 import 到 `core/`。
+1. 重做首页、搜索、详情、查看器、下载和本地画廊之间的信息架构与返回路径，优先减少重复入口和上下文丢失。
+2. 为统一画廊列表补回自动加载下一页，并保留手动翻页、加载失败重试和当前页反馈。
+3. 验证同一 Flet 页面在桌面、Android 和 Web 的布局、导航、图片加载与任务状态更新，不为 Web 建第二套前端。
+4. 建立 NAS/server smoke：启动、远程浏览、EH 登录、搜索、详情、阅读、下载、本地画廊、重启恢复和服务器文件语义。
+5. 明确 Web 单用户/共享实例限制；在实现用户隔离前，不把带共享 Cookie 和任务状态的实例直接暴露到不可信网络。
+6. 完成 Android 存储覆盖升级和“清除缓存”真机矩阵，再开始依赖平台文件能力的新功能。
 
 ### 后续批次
 
-1. **Runtime 完整生命周期**：统一 `initialize/shutdown`，管理图片 executor、下载 manager、数据库和缓存；支持测试重建。
-2. **Bridge 原型**：使用 Flutter + Serious Python 对搜索、详情、图片和取消做最小端到端验证，并比较 base64/bytes 传输成本。
+1. **Provider 产品化**：补齐 Pixiv/Booru 通用详情、阅读和适合各 Provider 协议的下载能力，不强行复用 EH Archive 模型。
+2. **平台能力**：优先使用 Flet 内建 API；仅在真实缺口经过桌面/Android/Web 评估后增加带 Python wrapper 的小型 Flutter extension。
+3. **Web/NAS 运维**：补充持久路径配置、反向代理示例、诊断导出、备份恢复和明确的安全部署边界。
 
 ### 下次开始顺序
 
-1. 确认 Flutter/Serious Python 原型目录、构建方式和目标平台版本；不得把实验依赖直接加入 Android Core 正式依赖。
-2. 建立最小 bridge command/error envelope，复用现有 DTO `to_dict()`，不为 Flutter 再建第二套业务模型。
-3. 首先跑通 Core-only initialize/search/detail/shutdown，再接图片 task ID、轮询、取消和结果读取。
-4. 记录 base64/bytes 的 Android 真机传输数据后选择机制，不凭桌面结果锁定移动端接口。
-5. 验证 Python Runtime 不 import `app`/`flet`/Flutter，Flutter 不读取配置凭据、SQLite、缓存 Path 或下载内部状态。
-6. 运行 Core-only 真实 smoke、完整测试、`compileall`、`git diff --check` 和 `core -> app/flet` 依赖扫描。
+1. 运行当前 Flet 桌面 smoke、完整测试、`compileall`、`git diff --check` 和 `core -> app/flet` 依赖扫描，固定回退后的基线。
+2. 盘点首页、搜索、详情、查看器、下载和本地画廊的导航入口、返回语义与重复控件，形成最小改版范围。
+3. 先实现画廊列表自动加载下一页和手动翻页，再调整跨页面动线，避免同时重写 Provider 协议。
+4. 在 NAS/server 上运行 Flet Web smoke，确认服务器存储语义、远程图片、下载恢复和浏览器文件交换限制。
+5. 执行 Android 覆盖升级、清除缓存、清除数据和重启矩阵；记录四域实际路径。
+6. 只有 Flet 内建能力被实测证明不足时，才为单一平台缺口设计 Flutter extension 和 Python wrapper，并先定义 Web fallback。
 
 ### 验收标准
 
 - 删除或不导入 Flet 模块时，可构造 Runtime、读取/保存后端配置并调用三类 Provider。
-- Backend API 的所有公开输入输出均可 JSON 序列化，且不含 Cookie value、`raw`、`Path`、Response、Future 或控件。
-- Flutter adapter 只需要实现配置、平台路径、通知和 bridge，不重新实现 Provider client registry。
-- Flet 行为不回退；凭据保存、Provider 搜索、Pixiv feeds 和 EH 登录继续工作。
+- Backend API 的公开 DTO 保持可 JSON 序列化，且不含 Cookie value、`raw`、`Path`、Response、Future 或控件。
+- Flet 桌面、Android 和 Web 复用同一 Core/Facade；平台 adapter 和 Flutter extension 不重新实现 Provider client registry。
+- Flet 行为不回退；凭据保存、Provider 搜索、Pixiv feeds、EH 登录、图片、下载和本地画廊继续工作。
+- NAS/Web 实例明确展示服务器存储语义，并在缺少认证或用户隔离时明确限制为可信环境。
 
 ## 未来目标：单文件画廊与 CBZ
 
@@ -195,7 +210,7 @@
 - 迁移前旧布局位于同一个相对 `FletViewer/` 根目录。Windows 开发模式曾确认：旧 Data 文件在根目录、Cache 在 `FletViewer/Cache`、Downloads 在 `FletViewer/Downloads`、Temp 在 `FletViewer/Temp`。
 - Flet 打包环境会提供 `FLET_APP_STORAGE_DATA` 和 `FLET_APP_STORAGE_TEMP`。前者用于跨启动保留的应用数据，后者用于允许系统清理的缓存/临时数据；普通 `python main.py` 桌面开发环境中两者可以未设置。
 - Android 系统设置区分“清除缓存”和“清除数据”。图片、sprite 和可重建索引应进入 application cache；配置、数据库、下载任务、下载中断点和本地画廊不得随“清除缓存”删除。
-- Android APK 当前相对路径可能落在 Flet/Serious Python 的应用代码解包目录下。代码包升级时该目录可能被删除重建，因此持久业务数据必须迁移到 `FLET_APP_STORAGE_DATA` 或 `StoragePaths` 返回的 application support/documents 路径。
+- Android APK 当前相对路径可能落在 Flet Android 应用的 Python 代码解包目录下。代码包升级时该目录可能被删除重建，因此持久业务数据必须迁移到 `FLET_APP_STORAGE_DATA` 或 `StoragePaths` 返回的 application support/documents 路径。
 - `app/debug_log.py` 已改为写入 `TEMP_DIR/debug_log.md`；`TEMP_DIR` 当前优先取 `FLET_APP_STORAGE_TEMP/Temp`，桌面 fallback 为 `FletViewer/Temp`。日志允许被“清除缓存”或系统临时文件回收删除。
 - `app/main.py` 已在启动时用 `print()` 输出平台、Data、Cache、Downloads、Temp，以及两个 Flet 环境变量。路径迁移完成后继续保留这组输出作为桌面/Android smoke 证据。
 - Flet 0.85.3 提供 `StoragePaths` service，可查询 application cache/documents/support、downloads、external storage 和 temporary 等平台路径；Web 不支持该 service。
