@@ -30,6 +30,10 @@ exclude = [
     "*.ipynb",
     "debug_log.md",
     "scripts",
+    "fvcore",
+    "target",
+    "Cargo.toml",
+    "Cargo.lock",
     "core/provider/eh_grabber.js",
     "storage_demo.py",
 ]
@@ -47,5 +51,4 @@ target_arch = ["arm64-v8a"]
 
 [tool.flet.android.permission]
 "android.permission.INTERNET" = true
-
 

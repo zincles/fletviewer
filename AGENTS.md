@@ -4,7 +4,9 @@
 
 FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Windows / Linux / Android / Web / Server；核心能力包括 provider 抓取、登录/API/Cookie、标签检索、图片缓存、批量下载、本地画廊管理。
 
-正式技术路线是 Python + Flet：Flet 同时承担桌面、Android 和 Web UI，Web/NAS 是一等部署目标。项目不再迁移到独立 Flutter UI，也不再推进 Flutter + Serious Python bridge。
+当前产品使用 Python + Flet，Flet 同时承担桌面、Android 和 Web UI，Web/NAS 是一等部署目标。项目不再推进 Flutter + Serious Python bridge；Flet 是当前前端，但不是未来不可替换的架构约束。
+
+未来业务核心是纯 Rust `fvcore`：同一 Cargo crate 同时提供可嵌入 library 和可独立运行的 executable。当前 Python `core/` 继续作为已跑通的产品实现和行为参考，不打包为 Python `fvcore`；迁移决策、并发模型和顺序以根目录 `FVCORE.md` 为准。
 
 参考方向：Pix-Ez Viewer、Imgur Grabber、EHViewer、Venera、Mihon/Tachiyomi、Emby。
 
@@ -31,10 +33,27 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - `core/` 的公开输入输出使用普通 Python 类型、dataclass、枚举、dict、bytes 和 Path；不得返回或持有 Flet 控件。
 - 平台相关能力由 `core/` 定义小接口/回调并由 `app/` 注入；不要让核心业务直接调用 Toast、Dialog、页面导航或 UI 更新。
 
+## fvcore
+
+- `fvcore/` 必须保持纯 Rust，不嵌入或调用 Python、Dart、JavaScript 等语言的业务实现。
+- `fvcore` 长期保持一个 Cargo crate；同一 package 的 library 实现完整核心方法，executable 负责读取配置和运行同一 Runtime，不预设 provider/server/CLI/C ABI/前端子 crate。
+- `fvcore` 可独立运行，也可被第三方 Rust 程序嵌入；对外统一使用 command、不可变 snapshot、带 revision 的 event 和二进制 resource 语义。
+- 当前 Python `core/` 是 Rust 迁移的 executable specification。先固定 fixture、输入输出、错误和状态，再实现 Rust；不要逐行翻译。
+- 默认禁止 `unsafe`；本轮不为假设中的 C ABI、JNI 或平台 binding 预留 unsafe。未来确有不可替代需求时先更新 `FVCORE.md` 并记录安全不变量。
+- 不允许 Python 与 Rust 实现同时写同一份 SQLite、Cache、Downloads 或本地画廊；对比测试使用只读 fixture或隔离临时目录。
+- Rust 并发设计必须异步、可取消、有 deadline、有界队列和不可变 task snapshot；不得把现有 Python 线程/锁结构机械翻译过去。
+- JSON 只承载控制数据；图片和 Archive 等大资源使用 bytes/stream/resource handle，不以 base64 作为正式跨组件接口。
+- 当前只迁移 EH 官方 Archive 下载、Pixiv 单图和 Booru API 单图；ZIP/CBZ 索引、单页读取、自建 CBZ、本地画廊和前端接入暂停。
+- Runtime 是配置、Provider profile/session、operation、图像缓存和下载任务的唯一 owner；通常一进程一个 Runtime，外部使用可克隆 handle，不使用 Rust `static` 全局可变单例或 Core-wide 大锁。
+- 同一 Provider profile 共用连接池、认证、代理、限流和 session generation；EH 搜索/详情/图片/Archive 必须复用同一逻辑会话，配置变化创建新 generation，旧请求自然持有旧 generation 至完成。
+- 图片链路按 memory -> disk -> network；网络未命中优先 fetch 到有界内存、发布共享不可变 bytes，再可选异步落盘。所有内存、在途 bytes、队列和并发必须有硬上限。
+- 图像磁盘缓存使用真实内容的 128-bit MD5，即 32 位小写十六进制文件名加规范化后缀，并按前四位两级分片；Booru original 的 Provider MD5 用于 fetch 前去重及 fetch 后校验。
+- `fvcore` 可以引入支持 Windows、Linux、Android 和 server 的成熟 Rust 依赖；WASM 不在本轮目标。依赖引入前检查目标构建、feature、维护状态、许可证和安全公告。
+
 ## Flet 与 Flutter 扩展
 
-- `app/` 是正式产品前端，不是等待独立 Flutter UI 替换的兼容层；已完成的 Core/Facade 解耦用于控制业务边界、测试和跨平台复用。
-- 不创建独立 Flutter shell、Serious Python bridge、JSON-RPC/FFI 通道或第二套 Dart 业务模型，除非未来有新的明确架构决策。
+- `app/` 是当前正式产品前端，不是等待独立 Flutter UI 替换的兼容层；已完成的 Python Core/Facade 解耦用于控制业务边界、测试，并为纯 Rust `fvcore` 提供迁移基线。
+- 不为独立 Flutter UI 创建 Serious Python bridge、JSON-RPC/FFI 通道或第二套 Dart 业务模型；未来任何前端/控制传输只能包装 `fvcore` 的公开方法，不复制业务。
 - 优先使用 Flet 内建跨平台能力。只有 Flet API 经实测无法可靠满足具体平台需求时，才增加小型 Flutter extension。
 - Flutter extension 必须提供 Python wrapper，以窄接口接入 `app/`；`core/` 不得 import extension、Flutter/Dart 包或 Flet 控件。
 - 每个 extension 在引入前必须确认 Windows、Linux、Android 和 Web 的支持矩阵。Web 无法使用时必须有 fallback、明确禁用状态或服务器侧替代，不能阻断 Web 应用启动。
@@ -118,24 +137,21 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - Booru 协议族：`DanbooruClient` 走现代 JSON API；`GelbooruClient` 走 gelbooru.com JSON DAPI；`GelbooruAlikeClient` / `SafebooruClient` / `Rule34Client` 走旧 Gelbooru-style XML DAPI；`MoebooruClient` 走 Moebooru XML API。
 - Booru adapter 可输出 `BooruPost`、`ImageVariant`、`BooruSearchResult`、`TagSuggestion`，但不能抹平 provider-specific 字段。
 
-## Challenge Backend
+## Challenge / 浏览器实验
 
-- Provider 不关心 challenge 如何解决；目标链路：`provider -> browser_session/transport -> challenge detector -> challenge backend -> cookie import -> retry once`。
-- Challenge 产物是 `domain cookies + user-agent + target origin`，不是浏览器本身；解完后常规 provider 继续走轻量 HTTP session/transport。
-- 平台策略：Android 用系统 WebView 让用户完成 challenge 并导出 cookies/UA；PC 桌面可用 Camoufox；server/web 优先手动 cookie import，只有服务器能跑浏览器且目标会话属于服务器 IP 时才考虑 Camoufox headless。
-- Danbooru 实验结论：vanilla `requests` 访问 `/posts.json` 会被 CF 403；`curl_cffi` Chrome impersonation 可直接返回 JSON；Camoufox cookie + UA 交给 vanilla `requests` 仍失败，问题更像 transport fingerprint。
-- EH forum 实验结论：`curl_cffi` 单独不够；Camoufox 过交互式 CF 后拿到 `cf_clearance` / `ipb_session_id`，再交给 `curl_cffi` 可复用。
-- EH forum 自动点击经验：不要依赖 Turnstile 内部 checkbox DOM；当前可点击 `challenges.cloudflare.com` frame 外层 bounding box 中心，但必须保留 fallback。
-- Browser profile cache 必须按站点/profile 隔离；EH 主站、EH forum、Danbooru、Gelbooru、Pixiv 分开缓存 cookies/UA/challenge 状态；日志和文档只允许打印 cookie 名称。
+- Rust `fvcore` 当前不实现 challenge backend、Camoufox、Playwright、Turnstile、浏览器 profile、Cloudflare bypass 或 transport fingerprint 伪装。
+- Danbooru、Gelbooru 和其他 Booru 只使用公开 API 与正式 API 凭据；401/403/429、HTML 非预期响应和访问阻断返回稳定错误，不尝试绕过。
+- Pixiv 使用用户导入 Cookie 和现有 Web AJAX；EH 使用用户提供 Cookie 和普通共享会话。遇到必须交互的 challenge 时明确失败，不启动浏览器。
+- `tmp/` 既有 Camoufox/curl_cffi 实验仅作为历史研究保留，暂停扩展，不得进入 Rust workspace 或正式 Core 依赖。
 
 ## 依赖准入
 
 - 默认优先纯 Python 依赖；引入 native/binary/Rust/C 扩展前，必须确认 Windows、Linux、Android 的 wheel 或源码构建路径。
-- 正式核心依赖不要轻易加入 Android 不可构建包；`curl_cffi`、`camoufox`、`playwright` 只能用于隔离的 PC/server challenge backend 或 `tmp/` 实验，不能进 Android 核心。
+- 正式核心依赖不要轻易加入 Android 不可构建包；`curl_cffi`、`camoufox`、`playwright` 只保留在 `tmp/` 历史实验中，不能进入正式 Python Core 或 Rust `fvcore`。
 - `lxml` 优先替换：HTML 用 `BeautifulSoup(..., "html.parser")`，XML 用 `xml.etree.ElementTree`；替换后跑 EH 搜索、详情、缩略图、归档 smoke test。
 - `Pillow` 用于 EH sprite crop 和封面处理，是 Android build 风险；先实测，失败时 Android 降级/禁用相关功能，不要引入更大的 native 图像依赖。
 - `flet-web` 不应默认进入 Android target；Server 若引入 `fastapi`、`uvicorn` 等依赖，必须拆到 optional dependencies 或 server-only 入口。
-- 平台相关能力通过小接口注入，例如 challenge solver、文件选择器、WebView、系统下载目录；核心 provider、缓存、下载、数据模型尽量纯 Python。
+- 平台相关能力通过小接口注入，例如文件选择器、WebView、系统下载目录；核心 provider、缓存、下载、数据模型尽量纯 Python。
 
 ## tmp 实验区
 

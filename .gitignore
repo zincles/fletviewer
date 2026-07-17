@@ -11,6 +11,9 @@ __pycache__/
 *.pyc
 .venv/
 
+# Rust
+/target/
+
 # Jupyter
 .ipynb_checkpoints/
 

@@ -1,0 +1,3 @@
+[workspace]
+members = ["fvcore"]
+resolver = "2"

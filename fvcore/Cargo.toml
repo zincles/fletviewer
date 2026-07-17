@@ -1,0 +1,14 @@
+[package]
+name = "fvcore"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+description = "Pure Rust application core for FletViewer and other frontends"
+repository = "https://github.com/zincles/fletviewer"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

@@ -1,7 +1,12 @@
 # TODO
 
-- **当前首要目标：以 Python + Flet 完成主浏览体验重设计，并把 Web/NAS、桌面和 Android 作为同一正式产品线持续验证。**
-- 已终止独立 Flutter UI 与 Flutter + Serious Python bridge 路线；Flet 是正式 UI，不是待替换的过渡前端。
+- **当前首要目标：建立纯 Rust、单 crate、可独立运行且可嵌入的 `fvcore`，同时保持现有 Python + Flet 产品可运行。**
+- `fvcore` 同一 Cargo package 同时产出 library 与 executable；library 实现完整核心方法，executable 读取配置并运行同一 Runtime，不预建 provider/server/adapter 子 crate。
+- 当前 Python `core/` 不另行打包，继续作为已跑通实现、fixture 来源和 Rust 行为对照；完整决策见 `FVCORE.md`。
+- 当前 Rust 迁移范围只包括 EH 官方 Archive 下载、Pixiv 单图和 Booru API 单图；ZIP/CBZ 阅读、自建 CBZ、本地画廊、前端接入和 Camoufox/challenge 全部暂停。
+- 先建立配置、统一 Runtime、command/snapshot/event/resource、Provider session generation 和有界 operation，再实现内存优先图像链路、内容 MD5 缓存与下载。
+- Python/Rust 迁移期间禁止双写同一 SQLite、Cache、Downloads 或本地画廊。
+- 已终止独立 Flutter UI 与 Flutter + Serious Python bridge 路线；Flet 是当前正式产品 UI，但未来可由其他前端通过 `fvcore` library 或 adapter 取代。
 - 已完成的 `core/`、Runtime、Facade 和 JSON-safe DTO 继续作为稳定业务边界，避免页面直接持有 Provider client、网络响应、数据库连接和任务内部对象。
 - Flet 缺失的原生能力只通过带 Python wrapper 的小型 Flutter extension 补齐；extension 不得进入 `core/`，且必须为 Web/不支持平台提供 fallback、禁用状态或服务器侧实现。
 - UX 优先级切到整体体验重设计：主题基础采用 Material 3，颜色走设置驱动的自适应/手动色种，后续页面只使用语义色和主题入口。
@@ -9,15 +14,26 @@
 - 画廊列表仍需补回分页能力：支持自动加载下一页，并保留手动翻页按钮作为显式控制。
 - 存储可靠性完成后增加受限的“存储浏览器”页面：仅浏览 Data/Cache/Downloads/Temp 四域，支持路径、大小、mtime、JSON/文本预览、ZIP 文件列表、缓存/临时文件维护和导出诊断；不得允许路径逃逸，Android 外部文件继续通过 FilePicker/SAF 交换，Web 端明确展示的是服务器文件而非浏览器设备文件。
 
-## 正式架构决策：Python + Flet
+## 当前产品与未来 Core
 
-- Flet 同时承担桌面、Android 和 Web UI；Web 可部署到 NAS/server，让用户通过浏览器远程使用同一应用实例。
-- `app/` 是正式 Flet 前端和 composition root，负责页面、主题、导航、平台能力、路径注入和 UI 更新；不再以“逐步被 Flutter 替换”为目标。
-- `core/` 保持 UI-independent；Provider、网络会话、Cookie、SQLite、缓存、下载和任务执行仍由 Python Core/Runtime 独占。
+- 当前 Flet 同时承担桌面、Android 和 Web UI；Web 可部署到 NAS/server，让用户通过浏览器远程使用同一应用实例。
+- `app/` 是当前 Flet 前端和 composition root，负责页面、主题、导航、平台能力、路径注入和 UI 更新；不再以“逐步被独立 Flutter UI 替换”为目标。
+- 当前 `core/` 保持 UI-independent；在单项能力迁移并切换所有权前，Provider、网络会话、Cookie、SQLite、缓存、下载和任务执行仍由 Python Core/Runtime 独占。
+- 新 `fvcore/` 是纯 Rust 单 crate Core，不依赖 Flet、Flutter、Python、Bevy 或具体前端；可执行入口和嵌入 API 共用同一 Runtime 与业务实现。
 - Web/NAS 中的配置、Cookie、缓存、下载和本地画廊均属于服务器，不代表浏览器设备本地状态；文件交换使用上传、下载或文件选择流程。
 - 当前 Web/NAS 首先面向可信网络中的单用户或共享实例。若开放到不可信网络，必须先明确用户隔离、凭据所有权和任务可见性，并由反向代理提供 TLS、认证和访问控制。
 - Flutter extension 仅用于 Flet API 无法可靠覆盖的原生能力，例如未来的大文件 SAF 流或特定系统集成；优先使用 Flet 内建跨平台 API，不为普通业务逻辑编写 Dart 副本。
-- 独立 Flutter shell、Serious Python package、跨语言 command envelope 和图片 base64/bytes bridge 对比均不再是项目任务；如无新的书面架构决策，不恢复该路线。
+- 原 Flutter + Serious Python 路线中的独立 shell、Python package 和图片 bridge 均不再是项目任务；未来控制传输或前端只包装 `fvcore` 的公开 command/snapshot/event/resource，不复制业务。
+
+## fvcore 下一批
+
+1. 为单 crate 的 library/executable 建立 format、clippy、test、doc、依赖审计和 Windows/Linux/Android target compile CI。
+2. 评估并选择支持 Windows、Linux、Android 和 server 的 async、HTTP、bytes、MD5、配置、ID、取消与测试依赖；WASM 不在本轮目标。
+3. 定义严格 `CoreConfig`、`CoreError`、ID、revision、secret redaction 和 command/snapshot/event/resource 模型。
+4. 实现 `CoreRuntime`、可克隆 `CoreHandle`、生命周期、实例锁、supervisor、有界事件队列和 fake operation 测试。
+5. 实现 Provider profile/session generation；同一 EH profile 统一 Cookie、UA、代理、连接池、登录 TTL、限流和 Archive 会话。
+6. 实现 memory -> disk -> network 图像链路：有界内存、共享 fetch、完整进度、真实内容 MD5、两级磁盘分片和可选异步持久化。
+7. 按 Booru API 单图、Pixiv 单图、持久下载 Runtime、EH Archive 的顺序完成纵向迁移；不进入 ZIP/CBZ 或前端。
 
 ## Core 独立化进度
 
