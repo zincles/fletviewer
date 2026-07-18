@@ -1,9 +1,10 @@
 # TODO
 
-- **当前首要目标：建立纯 Rust、单 crate、可独立运行且可嵌入的 `fvcore`，同时保持现有 Python + Flet 产品可运行。**
+- **当前首要目标：全面重写纯 Rust、单 crate、可独立运行且可嵌入的 `fvcore`，最终完整替代现有 Python `core/`。**
 - `fvcore` 同一 Cargo package 同时产出 library 与 executable；library 实现完整核心方法，executable 读取配置并运行同一 Runtime，不预建 provider/server/adapter 子 crate。
-- 当前 Python `core/` 不另行打包，继续作为已跑通实现、fixture 来源和 Rust 行为对照；完整决策见 `FVCORE.md`。
-- 当前 Rust 迁移范围只包括 EH 官方 Archive 下载、Pixiv 单图和 Booru API 单图；ZIP/CBZ 阅读、自建 CBZ、本地画廊、前端接入和 Camoufox/challenge 全部暂停。
+- 当前 Python `core/` 不另行打包，仅作为重写期间的只读行为和 fixture 参考；它不是长期兼容目标，完整决策见 `FVCORE.md`。
+- 最终迁移范围覆盖 Python Core 的全部正式业务能力；实现仍按可独立验收的纵向批次推进，避免一次同时写多个未闭环子系统。
+- HTTP 控制面始终编译进标准 executable，由 args/配置决定是否启用监听；它与嵌入 API 共用同一 Runtime 和业务方法。
 - 先建立配置、统一 Runtime、command/snapshot/event/resource、Provider session generation 和有界 operation，再实现内存优先图像链路、内容 MD5 缓存与下载。
 - Python/Rust 迁移期间禁止双写同一 SQLite、Cache、Downloads 或本地画廊。
 - 已终止独立 Flutter UI 与 Flutter + Serious Python bridge 路线；Flet 是当前正式产品 UI，但未来可由其他前端通过 `fvcore` library 或 adapter 取代。
@@ -18,7 +19,7 @@
 
 - 当前 Flet 同时承担桌面、Android 和 Web UI；Web 可部署到 NAS/server，让用户通过浏览器远程使用同一应用实例。
 - `app/` 是当前 Flet 前端和 composition root，负责页面、主题、导航、平台能力、路径注入和 UI 更新；不再以“逐步被独立 Flutter UI 替换”为目标。
-- 当前 `core/` 保持 UI-independent；在单项能力迁移并切换所有权前，Provider、网络会话、Cookie、SQLite、缓存、下载和任务执行仍由 Python Core/Runtime 独占。
+- 当前 `core/` 在过渡期继续独占尚未切换的真实存储；每项能力验收后将所有权切至 Rust，最终 Python Core 完整退役。
 - 新 `fvcore/` 是纯 Rust 单 crate Core，不依赖 Flet、Flutter、Python、Bevy 或具体前端；可执行入口和嵌入 API 共用同一 Runtime 与业务实现。
 - Web/NAS 中的配置、Cookie、缓存、下载和本地画廊均属于服务器，不代表浏览器设备本地状态；文件交换使用上传、下载或文件选择流程。
 - 当前 Web/NAS 首先面向可信网络中的单用户或共享实例。若开放到不可信网络，必须先明确用户隔离、凭据所有权和任务可见性，并由反向代理提供 TLS、认证和访问控制。
@@ -27,13 +28,17 @@
 
 ## fvcore 下一批
 
-1. 为单 crate 的 library/executable 建立 format、clippy、test、doc、依赖审计和 Windows/Linux/Android target compile CI。
-2. 评估并选择支持 Windows、Linux、Android 和 server 的 async、HTTP、bytes、MD5、配置、ID、取消与测试依赖；WASM 不在本轮目标。
-3. 定义严格 `CoreConfig`、`CoreError`、ID、revision、secret redaction 和 command/snapshot/event/resource 模型。
-4. 实现 `CoreRuntime`、可克隆 `CoreHandle`、生命周期、实例锁、supervisor、有界事件队列和 fake operation 测试。
-5. 实现 Provider profile/session generation；同一 EH profile 统一 Cookie、UA、代理、连接池、登录 TTL、限流和 Archive 会话。
-6. 实现 memory -> disk -> network 图像链路：有界内存、共享 fetch、完整进度、真实内容 MD5、两级磁盘分片和可选异步持久化。
-7. 按 Booru API 单图、Pixiv 单图、持久下载 Runtime、EH Archive 的顺序完成纵向迁移；不进入 ZIP/CBZ 或前端。
+| 状态 | 工作 | 验收点 |
+|---|---|---|
+| 已完成 | 单 crate library/executable、基础依赖与检查 | format、全部 target check/test、clippy `-D warnings` 通过 |
+| 已完成 | 严格配置、稳定错误、Runtime ID、snapshot | TOML 未知字段拒绝，公开状态可 JSON 序列化 |
+| 已完成 | `CoreRuntime`、`CoreHandle` 与集成 HTTP | 有界命令队列、协作关闭、health/status 路由通过真实 loopback 测试 |
+| 已完成 | 四域存储、实例锁与 `redb` schema v1 | 第二 Runtime 被拒绝，关闭后可重新取得同一 Data 域 |
+| 已完成 | Command/Event/Operation 模型 | 状态机、deadline、取消、overload、revision、event cursor/SSE 和 fake operation 测试 |
+| 已完成 | Provider profile/session generation 与共享网络 Foundation | Cookie 环境注入、UA、代理、连接池、受限 redirect、响应上限和旧 generation 自然释放 |
+| 下一步 | Provider 限流与 Danbooru 纵向闭环 | Profile 级并发/速率限制、fixture、搜索、详情和稳定错误 |
+| 后续 | memory -> disk -> network 图像链路 | 有界内存、共享 fetch、内容 MD5、两级分片和异步持久化 |
+| 后续 | Provider 纵向迁移 | 先 Booru，再 Pixiv、持久下载、EH，最终覆盖 Python Core 全部能力 |
 
 ## Core 独立化进度
 

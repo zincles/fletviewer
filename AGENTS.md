@@ -6,7 +6,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 
 当前产品使用 Python + Flet，Flet 同时承担桌面、Android 和 Web UI，Web/NAS 是一等部署目标。项目不再推进 Flutter + Serious Python bridge；Flet 是当前前端，但不是未来不可替换的架构约束。
 
-未来业务核心是纯 Rust `fvcore`：同一 Cargo crate 同时提供可嵌入 library 和可独立运行的 executable。当前 Python `core/` 继续作为已跑通的产品实现和行为参考，不打包为 Python `fvcore`；迁移决策、并发模型和顺序以根目录 `FVCORE.md` 为准。
+未来唯一业务核心是纯 Rust `fvcore`：同一 Cargo crate 同时提供可嵌入 library 和可独立运行的 executable，并全面替代当前 Python `core/`。Python 实现仅作为重写期间的只读行为和 fixture 参考，不打包为 Python `fvcore`；迁移决策、并发模型和顺序以根目录 `FVCORE.md` 为准。
 
 参考方向：Pix-Ez Viewer、Imgur Grabber、EHViewer、Venera、Mihon/Tachiyomi、Emby。
 
@@ -43,7 +43,8 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - 不允许 Python 与 Rust 实现同时写同一份 SQLite、Cache、Downloads 或本地画廊；对比测试使用只读 fixture或隔离临时目录。
 - Rust 并发设计必须异步、可取消、有 deadline、有界队列和不可变 task snapshot；不得把现有 Python 线程/锁结构机械翻译过去。
 - JSON 只承载控制数据；图片和 Archive 等大资源使用 bytes/stream/resource handle，不以 base64 作为正式跨组件接口。
-- 当前只迁移 EH 官方 Archive 下载、Pixiv 单图和 Booru API 单图；ZIP/CBZ 索引、单页读取、自建 CBZ、本地画廊和前端接入暂停。
+- 最终范围覆盖 Python Core 的全部正式能力，包括 Provider、网络、图像、缓存、下载、ZIP/CBZ、本地画廊、历史和存储；迁移按纵向能力分批验收，不把早期批次范围视为永久裁剪。
+- 标准 `fvcore` executable 必须始终编译 HTTP 控制面；是否监听只由 args/配置决定，不通过 Cargo feature 形成缺少控制面的正式内核变体。
 - Runtime 是配置、Provider profile/session、operation、图像缓存和下载任务的唯一 owner；通常一进程一个 Runtime，外部使用可克隆 handle，不使用 Rust `static` 全局可变单例或 Core-wide 大锁。
 - 同一 Provider profile 共用连接池、认证、代理、限流和 session generation；EH 搜索/详情/图片/Archive 必须复用同一逻辑会话，配置变化创建新 generation，旧请求自然持有旧 generation 至完成。
 - 图片链路按 memory -> disk -> network；网络未命中优先 fetch 到有界内存、发布共享不可变 bytes，再可选异步落盘。所有内存、在途 bytes、队列和并发必须有硬上限。

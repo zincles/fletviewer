@@ -1,11 +1,32 @@
-//! Pure Rust application core for FletViewer and future frontends.
-//!
-//! The crate intentionally starts with a small surface. Provider, storage,
-//! task, and resource contracts will be added behind stable Rust APIs before
-//! server, C ABI, or frontend adapters are introduced.
+//! Pure Rust application core for FletViewer and other frontends.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+
+mod config;
+mod control;
+mod error;
+mod id;
+mod operation;
+mod operation_service;
+mod runtime;
+mod session;
+mod snapshot;
+mod storage;
+
+pub use config::{
+    ControlConfig, CoreConfig, EventConfig, NetworkConfig, OperationConfig, ProviderProfileConfig,
+    StorageConfig,
+};
+pub use error::{CoreError, ErrorCode};
+pub use id::{OperationId, RuntimeId};
+pub use operation::{
+    CoreEvent, ErrorSnapshot, EventBatch, EventStreamItem, EventSubscription, FakeOperationRequest,
+    FakeOutcome, OperationKind, OperationSnapshot, OperationState,
+};
+pub use runtime::{CoreBuilder, CoreHandle, CoreRuntime};
+pub use session::{ProfileKey, ProfileProbeSnapshot, ProfileSnapshot};
+pub use snapshot::{CoreSnapshot, RuntimeState, StorageSnapshot};
 
 /// Crate version compiled into the current artifact.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

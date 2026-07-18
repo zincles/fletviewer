@@ -1,0 +1,175 @@
+//! Immutable operation and event contracts.
+
+use crate::{ErrorCode, OperationId, RuntimeId};
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use time::OffsetDateTime;
+use tokio::sync::broadcast;
+
+/// Operation categories exposed by the Core.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationKind {
+    /// Deterministic Foundation test operation.
+    Fake,
+}
+
+/// Lifecycle state for one operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationState {
+    /// Waiting for an execution slot.
+    Queued,
+    /// Worker is executing.
+    Running,
+    /// Worker completed successfully.
+    Completed,
+    /// Worker terminated with an error.
+    Failed,
+    /// Caller or Runtime cancelled the operation.
+    Cancelled,
+}
+
+impl OperationState {
+    /// Returns whether no further transition is allowed.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+/// Safe serialized error attached to a failed operation.
+#[derive(Clone, Debug, Serialize)]
+pub struct ErrorSnapshot {
+    /// Stable machine-readable error code.
+    pub code: ErrorCode,
+    /// Safe human-readable message.
+    pub message: String,
+    /// Whether retrying a new operation may succeed.
+    pub retryable: bool,
+}
+
+/// Immutable state of one operation.
+#[derive(Clone, Debug, Serialize)]
+pub struct OperationSnapshot {
+    /// Operation identifier.
+    pub id: OperationId,
+    /// Operation category.
+    pub kind: OperationKind,
+    /// Current lifecycle state.
+    pub state: OperationState,
+    /// Stable phase identifier.
+    pub phase: String,
+    /// Monotonically increasing operation revision.
+    pub revision: u64,
+    /// UTC creation timestamp.
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    /// UTC worker start timestamp.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub started_at: Option<OffsetDateTime>,
+    /// UTC terminal timestamp.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub finished_at: Option<OffsetDateTime>,
+    /// Error for failed operations.
+    pub error: Option<ErrorSnapshot>,
+}
+
+/// Terminal behavior for a fake operation.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FakeOutcome {
+    /// Complete successfully.
+    #[default]
+    Succeed,
+    /// Fail with a deterministic internal error.
+    Fail,
+}
+
+/// Request used to exercise operation infrastructure before Providers exist.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FakeOperationRequest {
+    /// Worker duration in milliseconds. Defaults to `100`.
+    pub duration_ms: u64,
+    /// Optional deadline override in milliseconds. Defaults to `None`.
+    pub deadline_ms: Option<u64>,
+    /// Terminal behavior. Defaults to [`FakeOutcome::Succeed`].
+    pub outcome: FakeOutcome,
+}
+
+impl Default for FakeOperationRequest {
+    fn default() -> Self {
+        Self {
+            duration_ms: 100,
+            deadline_ms: None,
+            outcome: FakeOutcome::Succeed,
+        }
+    }
+}
+
+/// One revisioned Runtime event.
+#[derive(Clone, Debug, Serialize)]
+pub struct CoreEvent {
+    /// Monotonic sequence within one Runtime.
+    pub sequence: u64,
+    /// Runtime that emitted this event.
+    pub runtime_id: RuntimeId,
+    /// Operation affected by this event.
+    pub operation_id: OperationId,
+    /// Operation revision represented by this event.
+    pub revision: u64,
+    /// Current operation state.
+    pub state: OperationState,
+    /// Current operation phase.
+    pub phase: String,
+}
+
+/// Cursor-based event replay result.
+#[derive(Clone, Debug, Serialize)]
+pub struct EventBatch {
+    /// Events after the requested cursor.
+    pub events: Vec<CoreEvent>,
+    /// Latest emitted sequence.
+    pub latest_sequence: u64,
+    /// Whether the cursor is older than the retained journal.
+    pub resync_required: bool,
+}
+
+/// Next item produced by a live Core event subscription.
+#[derive(Clone, Debug)]
+pub enum EventStreamItem {
+    /// One operation event.
+    Event(CoreEvent),
+    /// Subscriber lagged and must query snapshots before continuing.
+    ResyncRequired,
+    /// Runtime closed the event stream.
+    Closed,
+}
+
+/// Live event subscription without exposing Tokio channel types.
+pub struct EventSubscription {
+    replay: VecDeque<CoreEvent>,
+    receiver: broadcast::Receiver<CoreEvent>,
+}
+
+impl EventSubscription {
+    pub(crate) fn new(replay: Vec<CoreEvent>, receiver: broadcast::Receiver<CoreEvent>) -> Self {
+        Self {
+            replay: replay.into(),
+            receiver,
+        }
+    }
+
+    /// Waits for the next replayed or live event.
+    pub async fn next(&mut self) -> EventStreamItem {
+        if let Some(event) = self.replay.pop_front() {
+            return EventStreamItem::Event(event);
+        }
+        match self.receiver.recv().await {
+            Ok(event) => EventStreamItem::Event(event),
+            Err(broadcast::error::RecvError::Lagged(_)) => EventStreamItem::ResyncRequired,
+            Err(broadcast::error::RecvError::Closed) => EventStreamItem::Closed,
+        }
+    }
+}
