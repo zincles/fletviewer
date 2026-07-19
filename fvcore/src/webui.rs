@@ -66,6 +66,13 @@ struct PixivFetchForm {
 }
 
 #[derive(Deserialize)]
+struct EhHomeQuery {
+    profile: String,
+    direction: Option<crate::EhPageDirection>,
+    gid: Option<u64>,
+}
+
+#[derive(Deserialize)]
 struct OperationQuery {
     id: String,
 }
@@ -83,6 +90,7 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/fetch", post(start_fetch))
         .route("/ui/pixiv", get(pixiv_detail))
         .route("/ui/pixiv/fetch", post(start_pixiv_fetch))
+        .route("/ui/eh", get(eh_home))
         .route("/ui/operations", get(operations))
         .route("/ui/operation", get(operation))
         .route("/ui/cancel", post(cancel_operation))
@@ -106,6 +114,13 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
             format!(
                 "<a href=\"{}\">{} ({})</a>",
                 escape(&query),
+                provider_name(&profile.key.provider),
+                escape(&profile.key.to_string())
+            )
+        } else if profile.key.provider == "eh" {
+            format!(
+                "<a href=\"{}\">{} ({})</a>",
+                escape(&eh_home_url(&profile.key.profile, None)),
                 provider_name(&profile.key.provider),
                 escape(&profile.key.to_string())
             )
@@ -190,6 +205,16 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
         "<form method=\"get\" action=\"/ui/pixiv\"><label>会话名称<input name=\"profile\" value=\"{}\" required></label><label>作品 ID<input name=\"id\" inputmode=\"numeric\" required></label><button type=\"submit\">查看作品详情</button></form>",
         escape(pixiv_profile),
     );
+    let eh_profile = snapshot
+        .profiles
+        .iter()
+        .find(|profile| profile.key.provider == "eh")
+        .map(|profile| profile.key.profile.as_str())
+        .unwrap_or("default");
+    let eh_form = format!(
+        "<form method=\"get\" action=\"/ui/eh\"><label>会话名称<input name=\"profile\" value=\"{}\" required></label><button type=\"submit\">浏览 EH 主页</button></form>",
+        escape(eh_profile),
+    );
     let control = snapshot
         .control_listen
         .as_deref()
@@ -215,6 +240,7 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
             "<th>启动间隔</th><th>活动 / 上限</th><th>排队 / 上限</th></tr></thead>",
             "<tbody>{}</tbody></table></section>",
             "<section class=\"card wide\"><h2>Booru 搜索</h2>{}</section>",
+            "<section class=\"card wide\"><h2>EH 主页</h2>{}</section>",
             "<section class=\"card wide\"><h2>Pixiv 作品</h2>{}</section>",
             "<section class=\"card wide\"><h2>最近操作</h2>",
             "<p class=\"muted\">最多显示最新 20 项操作。点击 ID 查看实时详情或取消。</p>",
@@ -242,10 +268,103 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
         escape(&snapshot.storage.temp),
         profile_rows,
         search,
+        eh_form,
         pixiv_form,
         operation_rows,
     );
     html_page(StatusCode::OK, "调试面板", &body, None)
+}
+
+async fn eh_home(State(state): State<ControlState>, Query(query): Query<EhHomeQuery>) -> Response {
+    let cursor = match (query.direction, query.gid) {
+        (None, None) => None,
+        (Some(direction), Some(gid)) => Some(crate::EhPageCursor { direction, gid }),
+        _ => {
+            return error_page(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH 翻页方向和 GID 必须同时提供",
+                false,
+            ));
+        }
+    };
+    let page = match state
+        .core
+        .eh_home(&ProfileKey::new("eh", &query.profile), cursor)
+        .await
+    {
+        Ok(page) => page,
+        Err(error) => return error_page(&error),
+    };
+    let mut galleries = String::new();
+    for gallery in &page.galleries {
+        let metadata = [
+            gallery.category.as_deref(),
+            gallery.language.as_deref(),
+            gallery.published.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(escape)
+        .collect::<Vec<_>>()
+        .join(" · ");
+        let pages = gallery
+            .page_count
+            .map_or_else(|| "页数未知".to_owned(), |value| format!("{value} 页"));
+        let rating = gallery
+            .rating
+            .map_or_else(|| "评分未知".to_owned(), |value| format!("{value:.1} 星"));
+        let uploader = escape(gallery.uploader.as_deref().unwrap_or("上传者未知"));
+        let tags = escape(
+            &gallery
+                .tags
+                .iter()
+                .take(12)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        let _ = write!(
+            galleries,
+            "<article class=\"card\"><p class=\"muted\">{}</p><h2><a href=\"{}\" rel=\"noreferrer\">{}</a></h2><p>GID {} · {} · {} · {}</p><p class=\"muted\">{}</p></article>",
+            metadata,
+            escape(gallery.page_url.as_str()),
+            escape(&gallery.title),
+            gallery.gallery.gid,
+            pages,
+            rating,
+            uploader,
+            tags,
+        );
+    }
+    if galleries.is_empty() {
+        galleries.push_str("<p class=\"muted\">EH 主页没有返回可识别的 Gallery。</p>");
+    }
+    let mut paging = String::new();
+    if let Some(previous) = page.previous {
+        let _ = write!(
+            paging,
+            "<a href=\"{}\">上一页</a> ",
+            escape(&eh_home_url(&query.profile, Some(previous)))
+        );
+    }
+    if let Some(next) = page.next {
+        let _ = write!(
+            paging,
+            "<a href=\"{}\">下一页</a>",
+            escape(&eh_home_url(&query.profile, Some(next)))
+        );
+    }
+    html_page(
+        StatusCode::OK,
+        "EH 主页",
+        &format!(
+            "<h1>EH 主页</h1><p>会话 <code>eh/{}</code> · 代次 {} · {} 个 Gallery</p><p>{paging}</p><div class=\"grid gallery-grid\">{galleries}</div><p>{paging}</p>",
+            escape(&query.profile),
+            page.generation,
+            page.galleries.len(),
+        ),
+        None,
+    )
 }
 
 async fn search(State(state): State<ControlState>, Query(query): Query<SearchQuery>) -> Response {
@@ -623,7 +742,7 @@ fn html_page(status: StatusCode, title: &str, body: &str, refresh: Option<u64>) 
         format!("<meta http-equiv=\"refresh\" content=\"{seconds}\">")
     });
     let html = format!(
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{refresh}<title>{}</title><style>{STYLE}</style></head><body><nav><a href=\"/\">调试面板</a><a href=\"/ui/search\">搜索</a><a href=\"/ui/operations\">操作列表</a></nav><main>{body}</main></body></html>",
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{refresh}<title>{}</title><style>{STYLE}</style></head><body><nav><a href=\"/\">调试面板</a><a href=\"/ui/eh?profile=default\">EH 主页</a><a href=\"/ui/search\">搜索</a><a href=\"/ui/operations\">操作列表</a></nav><main>{body}</main></body></html>",
         escape(title)
     );
     let mut response = (status, Html(html)).into_response();
@@ -691,6 +810,22 @@ fn operation_url(id: crate::OperationId) -> String {
     format!("/ui/operation?id={id}")
 }
 
+fn eh_home_url(profile: &str, cursor: Option<crate::EhPageCursor>) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("profile", profile);
+    if let Some(cursor) = cursor {
+        query.append_pair(
+            "direction",
+            match cursor.direction {
+                crate::EhPageDirection::Previous => "previous",
+                crate::EhPageDirection::Next => "next",
+            },
+        );
+        query.append_pair("gid", &cursor.gid.to_string());
+    }
+    format!("/ui/eh?{}", query.finish())
+}
+
 fn optional_number(value: Option<u32>) -> String {
     value.map_or_else(|| "?".to_owned(), |value| value.to_string())
 }
@@ -701,7 +836,7 @@ fn yes_no(value: bool) -> &'static str {
 
 fn provider_capability(provider: &str) -> &'static str {
     match provider {
-        "eh" => "Archive 选项",
+        "eh" => "主页 / Archive 选项",
         "pixiv" => "详情 / 多页原图",
         "danbooru" | "gelbooru" => "搜索 / 详情 / 原图",
         _ => "未知",

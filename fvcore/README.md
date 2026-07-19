@@ -2,7 +2,7 @@
 
 `fvcore` 是 FletViewer 及其他调用者共用的纯 Rust 业务核心。它既可根据配置独立运行，也可作为 Rust library 嵌入其他程序。
 
-当前 crate 已建立第一版 Foundation：版本化配置、稳定错误、强类型 Runtime/Operation ID、`CoreBuilder` / `CoreRuntime` / `CoreHandle`、有界命令与 operation 队列、deadline/取消、revision/event cursor、协作关闭、始终编译的 HTTP 控制面、四域存储、跨进程实例锁、版本化 `redb` 状态数据库，以及 Reqwest/Rustls 共享网络和不可变 Provider session generation。真实 Provider 已完成 Danbooru JSON 与 Gelbooru JSON DAPI 的搜索/详情和已知 MD5 original 图片主链路，并建立 EH Archive 选项查询起点；接下来完善图像缓存监管和未知 MD5 alias。完整顺序、并发约束、外部接口和切换策略见仓库根目录的 [`FVCORE.md`](../FVCORE.md)。
+当前 crate 已建立第一版 Foundation：版本化配置、稳定错误、强类型 Runtime/Operation ID、`CoreBuilder` / `CoreRuntime` / `CoreHandle`、有界命令与 operation 队列、deadline/取消、revision/event cursor、协作关闭、始终编译的 HTTP 控制面、四域存储、跨进程实例锁、版本化 `redb` 状态数据库，以及 Reqwest/Rustls 共享网络和不可变 Provider session generation。真实 Provider 已完成 Danbooru/Gelbooru 搜索、详情和已知 MD5 original 图片主链路，Pixiv 详情、多页 metadata 和未知 MD5 original page Fetch，以及 EH 主页分页浏览和 Archive 选项查询起点。完整顺序、并发约束、外部接口和切换策略见仓库根目录的 [`FVCORE.md`](../FVCORE.md)。
 
 约束：
 
@@ -33,7 +33,8 @@ HTTP Foundation 路由：
 
 | 路径 | 内容 |
 |---|---|
-| `/` | 单页调试总览：Runtime、HTTP、存储、全部 profile session、Booru 搜索和最近 operation；可由配置或 `--no-webui` 移除 |
+| `/` | 单页调试总览：Runtime、HTTP、存储、全部 profile session、EH/Booru/Pixiv 入口和最近 operation；可由配置或 `--no-webui` 移除 |
+| `/ui/eh` | EH 主页 Gallery 列表和 seek cursor 分页 |
 | `/ui/search` | Danbooru/Gelbooru 服务端渲染搜索和分页 |
 | `/ui/post` | Post metadata 与 original Fetch 表单 |
 | `/ui/operations`、`/ui/operation` | Operation 列表、自动刷新详情、取消和结果图片 |
@@ -49,6 +50,7 @@ HTTP Foundation 路由：
 | `/api/v1/providers/{provider}/{profile}/posts/{id}/original/fetch` | POST，启动 Danbooru/Gelbooru original image operation |
 | `/api/v1/providers/pixiv/{profile}/illusts/{id}` | GET，Pixiv AJAX 作品详情与多页 metadata |
 | `/api/v1/providers/pixiv/{profile}/illusts/{id}/pages/{page}/fetch` | POST，启动 Pixiv original page image operation |
+| `/api/v1/providers/eh/{profile}/galleries` | GET，EH 主页 Gallery 列表；可选 query 为成对出现的 `direction=previous|next` 与 `gid` |
 | `/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/archives` | GET，查询 EH Original/Resample/H@H Archive 选项 |
 | `/api/v1/resources/images/{md5}/{extension}` | GET，返回已验证的不可变图片 bytes，不使用 base64 |
 | `/api/v1/operations` | GET 查询 operation；POST 启动 Foundation fake operation |
@@ -120,7 +122,7 @@ min_request_interval_ms = 0
 | `danbooru/default` | Danbooru | `https://danbooru.donmai.us/` | `cdn.donmai.us` |
 | `gelbooru/default` | Gelbooru | `https://gelbooru.com/` | `img1` 至 `img4.gelbooru.com` |
 
-默认会话不包含 Cookie 或 API key。需要登录或 API 凭据时，通过 TOML 的 `cookie_env`、`api_user_env`、`api_key_env` 指向环境变量；secret value 不直接写进 TOML。当前 Rust 能力为 Danbooru/Gelbooru 搜索、详情和原图，EH Archive 选项起点，以及 Pixiv AJAX 作品详情、多页 metadata 和 original page Fetch。
+默认会话不包含 Cookie 或 API key。需要登录或 API 凭据时，通过 TOML 的 `cookie_env`、`api_user_env`、`api_key_env` 指向环境变量；secret value 不直接写进 TOML。当前 Rust 能力为 Danbooru/Gelbooru 搜索、详情和原图，EH 主页分页与 Archive 选项起点，以及 Pixiv AJAX 作品详情、多页 metadata 和 original page Fetch。EH 翻页公开接口只接受方向和正数 GID，不接受调用者提供的任意 page URL。
 
 `run` 会在任何 Runtime actor 或 HTTP listener 启动前创建并规范化四个存储域，在 Data 域取得 `.fvcore.lock` 独占锁，并打开 `Data/fvcore.redb`。四域必须互不相同且不能互相嵌套；同一 Data 域同时只允许一个 Runtime 持有。
 

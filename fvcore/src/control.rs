@@ -48,6 +48,13 @@ struct BooruSearchQuery {
     limit: u32,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EhHomeQuery {
+    direction: Option<crate::EhPageDirection>,
+    gid: Option<u64>,
+}
+
 impl Default for BooruSearchQuery {
     fn default() -> Self {
         Self {
@@ -120,6 +127,7 @@ pub(crate) async fn start(
             "/api/v1/resources/images/{digest}/{extension}",
             get(get_image_resource),
         )
+        .route("/api/v1/providers/eh/{profile}/galleries", get(get_eh_home))
         .route(
             "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/archives",
             get(get_eh_archive_options),
@@ -349,6 +357,29 @@ async fn get_eh_archive_options(
         .await
     {
         Ok(options) => with_security_headers(Json(options).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_eh_home(
+    State(state): State<ControlState>,
+    Path(profile): Path<String>,
+    Query(query): Query<EhHomeQuery>,
+) -> Response {
+    let cursor = match (query.direction, query.gid) {
+        (None, None) => None,
+        (Some(direction), Some(gid)) => Some(crate::EhPageCursor { direction, gid }),
+        _ => {
+            return error_response(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH direction and gid must be supplied together",
+                false,
+            ));
+        }
+    };
+    let key = crate::ProfileKey::new("eh", profile);
+    match state.core.eh_home(&key, cursor).await {
+        Ok(page) => with_security_headers(Json(page).into_response()),
         Err(error) => error_response(&error),
     }
 }

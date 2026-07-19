@@ -37,12 +37,14 @@
 | 已完成 | Command/Event/Operation 模型 | 状态机、deadline、取消、overload、revision、event cursor/SSE 和 fake operation 测试 |
 | 已完成 | Provider profile/session generation 与共享网络 Foundation | Cookie 环境注入、UA、代理、连接池、受限 redirect、响应上限和旧 generation 自然释放 |
 | 已完成 | Provider 限流与两大 Booru 查询闭环 | Generation 级并发/启动间隔；Danbooru JSON 与 Gelbooru JSON DAPI 搜索、详情、fixture、稳定错误和 HTTP 路由 |
-| 已完成 | EH Archive 查询起点 | 严格 Gallery 标识、共享 EH session generation 和 Original/Resample/H@H 选项查询；尚未提交付费 Archive 或下载 |
+| 已完成 | EH 主页和 Archive 查询起点 | EH 主页 Gallery 摘要、强类型 seek cursor、JSON/WebUI 分页浏览、严格 Gallery 标识和 Original/Resample/H@H 选项查询；尚未实现详情、图片、付费提交或下载 |
 | 已完成 | 已知 MD5 的 Booru original Fetch 主链路 | Danbooru/Gelbooru metadata -> memory -> disk -> shared network -> length/magic/MD5 验证 -> immutable resource；operation 进度、独立取消和 HTTP bytes 已贯通 |
-| 已完成 | 可选内嵌调试 WebUI | 无 Node.js 的服务端渲染 Dashboard、Booru 搜索/详情、operation 列表/详情、Fetch/取消和结果图片；listener 与 WebUI 可分别开关 |
+| 已完成 | 可选内嵌调试 WebUI | 无 Node.js 的服务端渲染 Dashboard、EH 主页分页、Booru 搜索/详情、Pixiv 详情、operation 列表/详情、Fetch/取消和结果图片；listener 与 WebUI 可分别开关 |
 | 已完成 | 未知 MD5 alias 与 Pixiv 详情主链路 | `ResourceKey -> ContentMd5` 持久 alias、有界异步 cache writer、关闭 drain、Pixiv AJAX 详情/多页 metadata、Referer 与 original page operation |
-| 下一步 | 完整图像缓存监管 | 全局 chunk 级在途预算、Cache snapshot/维护、alias schema/version、staging 清理和更多格式 fixture |
-| 后续 | Provider 纵向迁移 | 先 Booru，再 Pixiv、持久下载、EH，最终覆盖 Python Core 全部能力 |
+| 下一步 | EH Gallery 详情与缩略图 | 从 `/ui/eh` 条目进入详情；固定标题、标签、上传者、页数、评分、评论和缩略图 fixture；嵌入 API、JSON 和 WebUI 共用同一 EH profile generation |
+| 后续 | EH 指定页原图阅读链路 | 解析缩略图页和单页 image key，按需获取指定页原图并接入 `ImageService`、operation、resource API 和 WebUI；不将逐页 fetch 用作批量下载 |
+| 后续 | 完整图像缓存监管 | 全局 chunk 级在途预算、Cache snapshot/维护、alias schema/version、staging 清理和更多格式 fixture |
+| 后续 | 持久下载与 Provider 纵向迁移 | 图片下载复用 `ImageService`，EH Archive 使用流式持久任务；继续补齐 Pixiv、Booru 和 EH 的正式能力，最终覆盖 Python Core |
 
 ## Core 独立化进度
 

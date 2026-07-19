@@ -399,6 +399,17 @@ impl CoreHandle {
             .await
     }
 
+    /// Fetches one EH front-page listing using the shared profile session.
+    pub async fn eh_home(
+        &self,
+        key: &ProfileKey,
+        cursor: Option<crate::EhPageCursor>,
+    ) -> Result<crate::EhHomePage, CoreError> {
+        EhService::new(self.sessions.clone())
+            .home(key, cursor, self.shutdown.child_token())
+            .await
+    }
+
     /// Lists official Archive options for one EH gallery using the shared profile session.
     pub async fn eh_archive_options(
         &self,
@@ -994,6 +1005,7 @@ mod tests {
         assert!(response.contains("<h2>Provider 会话</h2>"));
         assert!(response.contains("danbooru/default"));
         assert!(response.contains("<h2>Booru 搜索</h2>"));
+        assert!(response.contains("<h2>EH 主页</h2>"));
         assert!(response.contains("<h2>最近操作</h2>"));
         assert!(response.contains(&operation.id.to_string()));
         assert!(!response.contains("Runtime JSON"));
@@ -1046,6 +1058,73 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("\"provider\":\"danbooru\""));
         assert!(response.contains("\"id\":9"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn serves_eh_home_through_api_and_webui() {
+        const EH_HOME: &str = include_str!("../tests/fixtures/eh/home_compact.html");
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        let fixture = EH_HOME
+            .replace(
+                "https://e-hentai.org/",
+                &format!("http://{provider_listen}/"),
+            )
+            .replace("Fixture &amp; Gallery One", "Fixture &lt;Gallery&gt; One");
+        let provider_router = axum::Router::new().route(
+            "/",
+            axum::routing::get(move || {
+                let fixture = fixture.clone();
+                async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                        fixture,
+                    )
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(provider_listener, provider_router)
+                .await
+                .unwrap()
+        });
+
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config.profiles.insert(
+            "eh".to_owned(),
+            ProviderProfileConfig {
+                provider: "eh".to_owned(),
+                base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let listen = runtime.control_listen().unwrap();
+        let api = http_request(
+            listen,
+            b"GET /api/v1/providers/eh/default/galleries HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let api = String::from_utf8(api).unwrap();
+        assert!(api.starts_with("HTTP/1.1 200 OK"));
+        assert!(api.contains("\"gid\":1234567"));
+        assert!(api.contains("\"direction\":\"next\""));
+
+        let webui = http_request(
+            listen,
+            b"GET /ui/eh?profile=default HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let webui = String::from_utf8(webui).unwrap();
+        assert!(webui.starts_with("HTTP/1.1 200 OK"));
+        assert!(webui.contains("<h1>EH 主页</h1>"));
+        assert!(webui.contains("Fixture &lt;Gallery&gt; One"));
+        assert!(!webui.contains("Fixture <Gallery> One"));
+        assert!(webui.contains("direction=next&amp;gid=1234565"));
         runtime.shutdown().await.unwrap();
     }
 

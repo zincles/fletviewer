@@ -30,7 +30,10 @@ pub use operation::{
     OperationState, PixivPageFetchRequest,
 };
 pub use provider::booru::{BooruPost, BooruSearchResult, ImageVariant};
-pub use provider::eh::{EhArchiveDelivery, EhArchiveOption, EhArchiveOptions, EhGalleryRef};
+pub use provider::eh::{
+    EhArchiveDelivery, EhArchiveOption, EhArchiveOptions, EhGalleryRef, EhGallerySummary,
+    EhHomePage, EhPageCursor, EhPageDirection,
+};
 pub use provider::pixiv::{PixivIllust, PixivPage, PixivUser};
 pub use runtime::{CoreBuilder, CoreHandle, CoreRuntime};
 pub use session::{ProfileKey, ProfileProbeSnapshot, ProfileSnapshot};
