@@ -1,0 +1,28 @@
+{
+  "@attributes": {
+    "limit": 100,
+    "offset": 0,
+    "count": 1
+  },
+  "post": [
+    {
+      "id": 456,
+      "created_at": "Mon Jan 05 12:34:56 +0000 2026",
+      "score": 7,
+      "source": "https://artist.example/work/2",
+      "md5": "d256310bfab43e08b6422e311cd9b2c9",
+      "rating": "general",
+      "width": 1920,
+      "height": 1080,
+      "image": "d256310bfab43e08b6422e311cd9b2c9.webp",
+      "file_url": "https://cdn.example/images/d256310bfab43e08b6422e311cd9b2c9.webp",
+      "sample_url": "https://cdn.example/samples/456.webp",
+      "sample_width": 1280,
+      "sample_height": 720,
+      "preview_url": "https://cdn.example/thumbnails/456.webp",
+      "preview_width": 300,
+      "preview_height": 169,
+      "tags": "blue_sky cloud example_artist"
+    }
+  ]
+}

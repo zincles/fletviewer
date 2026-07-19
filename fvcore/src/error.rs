@@ -34,6 +34,8 @@ pub enum ErrorCode {
     OperationFinished,
     /// The requested Provider profile does not exist.
     ProfileNotFound,
+    /// The requested Provider resource does not exist.
+    ResourceNotFound,
     /// Provider authentication is required or invalid.
     AuthenticationRequired,
     /// Provider denied access.
@@ -42,6 +44,8 @@ pub enum ErrorCode {
     RateLimited,
     /// Provider returned a response that violated the expected protocol.
     UnexpectedResponse,
+    /// Received resource bytes failed declared length or checksum verification.
+    IntegrityMismatch,
     /// A response exceeded the configured byte limit.
     ResponseTooLarge,
     /// A redirect target is not allowed for the Provider profile.
@@ -68,10 +72,12 @@ impl ErrorCode {
             Self::OperationNotFound => "operation_not_found",
             Self::OperationFinished => "operation_finished",
             Self::ProfileNotFound => "profile_not_found",
+            Self::ResourceNotFound => "resource_not_found",
             Self::AuthenticationRequired => "authentication_required",
             Self::AccessDenied => "access_denied",
             Self::RateLimited => "rate_limited",
             Self::UnexpectedResponse => "unexpected_response",
+            Self::IntegrityMismatch => "integrity_mismatch",
             Self::ResponseTooLarge => "response_too_large",
             Self::RedirectDenied => "redirect_denied",
             Self::Network => "network",
@@ -86,7 +92,7 @@ impl fmt::Display for ErrorCode {
 }
 
 /// Public error with a stable code and a safe human-readable message.
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("{code}: {message}")]
 pub struct CoreError {
     code: ErrorCode,

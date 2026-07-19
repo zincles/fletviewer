@@ -7,23 +7,31 @@ mod config;
 mod control;
 mod error;
 mod id;
+mod image;
 mod operation;
 mod operation_service;
+mod provider;
 mod runtime;
 mod session;
 mod snapshot;
 mod storage;
+mod webui;
 
 pub use config::{
-    ControlConfig, CoreConfig, EventConfig, NetworkConfig, OperationConfig, ProviderProfileConfig,
-    StorageConfig,
+    ControlConfig, CoreConfig, EventConfig, ImageConfig, NetworkConfig, OperationConfig,
+    ProviderProfileConfig, StorageConfig,
 };
 pub use error::{CoreError, ErrorCode};
 pub use id::{OperationId, RuntimeId};
+pub use image::{ContentMd5, ImageResource, ImageResourceDescriptor, ResourceKey, ResourceSource};
 pub use operation::{
-    CoreEvent, ErrorSnapshot, EventBatch, EventStreamItem, EventSubscription, FakeOperationRequest,
-    FakeOutcome, OperationKind, OperationSnapshot, OperationState,
+    BooruOriginalFetchRequest, CoreEvent, ErrorSnapshot, EventBatch, EventStreamItem,
+    EventSubscription, FakeOperationRequest, FakeOutcome, OperationKind, OperationSnapshot,
+    OperationState, PixivPageFetchRequest,
 };
+pub use provider::booru::{BooruPost, BooruSearchResult, ImageVariant};
+pub use provider::eh::{EhArchiveDelivery, EhArchiveOption, EhArchiveOptions, EhGalleryRef};
+pub use provider::pixiv::{PixivIllust, PixivPage, PixivUser};
 pub use runtime::{CoreBuilder, CoreHandle, CoreRuntime};
 pub use session::{ProfileKey, ProfileProbeSnapshot, ProfileSnapshot};
 pub use snapshot::{CoreSnapshot, RuntimeState, StorageSnapshot};

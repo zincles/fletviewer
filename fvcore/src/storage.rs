@@ -85,6 +85,10 @@ impl StorageService {
             database_bytes,
         })
     }
+
+    pub(crate) fn cache_path(&self) -> PathBuf {
+        self.paths.cache.clone()
+    }
 }
 
 impl Drop for StorageService {

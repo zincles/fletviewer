@@ -1,15 +1,43 @@
 //! Runtime-owned operation registry, workers and event journal.
 
 use crate::{
-    CoreError, CoreEvent, ErrorCode, ErrorSnapshot, EventBatch, EventConfig, FakeOperationRequest,
-    FakeOutcome, OperationConfig, OperationId, OperationKind, OperationSnapshot, OperationState,
-    RuntimeId,
+    BooruOriginalFetchRequest, CoreError, CoreEvent, ErrorCode, ErrorSnapshot, EventBatch,
+    EventConfig, FakeOperationRequest, FakeOutcome, ImageResourceDescriptor, OperationConfig,
+    OperationId, OperationKind, OperationSnapshot, OperationState, PixivPageFetchRequest,
+    ResourceKey, RuntimeId,
+    image::{ContentMd5, ImageFetchSpec, ImageProgress, ImageService},
+    provider::booru::BooruService,
+    provider::pixiv::PixivService,
+    session::SessionRegistry,
 };
-use std::collections::{HashMap, VecDeque};
-use std::time::Duration;
+use std::{
+    collections::{HashMap, VecDeque},
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 use time::OffsetDateTime;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
+
+#[derive(Clone)]
+pub(crate) enum OperationMessage {
+    Progress {
+        id: OperationId,
+        progress: ImageProgress,
+    },
+    Completion {
+        id: OperationId,
+        result: WorkerResult,
+    },
+}
+
+#[derive(Clone)]
+pub(crate) enum OperationRequest {
+    Fake(FakeOperationRequest),
+    BooruOriginal(BooruOriginalFetchRequest),
+    PixivPage(PixivPageFetchRequest),
+}
 
 #[derive(Clone)]
 pub(crate) struct OperationCompletion {
@@ -19,14 +47,14 @@ pub(crate) struct OperationCompletion {
 
 #[derive(Clone)]
 pub(crate) enum WorkerResult {
-    Completed,
+    Completed(Option<ImageResourceDescriptor>),
     Failed(ErrorSnapshot),
     Cancelled,
 }
 
 struct OperationEntry {
     snapshot: OperationSnapshot,
-    request: FakeOperationRequest,
+    request: OperationRequest,
     cancellation: CancellationToken,
 }
 
@@ -37,8 +65,10 @@ pub(crate) struct OperationService {
     queued: VecDeque<OperationId>,
     terminal: VecDeque<OperationId>,
     active: usize,
-    completion_tx: mpsc::Sender<OperationCompletion>,
+    message_tx: mpsc::Sender<OperationMessage>,
     events: EventHub,
+    sessions: Arc<SessionRegistry>,
+    images: Arc<ImageService>,
 }
 
 pub(crate) struct EventHub {
@@ -67,6 +97,11 @@ impl EventHub {
             revision: snapshot.revision,
             state: snapshot.state,
             phase: snapshot.phase.clone(),
+            bytes_done: snapshot.bytes_done,
+            bytes_total: snapshot.bytes_total,
+            source: snapshot.source,
+            shared: snapshot.shared,
+            resource: snapshot.resource.clone(),
         };
         self.next_sequence += 1;
         self.journal.push_back(event.clone());
@@ -113,7 +148,9 @@ impl OperationService {
         runtime_id: RuntimeId,
         config: OperationConfig,
         event_config: &EventConfig,
-        completion_tx: mpsc::Sender<OperationCompletion>,
+        message_tx: mpsc::Sender<OperationMessage>,
+        sessions: Arc<SessionRegistry>,
+        images: Arc<ImageService>,
     ) -> Self {
         Self {
             runtime_id,
@@ -122,14 +159,77 @@ impl OperationService {
             queued: VecDeque::new(),
             terminal: VecDeque::new(),
             active: 0,
-            completion_tx,
+            message_tx,
             events: EventHub::new(event_config),
+            sessions,
+            images,
         }
     }
 
     pub(crate) fn start_fake(
         &mut self,
         request: FakeOperationRequest,
+        runtime_shutdown: &CancellationToken,
+    ) -> Result<OperationSnapshot, CoreError> {
+        self.start(
+            OperationKind::Fake,
+            OperationRequest::Fake(request),
+            runtime_shutdown,
+        )
+    }
+
+    pub(crate) fn start_booru_original(
+        &mut self,
+        request: BooruOriginalFetchRequest,
+        runtime_shutdown: &CancellationToken,
+    ) -> Result<OperationSnapshot, CoreError> {
+        if request.post_id == 0 {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Booru post ID must be greater than zero",
+                false,
+            ));
+        }
+        if !matches!(request.profile.provider.as_str(), "danbooru" | "gelbooru") {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Booru original fetch supports danbooru and gelbooru profiles",
+                false,
+            ));
+        }
+        self.start(
+            OperationKind::ImageFetch,
+            OperationRequest::BooruOriginal(request),
+            runtime_shutdown,
+        )
+    }
+
+    pub(crate) fn start_pixiv_page(
+        &mut self,
+        request: PixivPageFetchRequest,
+        runtime_shutdown: &CancellationToken,
+    ) -> Result<OperationSnapshot, CoreError> {
+        if request.profile.provider != "pixiv"
+            || request.illust_id.is_empty()
+            || !request.illust_id.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Pixiv profile and numeric illustration ID are required",
+                false,
+            ));
+        }
+        self.start(
+            OperationKind::ImageFetch,
+            OperationRequest::PixivPage(request),
+            runtime_shutdown,
+        )
+    }
+
+    fn start(
+        &mut self,
+        kind: OperationKind,
+        request: OperationRequest,
         runtime_shutdown: &CancellationToken,
     ) -> Result<OperationSnapshot, CoreError> {
         if self.active >= self.config.max_active && self.queued.len() >= self.config.max_queued {
@@ -142,7 +242,7 @@ impl OperationService {
         let id = OperationId::new();
         let snapshot = OperationSnapshot {
             id,
-            kind: OperationKind::Fake,
+            kind,
             state: OperationState::Queued,
             phase: "queued".to_owned(),
             revision: 1,
@@ -150,6 +250,11 @@ impl OperationService {
             started_at: None,
             finished_at: None,
             error: None,
+            bytes_done: 0,
+            bytes_total: None,
+            source: None,
+            shared: false,
+            resource: None,
         };
         self.operations.insert(
             id,
@@ -223,6 +328,22 @@ impl OperationService {
         self.schedule();
     }
 
+    pub(crate) fn progress(&mut self, id: OperationId, progress: ImageProgress) {
+        let Some(entry) = self.operations.get_mut(&id) else {
+            return;
+        };
+        if entry.snapshot.state != OperationState::Running {
+            return;
+        }
+        entry.snapshot.phase = progress.phase.to_owned();
+        entry.snapshot.bytes_done = progress.bytes_done;
+        entry.snapshot.bytes_total = progress.bytes_total;
+        entry.snapshot.source = progress.source;
+        entry.snapshot.shared = progress.shared;
+        entry.snapshot.revision += 1;
+        self.events.publish(self.runtime_id, &entry.snapshot);
+    }
+
     pub(crate) fn events_after(&self, cursor: u64) -> EventBatch {
         self.events.batch_after(cursor)
     }
@@ -256,11 +377,63 @@ impl OperationService {
             self.events.publish(self.runtime_id, &snapshot);
             let request = entry.request.clone();
             let cancellation = entry.cancellation.clone();
-            let completion_tx = self.completion_tx.clone();
+            let message_tx = self.message_tx.clone();
+            let sessions = self.sessions.clone();
+            let images = self.images.clone();
             let default_deadline = self.config.default_deadline_seconds;
             tokio::spawn(async move {
-                let result = run_fake(request, cancellation, default_deadline).await;
-                let _ = completion_tx.send(OperationCompletion { id, result }).await;
+                let result = match request {
+                    OperationRequest::Fake(request) => {
+                        run_fake(request, cancellation, default_deadline).await
+                    }
+                    OperationRequest::BooruOriginal(request) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(default_deadline),
+                            run_booru_original(
+                                id,
+                                request,
+                                cancellation,
+                                sessions,
+                                images,
+                                message_tx.clone(),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => WorkerResult::Failed(ErrorSnapshot {
+                                code: ErrorCode::DeadlineExceeded,
+                                message: "operation deadline exceeded".to_owned(),
+                                retryable: true,
+                            }),
+                        }
+                    }
+                    OperationRequest::PixivPage(request) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(default_deadline),
+                            run_pixiv_page(
+                                id,
+                                request,
+                                cancellation,
+                                sessions,
+                                images,
+                                message_tx.clone(),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => WorkerResult::Failed(ErrorSnapshot {
+                                code: ErrorCode::DeadlineExceeded,
+                                message: "operation deadline exceeded".to_owned(),
+                                retryable: true,
+                            }),
+                        }
+                    }
+                };
+                let _ = message_tx
+                    .send(OperationMessage::Completion { id, result })
+                    .await;
             });
         }
     }
@@ -280,7 +453,11 @@ fn transition_running(entry: &mut OperationEntry) -> Result<(), CoreError> {
         return Err(invalid_transition());
     }
     entry.snapshot.state = OperationState::Running;
-    entry.snapshot.phase = "running".to_owned();
+    entry.snapshot.phase = match entry.snapshot.kind {
+        OperationKind::Fake => "running",
+        OperationKind::ImageFetch => "resolving",
+    }
+    .to_owned();
     entry.snapshot.revision += 1;
     entry.snapshot.started_at = Some(OffsetDateTime::now_utc());
     Ok(())
@@ -294,7 +471,10 @@ fn transition_terminal(entry: &mut OperationEntry, result: WorkerResult) -> Resu
         return Err(invalid_transition());
     }
     let (state, phase, error) = match result {
-        WorkerResult::Completed => (OperationState::Completed, "completed", None),
+        WorkerResult::Completed(resource) => {
+            entry.snapshot.resource = resource;
+            (OperationState::Completed, "completed", None)
+        }
         WorkerResult::Cancelled => (OperationState::Cancelled, "cancelled", None),
         WorkerResult::Failed(error) => (OperationState::Failed, "failed", Some(error)),
     };
@@ -326,7 +506,7 @@ async fn run_fake(
                     retryable: true,
                 }),
                 Ok(()) => match request.outcome {
-                    FakeOutcome::Succeed => WorkerResult::Completed,
+                    FakeOutcome::Succeed => WorkerResult::Completed(None),
                     FakeOutcome::Fail => WorkerResult::Failed(ErrorSnapshot {
                         code: ErrorCode::Internal,
                         message: "fake operation failed".to_owned(),
@@ -335,6 +515,167 @@ async fn run_fake(
                 },
             }
         }
+    }
+}
+
+async fn run_booru_original(
+    id: OperationId,
+    request: BooruOriginalFetchRequest,
+    cancellation: CancellationToken,
+    sessions: Arc<SessionRegistry>,
+    images: Arc<ImageService>,
+    messages: mpsc::Sender<OperationMessage>,
+) -> WorkerResult {
+    let booru = BooruService::new(sessions);
+    let post = match request.profile.provider.as_str() {
+        "danbooru" => {
+            booru
+                .get_danbooru_post(
+                    &request.profile,
+                    request.post_id,
+                    cancellation.child_token(),
+                )
+                .await
+        }
+        "gelbooru" => {
+            booru
+                .get_gelbooru_post(
+                    &request.profile,
+                    request.post_id,
+                    cancellation.child_token(),
+                )
+                .await
+        }
+        _ => unreachable!("validated before scheduling"),
+    };
+    let post = match post {
+        Ok(post) => post,
+        Err(error) => return worker_error(error),
+    };
+    let Some(url) = post.original.url else {
+        return worker_error(CoreError::new(
+            ErrorCode::UnexpectedResponse,
+            "Booru post has no original image URL",
+            false,
+        ));
+    };
+    let Some(md5) = post.original_md5 else {
+        return worker_error(CoreError::new(
+            ErrorCode::UnexpectedResponse,
+            "Booru post has no original content MD5",
+            false,
+        ));
+    };
+    let expected_md5 = match ContentMd5::from_str(&md5) {
+        Ok(md5) => md5,
+        Err(error) => return worker_error(error),
+    };
+    let mut last_phase = "";
+    let mut last_bytes = 0_u64;
+    let mut last_update = std::time::Instant::now();
+    let result = images
+        .fetch(
+            ImageFetchSpec {
+                profile: request.profile,
+                url,
+                expected_md5: Some(expected_md5),
+                resource_key: None,
+                expected_bytes: post.original.byte_length,
+                referer: Some(post.page_url),
+            },
+            cancellation,
+            |progress| {
+                let publish = progress.phase != last_phase
+                    || progress.bytes_done.saturating_sub(last_bytes) >= 64 * 1024
+                    || last_update.elapsed() >= Duration::from_millis(100);
+                if publish {
+                    last_phase = progress.phase;
+                    last_bytes = progress.bytes_done;
+                    last_update = std::time::Instant::now();
+                    let _ = messages.try_send(OperationMessage::Progress { id, progress });
+                }
+            },
+        )
+        .await;
+    match result {
+        Ok(resource) => WorkerResult::Completed(Some(resource.descriptor().clone())),
+        Err(error) => worker_error(error),
+    }
+}
+
+async fn run_pixiv_page(
+    id: OperationId,
+    request: PixivPageFetchRequest,
+    cancellation: CancellationToken,
+    sessions: Arc<SessionRegistry>,
+    images: Arc<ImageService>,
+    messages: mpsc::Sender<OperationMessage>,
+) -> WorkerResult {
+    let illust = match PixivService::new(sessions)
+        .illust(
+            &request.profile,
+            &request.illust_id,
+            cancellation.child_token(),
+        )
+        .await
+    {
+        Ok(illust) => illust,
+        Err(error) => return worker_error(error),
+    };
+    let Some(page) = illust.pages.get(request.page as usize) else {
+        return worker_error(CoreError::new(
+            ErrorCode::InvalidInput,
+            format!("Pixiv page {} is outside the illustration", request.page),
+            false,
+        ));
+    };
+    let resource_key = match ResourceKey::new("pixiv", &request.illust_id, request.page, "original")
+    {
+        Ok(key) => key,
+        Err(error) => return worker_error(error),
+    };
+    let mut last_phase = "";
+    let mut last_bytes = 0_u64;
+    let mut last_update = std::time::Instant::now();
+    let result = images
+        .fetch(
+            ImageFetchSpec {
+                profile: request.profile,
+                url: page.original_url.clone(),
+                expected_md5: None,
+                resource_key: Some(resource_key),
+                expected_bytes: None,
+                referer: Some(illust.page_url),
+            },
+            cancellation,
+            |progress| {
+                let publish = progress.phase != last_phase
+                    || progress.bytes_done.saturating_sub(last_bytes) >= 64 * 1024
+                    || last_update.elapsed() >= Duration::from_millis(100);
+                if publish {
+                    last_phase = progress.phase;
+                    last_bytes = progress.bytes_done;
+                    last_update = std::time::Instant::now();
+                    let _ = messages.try_send(OperationMessage::Progress { id, progress });
+                }
+            },
+        )
+        .await;
+    match result {
+        Ok(resource) => WorkerResult::Completed(Some(resource.descriptor().clone())),
+        Err(error) => worker_error(error),
+    }
+}
+
+fn worker_error(error: CoreError) -> WorkerResult {
+    if error.code() == ErrorCode::Cancelled {
+        WorkerResult::Cancelled
+    } else {
+        WorkerResult::Failed(ErrorSnapshot {
+            code: error.code(),
+            message: error.message().to_owned(),
+            retryable: error.retryable(),
+        })
     }
 }
 

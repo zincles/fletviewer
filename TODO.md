@@ -36,8 +36,12 @@
 | 已完成 | 四域存储、实例锁与 `redb` schema v1 | 第二 Runtime 被拒绝，关闭后可重新取得同一 Data 域 |
 | 已完成 | Command/Event/Operation 模型 | 状态机、deadline、取消、overload、revision、event cursor/SSE 和 fake operation 测试 |
 | 已完成 | Provider profile/session generation 与共享网络 Foundation | Cookie 环境注入、UA、代理、连接池、受限 redirect、响应上限和旧 generation 自然释放 |
-| 下一步 | Provider 限流与 Danbooru 纵向闭环 | Profile 级并发/速率限制、fixture、搜索、详情和稳定错误 |
-| 后续 | memory -> disk -> network 图像链路 | 有界内存、共享 fetch、内容 MD5、两级分片和异步持久化 |
+| 已完成 | Provider 限流与两大 Booru 查询闭环 | Generation 级并发/启动间隔；Danbooru JSON 与 Gelbooru JSON DAPI 搜索、详情、fixture、稳定错误和 HTTP 路由 |
+| 已完成 | EH Archive 查询起点 | 严格 Gallery 标识、共享 EH session generation 和 Original/Resample/H@H 选项查询；尚未提交付费 Archive 或下载 |
+| 已完成 | 已知 MD5 的 Booru original Fetch 主链路 | Danbooru/Gelbooru metadata -> memory -> disk -> shared network -> length/magic/MD5 验证 -> immutable resource；operation 进度、独立取消和 HTTP bytes 已贯通 |
+| 已完成 | 可选内嵌调试 WebUI | 无 Node.js 的服务端渲染 Dashboard、Booru 搜索/详情、operation 列表/详情、Fetch/取消和结果图片；listener 与 WebUI 可分别开关 |
+| 已完成 | 未知 MD5 alias 与 Pixiv 详情主链路 | `ResourceKey -> ContentMd5` 持久 alias、有界异步 cache writer、关闭 drain、Pixiv AJAX 详情/多页 metadata、Referer 与 original page operation |
+| 下一步 | 完整图像缓存监管 | 全局 chunk 级在途预算、Cache snapshot/维护、alias schema/version、staging 清理和更多格式 fixture |
 | 后续 | Provider 纵向迁移 | 先 Booru，再 Pixiv、持久下载、EH，最终覆盖 Python Core 全部能力 |
 
 ## Core 独立化进度

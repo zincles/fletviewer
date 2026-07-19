@@ -1,14 +1,15 @@
 //! Integrated HTTP control plane and minimal status page.
 
 use crate::{
-    CoreError, CoreHandle, CoreSnapshot, ErrorCode, EventStreamItem, FakeOperationRequest,
-    OperationId, RuntimeState,
+    BooruOriginalFetchRequest, ContentMd5, CoreError, CoreHandle, ErrorCode, EventStreamItem,
+    FakeOperationRequest, OperationId, PixivPageFetchRequest, RuntimeState,
 };
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header},
-    response::{Html, IntoResponse, Response, Sse, sse::Event},
+    response::{IntoResponse, Response, Sse, sse::Event},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -22,8 +23,8 @@ pub(crate) struct ControlServer {
 }
 
 #[derive(Clone)]
-struct ControlState {
-    core: CoreHandle,
+pub(crate) struct ControlState {
+    pub(crate) core: CoreHandle,
 }
 
 #[derive(Serialize)]
@@ -39,8 +40,27 @@ struct EventQuery {
     cursor: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct BooruSearchQuery {
+    tags: String,
+    page: u64,
+    limit: u32,
+}
+
+impl Default for BooruSearchQuery {
+    fn default() -> Self {
+        Self {
+            tags: String::new(),
+            page: 1,
+            limit: 40,
+        }
+    }
+}
+
 pub(crate) async fn start(
     listen: SocketAddr,
+    webui_enabled: bool,
     core: CoreHandle,
     shutdown: CancellationToken,
 ) -> Result<ControlServer, CoreError> {
@@ -58,8 +78,8 @@ pub(crate) async fn start(
             false,
         )
     })?;
-    let router = Router::new()
-        .route("/", get(status_page))
+    let state = ControlState { core };
+    let mut router = Router::new()
         .route("/health/live", get(liveness))
         .route("/health/ready", get(readiness))
         .route("/api/v1/runtime", get(runtime_snapshot))
@@ -69,13 +89,52 @@ pub(crate) async fn start(
             post(probe_profile),
         )
         .route(
+            "/api/v1/providers/danbooru/{profile}/posts",
+            get(search_danbooru),
+        )
+        .route(
+            "/api/v1/providers/danbooru/{profile}/posts/{post_id}",
+            get(get_danbooru_post),
+        )
+        .route(
+            "/api/v1/providers/gelbooru/{profile}/posts",
+            get(search_gelbooru),
+        )
+        .route(
+            "/api/v1/providers/gelbooru/{profile}/posts/{post_id}",
+            get(get_gelbooru_post),
+        )
+        .route(
+            "/api/v1/providers/{provider}/{profile}/posts/{post_id}/original/fetch",
+            post(start_booru_original_fetch),
+        )
+        .route(
+            "/api/v1/providers/pixiv/{profile}/illusts/{illust_id}",
+            get(get_pixiv_illust),
+        )
+        .route(
+            "/api/v1/providers/pixiv/{profile}/illusts/{illust_id}/pages/{page}/fetch",
+            post(start_pixiv_page_fetch),
+        )
+        .route(
+            "/api/v1/resources/images/{digest}/{extension}",
+            get(get_image_resource),
+        )
+        .route(
+            "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/archives",
+            get(get_eh_archive_options),
+        )
+        .route(
             "/api/v1/operations",
             get(list_operations).post(start_fake_operation),
         )
         .route("/api/v1/operations/{id}", get(get_operation))
         .route("/api/v1/operations/{id}/cancel", post(cancel_operation))
-        .route("/api/v1/events", get(events))
-        .with_state(ControlState { core });
+        .route("/api/v1/events", get(events));
+    if webui_enabled {
+        router = router.merge(crate::webui::routes());
+    }
+    let router = router.with_state(state);
     let task = tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, router)
             .with_graceful_shutdown(shutdown.cancelled_owned())
@@ -110,13 +169,6 @@ async fn runtime_snapshot(State(state): State<ControlState>) -> Response {
     }
 }
 
-async fn status_page(State(state): State<ControlState>) -> Response {
-    match state.core.snapshot().await {
-        Ok(snapshot) => with_security_headers(Html(render_status(&snapshot)).into_response()),
-        Err(error) => error_response(&error),
-    }
-}
-
 async fn list_operations(State(state): State<ControlState>) -> Response {
     match state.core.operations().await {
         Ok(operations) => with_security_headers(Json(operations).into_response()),
@@ -138,6 +190,165 @@ async fn probe_profile(
     let key = crate::ProfileKey::new(provider, profile);
     match state.core.probe_profile(&key).await {
         Ok(probe) => with_security_headers(Json(probe).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn search_danbooru(
+    State(state): State<ControlState>,
+    Path(profile): Path<String>,
+    Query(query): Query<BooruSearchQuery>,
+) -> Response {
+    let key = crate::ProfileKey::new("danbooru", profile);
+    match state
+        .core
+        .search_danbooru(&key, &query.tags, query.page, query.limit)
+        .await
+    {
+        Ok(result) => with_security_headers(Json(result).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_danbooru_post(
+    State(state): State<ControlState>,
+    Path((profile, post_id)): Path<(String, u64)>,
+) -> Response {
+    let key = crate::ProfileKey::new("danbooru", profile);
+    match state.core.danbooru_post(&key, post_id).await {
+        Ok(post) => with_security_headers(Json(post).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn search_gelbooru(
+    State(state): State<ControlState>,
+    Path(profile): Path<String>,
+    Query(query): Query<BooruSearchQuery>,
+) -> Response {
+    let key = crate::ProfileKey::new("gelbooru", profile);
+    match state
+        .core
+        .search_gelbooru(&key, &query.tags, query.page, query.limit)
+        .await
+    {
+        Ok(result) => with_security_headers(Json(result).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_gelbooru_post(
+    State(state): State<ControlState>,
+    Path((profile, post_id)): Path<(String, u64)>,
+) -> Response {
+    let key = crate::ProfileKey::new("gelbooru", profile);
+    match state.core.gelbooru_post(&key, post_id).await {
+        Ok(post) => with_security_headers(Json(post).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn start_booru_original_fetch(
+    State(state): State<ControlState>,
+    Path((provider, profile, post_id)): Path<(String, String, u64)>,
+) -> Response {
+    match state
+        .core
+        .start_booru_original_fetch(BooruOriginalFetchRequest {
+            profile: crate::ProfileKey::new(provider, profile),
+            post_id,
+        })
+        .await
+    {
+        Ok(operation) => {
+            with_security_headers((StatusCode::ACCEPTED, Json(operation)).into_response())
+        }
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_pixiv_illust(
+    State(state): State<ControlState>,
+    Path((profile, illust_id)): Path<(String, String)>,
+) -> Response {
+    match state
+        .core
+        .pixiv_illust(&crate::ProfileKey::new("pixiv", profile), &illust_id)
+        .await
+    {
+        Ok(illust) => with_security_headers(Json(illust).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn start_pixiv_page_fetch(
+    State(state): State<ControlState>,
+    Path((profile, illust_id, page)): Path<(String, String, u32)>,
+) -> Response {
+    match state
+        .core
+        .start_pixiv_page_fetch(PixivPageFetchRequest {
+            profile: crate::ProfileKey::new("pixiv", profile),
+            illust_id,
+            page,
+        })
+        .await
+    {
+        Ok(operation) => {
+            with_security_headers((StatusCode::ACCEPTED, Json(operation)).into_response())
+        }
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_image_resource(
+    State(state): State<ControlState>,
+    Path((digest, extension)): Path<(String, String)>,
+) -> Response {
+    let digest = match ContentMd5::from_str(&digest) {
+        Ok(digest) => digest,
+        Err(error) => return error_response(&error),
+    };
+    match state.core.image_resource(digest, &extension).await {
+        Ok(resource) => {
+            let Ok(content_type) = HeaderValue::from_str(&resource.descriptor().mime_type) else {
+                return error_response(&CoreError::new(
+                    ErrorCode::Internal,
+                    "image resource has an invalid MIME type",
+                    false,
+                ));
+            };
+            let mut response = Response::new(Body::from(resource.bytes()));
+            *response.status_mut() = StatusCode::OK;
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, content_type);
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            );
+            response.headers_mut().insert(
+                header::ETAG,
+                HeaderValue::from_str(&format!("\"{}\"", resource.descriptor().content_md5))
+                    .expect("MD5 ETag is valid"),
+            );
+            with_resource_security_headers(response)
+        }
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_eh_archive_options(
+    State(state): State<ControlState>,
+    Path((profile, gid, token)): Path<(String, u64, String)>,
+) -> Response {
+    let key = crate::ProfileKey::new("eh", profile);
+    match state
+        .core
+        .eh_archive_options(&key, crate::EhGalleryRef { gid, token })
+        .await
+    {
+        Ok(options) => with_security_headers(Json(options).into_response()),
         Err(error) => error_response(&error),
     }
 }
@@ -218,38 +429,6 @@ async fn events(State(state): State<ControlState>, Query(query): Query<EventQuer
     )
 }
 
-fn render_status(snapshot: &CoreSnapshot) -> String {
-    format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"2\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>fvcore status</title><style>body{{max-width:64rem;margin:1rem auto;padding:0 1rem;font:14px monospace}}table{{border-collapse:collapse}}th,td{{padding:.3rem .8rem .3rem 0;text-align:left;border-bottom:1px solid #aaa}}</style></head><body><h1>fvcore</h1><table><tr><th>Instance</th><td>{}</td></tr><tr><th>Runtime</th><td>{}</td></tr><tr><th>Status</th><td>{:?}</td></tr><tr><th>Revision</th><td>{}</td></tr><tr><th>Uptime</th><td>{} s</td></tr><tr><th>Control</th><td>{}</td></tr><tr><th>Queued commands</th><td>{}</td></tr><tr><th>Operations</th><td>{} active / {} queued / {} retained</td></tr><tr><th>Latest event</th><td>{}</td></tr></table><h2>Storage</h2><table><tr><th>Schema</th><td>{}</td></tr><tr><th>Data</th><td>{}</td></tr><tr><th>Cache</th><td>{}</td></tr><tr><th>Downloads</th><td>{}</td></tr><tr><th>Temp</th><td>{}</td></tr><tr><th>Database</th><td>{} bytes</td></tr></table><p><a href=\"/api/v1/runtime\">JSON snapshot</a> | <a href=\"/api/v1/operations\">Operations</a></p></body></html>",
-        escape_html(&snapshot.instance_name),
-        snapshot.runtime_id,
-        snapshot.state,
-        snapshot.revision,
-        snapshot.uptime_seconds,
-        snapshot.control_listen.as_deref().unwrap_or("disabled"),
-        snapshot.queued_commands,
-        snapshot.active_operations,
-        snapshot.queued_operations,
-        snapshot.retained_operations,
-        snapshot.latest_event_sequence,
-        snapshot.storage.schema_version,
-        escape_html(&snapshot.storage.data),
-        escape_html(&snapshot.storage.cache),
-        escape_html(&snapshot.storage.downloads),
-        escape_html(&snapshot.storage.temp),
-        snapshot.storage.database_bytes,
-    )
-}
-
-fn escape_html(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
 fn error_response(error: &CoreError) -> Response {
     let status = match error.code() {
         ErrorCode::InvalidInput => StatusCode::BAD_REQUEST,
@@ -258,11 +437,13 @@ fn error_response(error: &CoreError) -> Response {
         ErrorCode::OperationNotFound => StatusCode::NOT_FOUND,
         ErrorCode::OperationFinished => StatusCode::CONFLICT,
         ErrorCode::ProfileNotFound => StatusCode::NOT_FOUND,
+        ErrorCode::ResourceNotFound => StatusCode::NOT_FOUND,
         ErrorCode::AuthenticationRequired => StatusCode::UNAUTHORIZED,
         ErrorCode::AccessDenied => StatusCode::FORBIDDEN,
         ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         ErrorCode::ResponseTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         ErrorCode::RedirectDenied => StatusCode::BAD_GATEWAY,
+        ErrorCode::IntegrityMismatch => StatusCode::BAD_GATEWAY,
         ErrorCode::InvalidConfig | ErrorCode::Parse => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -315,12 +496,12 @@ fn with_security_headers(mut response: Response) -> Response {
     response
 }
 
-#[cfg(test)]
-mod tests {
-    use super::escape_html;
-
-    #[test]
-    fn escapes_untrusted_status_text() {
-        assert_eq!(escape_html("<a & \"b\">"), "&lt;a &amp; &quot;b&quot;&gt;");
-    }
+fn with_resource_security_headers(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    response
 }

@@ -1,6 +1,8 @@
 //! Immutable operation and event contracts.
 
-use crate::{ErrorCode, OperationId, RuntimeId};
+use crate::{
+    ErrorCode, ImageResourceDescriptor, OperationId, ProfileKey, ResourceSource, RuntimeId,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use time::OffsetDateTime;
@@ -12,6 +14,8 @@ use tokio::sync::broadcast;
 pub enum OperationKind {
     /// Deterministic Foundation test operation.
     Fake,
+    /// Fetches and verifies one image resource.
+    ImageFetch,
 }
 
 /// Lifecycle state for one operation.
@@ -73,6 +77,16 @@ pub struct OperationSnapshot {
     pub finished_at: Option<OffsetDateTime>,
     /// Error for failed operations.
     pub error: Option<ErrorSnapshot>,
+    /// Bytes processed by the current resource phase.
+    pub bytes_done: u64,
+    /// Expected total bytes when known.
+    pub bytes_total: Option<u64>,
+    /// Cache or transfer layer currently serving the operation.
+    pub source: Option<ResourceSource>,
+    /// Whether this caller joined a transfer used by multiple operations.
+    pub shared: bool,
+    /// Verified resource descriptor after a successful fetch.
+    pub resource: Option<ImageResourceDescriptor>,
 }
 
 /// Terminal behavior for a fake operation.
@@ -96,6 +110,28 @@ pub struct FakeOperationRequest {
     pub deadline_ms: Option<u64>,
     /// Terminal behavior. Defaults to [`FakeOutcome::Succeed`].
     pub outcome: FakeOutcome,
+}
+
+/// Request for one Provider-declared Booru original image.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BooruOriginalFetchRequest {
+    /// Configured Danbooru or Gelbooru profile.
+    pub profile: ProfileKey,
+    /// Provider post identifier.
+    pub post_id: u64,
+}
+
+/// Request for one original page of a Pixiv illustration.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PixivPageFetchRequest {
+    /// Configured Pixiv profile.
+    pub profile: ProfileKey,
+    /// Numeric illustration ID.
+    pub illust_id: String,
+    /// Zero-based page index.
+    pub page: u32,
 }
 
 impl Default for FakeOperationRequest {
@@ -123,6 +159,16 @@ pub struct CoreEvent {
     pub state: OperationState,
     /// Current operation phase.
     pub phase: String,
+    /// Bytes processed at this revision.
+    pub bytes_done: u64,
+    /// Expected total bytes when known.
+    pub bytes_total: Option<u64>,
+    /// Cache or transfer layer represented by this event.
+    pub source: Option<ResourceSource>,
+    /// Whether the operation currently shares a transfer.
+    pub shared: bool,
+    /// Verified resource descriptor when the operation completed successfully.
+    pub resource: Option<ImageResourceDescriptor>,
 }
 
 /// Cursor-based event replay result.

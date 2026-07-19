@@ -25,6 +25,62 @@ fn default_control_listen() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 8787))
 }
 
+fn default_profile_concurrency() -> usize {
+    4
+}
+
+fn default_max_image_bytes() -> usize {
+    32 * 1024 * 1024
+}
+
+fn default_memory_cache_bytes() -> usize {
+    128 * 1024 * 1024
+}
+
+fn default_inflight_image_bytes() -> usize {
+    128 * 1024 * 1024
+}
+
+fn default_cache_write_queue() -> usize {
+    64
+}
+
+fn default_profiles() -> BTreeMap<String, ProviderProfileConfig> {
+    [
+        ("eh", "https://e-hentai.org/", Vec::new()),
+        (
+            "pixiv",
+            "https://www.pixiv.net/",
+            vec!["i.pximg.net".to_owned()],
+        ),
+        (
+            "danbooru",
+            "https://danbooru.donmai.us/",
+            vec!["cdn.donmai.us".to_owned()],
+        ),
+        (
+            "gelbooru",
+            "https://gelbooru.com/",
+            (1..=4)
+                .map(|index| format!("img{index}.gelbooru.com"))
+                .collect(),
+        ),
+    ]
+    .into_iter()
+    .map(|(provider, base_url, allowed_redirect_hosts)| {
+        (
+            provider.to_owned(),
+            ProviderProfileConfig {
+                provider: provider.to_owned(),
+                base_url: Url::parse(base_url).expect("default Provider URL is valid"),
+                allowed_redirect_hosts,
+                ..ProviderProfileConfig::default()
+            },
+        )
+    })
+    .collect()
+}
+
 /// Complete configuration accepted by [`crate::CoreBuilder`].
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -47,7 +103,9 @@ pub struct CoreConfig {
     pub events: EventConfig,
     /// Shared network limits. Defaults to [`NetworkConfig::default`].
     pub network: NetworkConfig,
-    /// Configured Provider profiles. Defaults to an empty map.
+    /// Image fetch and cache limits. Defaults to [`ImageConfig::default`].
+    pub images: ImageConfig,
+    /// Configured Provider profiles. Defaults to EH, Pixiv, Danbooru and Gelbooru.
     pub profiles: BTreeMap<String, ProviderProfileConfig>,
 }
 
@@ -63,7 +121,8 @@ impl Default for CoreConfig {
             operations: OperationConfig::default(),
             events: EventConfig::default(),
             network: NetworkConfig::default(),
-            profiles: BTreeMap::new(),
+            images: ImageConfig::default(),
+            profiles: default_profiles(),
         }
     }
 }
@@ -126,6 +185,7 @@ impl CoreConfig {
         self.operations.validate()?;
         self.events.validate()?;
         self.network.validate()?;
+        self.images.validate()?;
         let mut profile_keys = HashSet::new();
         for (key, profile) in &self.profiles {
             profile.validate(key)?;
@@ -144,6 +204,50 @@ impl CoreConfig {
     }
 }
 
+/// Hard limits for image fetching and the reconstructable content cache.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImageConfig {
+    /// Maximum bytes accepted for one image. Defaults to 32 MiB.
+    pub max_image_bytes: usize,
+    /// Maximum bytes retained by the in-memory image cache. Defaults to 128 MiB.
+    pub memory_cache_bytes: usize,
+    /// Maximum bytes reserved by concurrent image transfers. Defaults to 128 MiB.
+    pub max_inflight_bytes: usize,
+    /// Maximum verified resources waiting for disk persistence. Defaults to `64`.
+    pub cache_write_queue: usize,
+}
+
+impl Default for ImageConfig {
+    fn default() -> Self {
+        Self {
+            max_image_bytes: default_max_image_bytes(),
+            memory_cache_bytes: default_memory_cache_bytes(),
+            max_inflight_bytes: default_inflight_image_bytes(),
+            cache_write_queue: default_cache_write_queue(),
+        }
+    }
+}
+
+impl ImageConfig {
+    fn validate(&self) -> Result<(), CoreError> {
+        if self.max_image_bytes == 0
+            || self.memory_cache_bytes == 0
+            || self.max_inflight_bytes < self.max_image_bytes
+            || self.cache_write_queue == 0
+            || self.max_image_bytes > u32::MAX as usize
+            || self.max_inflight_bytes > u32::MAX as usize
+        {
+            return Err(CoreError::new(
+                ErrorCode::InvalidConfig,
+                "image limits must be nonzero, max_inflight_bytes must cover one image, and byte permits must fit in u32",
+                false,
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Integrated HTTP control-plane configuration.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -152,6 +256,8 @@ pub struct ControlConfig {
     pub enabled: bool,
     /// Address used when HTTP listening is enabled. Defaults to `127.0.0.1:8787`.
     pub listen: SocketAddr,
+    /// Whether the embedded diagnostic WebUI routes are available. Defaults to `true`.
+    pub webui_enabled: bool,
 }
 
 impl Default for ControlConfig {
@@ -159,6 +265,7 @@ impl Default for ControlConfig {
         Self {
             enabled: false,
             listen: default_control_listen(),
+            webui_enabled: true,
         }
     }
 }
@@ -352,6 +459,14 @@ pub struct ProviderProfileConfig {
     pub allowed_redirect_hosts: Vec<String>,
     /// Environment variable containing a Cookie header value. Defaults to `None`.
     pub cookie_env: Option<String>,
+    /// Environment variable containing the Provider API user/login. Defaults to `None`.
+    pub api_user_env: Option<String>,
+    /// Environment variable containing the Provider API key. Defaults to `None`.
+    pub api_key_env: Option<String>,
+    /// Maximum requests concurrently using this profile generation. Defaults to `4`.
+    pub max_concurrent_requests: usize,
+    /// Minimum delay between request starts for this profile, in milliseconds. Defaults to `0`.
+    pub min_request_interval_ms: u64,
 }
 
 impl Default for ProviderProfileConfig {
@@ -363,6 +478,10 @@ impl Default for ProviderProfileConfig {
             user_agent: format!("fvcore/{}", crate::VERSION),
             allowed_redirect_hosts: Vec::new(),
             cookie_env: None,
+            api_user_env: None,
+            api_key_env: None,
+            max_concurrent_requests: default_profile_concurrency(),
+            min_request_interval_ms: 0,
         }
     }
 }
@@ -402,6 +521,35 @@ impl ProviderProfileConfig {
                 false,
             ));
         }
+        if self
+            .api_user_env
+            .as_ref()
+            .is_some_and(|name| name.trim().is_empty())
+            || self
+                .api_key_env
+                .as_ref()
+                .is_some_and(|name| name.trim().is_empty())
+        {
+            return Err(CoreError::new(
+                ErrorCode::InvalidConfig,
+                format!("profile {key} API credential environment names must not be empty"),
+                false,
+            ));
+        }
+        if self.api_user_env.is_some() != self.api_key_env.is_some() {
+            return Err(CoreError::new(
+                ErrorCode::InvalidConfig,
+                format!("profile {key} api_user_env and api_key_env must be configured together"),
+                false,
+            ));
+        }
+        if self.max_concurrent_requests == 0 {
+            return Err(CoreError::new(
+                ErrorCode::InvalidConfig,
+                format!("profile {key} max_concurrent_requests must be greater than zero"),
+                false,
+            ));
+        }
         Ok(())
     }
 }
@@ -413,13 +561,51 @@ mod tests {
 
     #[test]
     fn defaults_are_valid() {
-        CoreConfig::default().validate().unwrap();
+        let config = CoreConfig::default();
+        config.validate().unwrap();
+        assert_eq!(config.profiles.len(), 4);
+        assert_eq!(
+            config.profiles["eh"].base_url.as_str(),
+            "https://e-hentai.org/"
+        );
+        assert_eq!(
+            config.profiles["pixiv"].base_url.as_str(),
+            "https://www.pixiv.net/"
+        );
+        assert_eq!(
+            config.profiles["danbooru"].base_url.as_str(),
+            "https://danbooru.donmai.us/"
+        );
+        assert_eq!(
+            config.profiles["gelbooru"].base_url.as_str(),
+            "https://gelbooru.com/"
+        );
     }
 
     #[test]
     fn rejects_unknown_fields() {
         let result = CoreConfig::from_toml("unknown = true");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn omitted_profiles_keep_the_four_defaults() {
+        let config = CoreConfig::from_toml("instance_name = 'custom'").unwrap();
+        assert_eq!(config.profiles.len(), 4);
+        assert!(config.profiles.contains_key("eh"));
+        assert!(config.profiles.contains_key("pixiv"));
+        assert!(config.profiles.contains_key("danbooru"));
+        assert!(config.profiles.contains_key("gelbooru"));
+    }
+
+    #[test]
+    fn explicit_profiles_replace_the_default_map() {
+        let config = CoreConfig::from_toml(
+            "[profiles.local]\nprovider = 'danbooru'\nbase_url = 'http://127.0.0.1/'",
+        )
+        .unwrap();
+        assert_eq!(config.profiles.len(), 1);
+        assert!(config.profiles.contains_key("local"));
     }
 
     #[test]
@@ -434,5 +620,29 @@ mod tests {
             ..CoreConfig::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validates_profile_credentials_and_limits() {
+        let mut missing_key = super::ProviderProfileConfig {
+            provider: "danbooru".to_owned(),
+            api_user_env: Some("DANBOORU_USER".to_owned()),
+            ..super::ProviderProfileConfig::default()
+        };
+        assert!(missing_key.validate("danbooru").is_err());
+        missing_key.api_key_env = Some("DANBOORU_KEY".to_owned());
+        assert!(missing_key.validate("danbooru").is_ok());
+        missing_key.max_concurrent_requests = 0;
+        assert!(missing_key.validate("danbooru").is_err());
+    }
+
+    #[test]
+    fn validates_image_byte_budgets() {
+        let mut config = CoreConfig::default();
+        config.images.max_image_bytes = 1024;
+        config.images.max_inflight_bytes = 512;
+        assert!(config.validate().is_err());
+        config.images.max_inflight_bytes = 1024;
+        assert!(config.validate().is_ok());
     }
 }

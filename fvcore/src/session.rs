@@ -8,16 +8,26 @@ use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
-    sync::{Arc, RwLock},
-    time::Duration,
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
+use tokio::sync::{Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
 const REDIRECT_DENIED: &str = "fvcore_redirect_denied";
 
+pub(crate) enum ApiAuth {
+    None,
+    Basic,
+    GelbooruQuery,
+}
+
 /// Stable Provider profile identity.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, Serialize)]
 pub struct ProfileKey {
     /// Provider implementation identifier.
     pub provider: String,
@@ -53,6 +63,16 @@ pub struct ProfileSnapshot {
     pub base_url: String,
     /// Whether a Cookie secret was loaded for this generation.
     pub has_cookie: bool,
+    /// Whether an API user and key were loaded for this generation.
+    pub has_api_credentials: bool,
+    /// Maximum concurrent requests for this generation.
+    pub max_concurrent_requests: usize,
+    /// Minimum delay between request starts, in milliseconds.
+    pub min_request_interval_ms: u64,
+    /// Requests currently holding a concurrency permit.
+    pub active_requests: usize,
+    /// Requests waiting for a concurrency permit.
+    pub queued_requests: usize,
 }
 
 /// Safe result of probing one configured Provider origin.
@@ -93,7 +113,13 @@ struct SessionGeneration {
     config: ProviderProfileConfig,
     network: NetworkConfig,
     client: Client,
+    allowed_hosts: HashSet<String>,
     cookie: Option<SecretString>,
+    api_user: Option<SecretString>,
+    api_key: Option<SecretString>,
+    concurrency: Semaphore,
+    queued_requests: AtomicUsize,
+    rate_limit: Mutex<Option<Instant>>,
 }
 
 struct RegistryState {
@@ -130,7 +156,9 @@ impl SessionRegistry {
     ) -> Result<ProfileSnapshot, CoreError> {
         let key = ProfileKey::new(config.provider.clone(), config.profile.clone());
         config.validate(&key.to_string())?;
-        let cookie = load_cookie(config.cookie_env.as_deref())?;
+        let cookie = load_secret(config.cookie_env.as_deref(), "Cookie")?;
+        let api_user = load_secret(config.api_user_env.as_deref(), "API user")?;
+        let api_key = load_secret(config.api_key_env.as_deref(), "API key")?;
         let mut state = self.state.write().map_err(lock_error)?;
         let generation = state.next_generations.get(&key).copied().unwrap_or(1);
         let session = Arc::new(SessionGeneration::new(
@@ -139,6 +167,8 @@ impl SessionRegistry {
             config,
             network,
             cookie,
+            api_user,
+            api_key,
         )?);
         state.sessions.insert(key.clone(), session.clone());
         state.next_generations.insert(key, generation + 1);
@@ -162,18 +192,40 @@ impl SessionRegistry {
         relative_path: &str,
         cancellation: CancellationToken,
     ) -> Result<NetworkResponse, CoreError> {
-        let session = {
-            let state = self.state.read().map_err(lock_error)?;
-            state.sessions.get(key).cloned()
-        }
-        .ok_or_else(|| {
-            CoreError::new(
-                ErrorCode::ProfileNotFound,
-                format!("Provider profile {key} was not found"),
-                false,
-            )
-        })?;
+        let session = self.session(key)?;
         session.get(relative_path, cancellation).await
+    }
+
+    pub(crate) async fn get_with_query(
+        &self,
+        key: &ProfileKey,
+        relative_path: &str,
+        query: &[(String, String)],
+        auth: ApiAuth,
+        cancellation: CancellationToken,
+    ) -> Result<NetworkResponse, CoreError> {
+        let session = self.session(key)?;
+        session
+            .get_with_query(relative_path, query, auth, cancellation)
+            .await
+    }
+
+    pub(crate) async fn get_absolute<F>(
+        &self,
+        key: &ProfileKey,
+        url: &Url,
+        referer: Option<&Url>,
+        max_bytes: usize,
+        cancellation: CancellationToken,
+        progress: F,
+    ) -> Result<NetworkResponse, CoreError>
+    where
+        F: FnMut(usize, Option<u64>) + Send,
+    {
+        let session = self.session(key)?;
+        session
+            .get_absolute(url, referer, max_bytes, cancellation, progress)
+            .await
     }
 
     pub(crate) async fn probe(
@@ -192,6 +244,31 @@ impl SessionRegistry {
             content_type: response.content_type,
         })
     }
+
+    pub(crate) async fn get_pixiv_ajax(
+        &self,
+        key: &ProfileKey,
+        relative_path: &str,
+        query: &[(String, String)],
+        referer_path: &str,
+        cancellation: CancellationToken,
+    ) -> Result<NetworkResponse, CoreError> {
+        let session = self.session(key)?;
+        session
+            .get_pixiv_ajax(relative_path, query, referer_path, cancellation)
+            .await
+    }
+
+    fn session(&self, key: &ProfileKey) -> Result<Arc<SessionGeneration>, CoreError> {
+        let state = self.state.read().map_err(lock_error)?;
+        state.sessions.get(key).cloned().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::ProfileNotFound,
+                format!("Provider profile {key} was not found"),
+                false,
+            )
+        })
+    }
 }
 
 impl SessionGeneration {
@@ -201,6 +278,8 @@ impl SessionGeneration {
         config: ProviderProfileConfig,
         network: NetworkConfig,
         cookie: Option<SecretString>,
+        api_user: Option<SecretString>,
+        api_key: Option<SecretString>,
     ) -> Result<Self, CoreError> {
         let base_host = config.base_url.host_str().ok_or_else(|| {
             CoreError::new(
@@ -215,6 +294,7 @@ impl SessionGeneration {
             .map(|host| host.to_ascii_lowercase())
             .collect();
         allowed_hosts.insert(base_host.to_ascii_lowercase());
+        let redirect_hosts = allowed_hosts.clone();
         let base_scheme = config.base_url.scheme().to_owned();
         let redirect_limit = network.max_redirects;
         let mut client_builder = Client::builder()
@@ -228,7 +308,7 @@ impl SessionGeneration {
                 let allowed = attempt
                     .url()
                     .host_str()
-                    .is_some_and(|host| allowed_hosts.contains(&host.to_ascii_lowercase()));
+                    .is_some_and(|host| redirect_hosts.contains(&host.to_ascii_lowercase()));
                 if allowed && attempt.url().scheme() == base_scheme {
                     attempt.follow()
                 } else {
@@ -252,13 +332,20 @@ impl SessionGeneration {
                 false,
             )
         })?;
+        let max_concurrent_requests = config.max_concurrent_requests;
         Ok(Self {
             key,
             number,
             config,
             network,
             client,
+            allowed_hosts,
             cookie,
+            api_user,
+            api_key,
+            concurrency: Semaphore::new(max_concurrent_requests),
+            queued_requests: AtomicUsize::new(0),
+            rate_limit: Mutex::new(None),
         })
     }
 
@@ -268,6 +355,14 @@ impl SessionGeneration {
             generation: self.number,
             base_url: self.config.base_url.to_string(),
             has_cookie: self.cookie.is_some(),
+            has_api_credentials: self.api_user.is_some() && self.api_key.is_some(),
+            max_concurrent_requests: self.config.max_concurrent_requests,
+            min_request_interval_ms: self.config.min_request_interval_ms,
+            active_requests: self
+                .config
+                .max_concurrent_requests
+                .saturating_sub(self.concurrency.available_permits()),
+            queued_requests: self.queued_requests.load(Ordering::Relaxed),
         }
     }
 
@@ -276,11 +371,148 @@ impl SessionGeneration {
         relative_path: &str,
         cancellation: CancellationToken,
     ) -> Result<NetworkResponse, CoreError> {
+        self.get_with_query(relative_path, &[], ApiAuth::None, cancellation)
+            .await
+    }
+
+    async fn get_with_query(
+        &self,
+        relative_path: &str,
+        query: &[(String, String)],
+        auth: ApiAuth,
+        cancellation: CancellationToken,
+    ) -> Result<NetworkResponse, CoreError> {
         let url = safe_join(&self.config.base_url, relative_path)?;
-        let mut request = self.client.get(url);
+        let mut request = self.client.get(url).query(query);
+        match auth {
+            ApiAuth::None => {}
+            ApiAuth::Basic => {
+                if let (Some(user), Some(key)) = (&self.api_user, &self.api_key) {
+                    request = request.basic_auth(user.expose_secret(), Some(key.expose_secret()));
+                }
+            }
+            ApiAuth::GelbooruQuery => {
+                if let (Some(user), Some(key)) = (&self.api_user, &self.api_key) {
+                    request = request.query(&[
+                        ("user_id", user.expose_secret()),
+                        ("api_key", key.expose_secret()),
+                    ]);
+                }
+            }
+        }
         if let Some(cookie) = &self.cookie {
             request = request.header(header::COOKIE, cookie.expose_secret());
         }
+        self.execute(
+            request,
+            self.network.max_response_bytes,
+            cancellation,
+            |_, _| {},
+        )
+        .await
+    }
+
+    async fn get_pixiv_ajax(
+        &self,
+        relative_path: &str,
+        query: &[(String, String)],
+        referer_path: &str,
+        cancellation: CancellationToken,
+    ) -> Result<NetworkResponse, CoreError> {
+        let url = safe_join(&self.config.base_url, relative_path)?;
+        let referer = safe_join(&self.config.base_url, referer_path)?;
+        let mut request = self
+            .client
+            .get(url)
+            .query(query)
+            .header(header::ACCEPT, "application/json, text/plain, */*")
+            .header("x-requested-with", "XMLHttpRequest")
+            .header(header::REFERER, referer.as_str());
+        if let Some(cookie) = &self.cookie {
+            let exposed = cookie.expose_secret();
+            request = request.header(header::COOKIE, exposed);
+            if let Some(user_id) = pixiv_user_id(exposed) {
+                request = request.header("x-user-id", user_id);
+            }
+        }
+        self.execute(
+            request,
+            self.network.max_response_bytes,
+            cancellation,
+            |_, _| {},
+        )
+        .await
+    }
+
+    async fn get_absolute<F>(
+        &self,
+        url: &Url,
+        referer: Option<&Url>,
+        max_bytes: usize,
+        cancellation: CancellationToken,
+        progress: F,
+    ) -> Result<NetworkResponse, CoreError>
+    where
+        F: FnMut(usize, Option<u64>) + Send,
+    {
+        if url.scheme() != self.config.base_url.scheme()
+            || !url
+                .host_str()
+                .is_some_and(|host| self.allowed_hosts.contains(&host.to_ascii_lowercase()))
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(CoreError::new(
+                ErrorCode::AccessDenied,
+                "image URL is outside the Provider profile's allowed origin policy",
+                false,
+            ));
+        }
+        let mut request = self.client.get(url.clone());
+        if let Some(referer) = referer {
+            if referer.scheme() != self.config.base_url.scheme()
+                || referer.host_str() != self.config.base_url.host_str()
+            {
+                return Err(CoreError::new(
+                    ErrorCode::AccessDenied,
+                    "image Referer is outside the Provider profile origin",
+                    false,
+                ));
+            }
+            request = request.header(header::REFERER, referer.as_str());
+        }
+        if url.host_str() == self.config.base_url.host_str() {
+            if let Some(cookie) = &self.cookie {
+                request = request.header(header::COOKIE, cookie.expose_secret());
+            }
+        }
+        self.execute(request, max_bytes, cancellation, progress)
+            .await
+    }
+
+    async fn execute<F>(
+        &self,
+        request: reqwest::RequestBuilder,
+        max_bytes: usize,
+        cancellation: CancellationToken,
+        mut progress: F,
+    ) -> Result<NetworkResponse, CoreError>
+    where
+        F: FnMut(usize, Option<u64>) + Send,
+    {
+        self.queued_requests.fetch_add(1, Ordering::Relaxed);
+        let permit = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(cancelled()),
+            permit = self.concurrency.acquire() => permit.map_err(|_| CoreError::new(
+                    ErrorCode::NotReady,
+                    "Provider session is shutting down",
+                    true,
+                )),
+        };
+        self.queued_requests.fetch_sub(1, Ordering::Relaxed);
+        let permit = permit?;
+        self.wait_for_rate_limit(&cancellation).await?;
         let response = tokio::select! {
             biased;
             () = cancellation.cancelled() => return Err(cancelled()),
@@ -290,9 +522,9 @@ impl SessionGeneration {
         map_status(status)?;
         if response
             .content_length()
-            .is_some_and(|length| length > self.network.max_response_bytes as u64)
+            .is_some_and(|length| length > max_bytes as u64)
         {
-            return Err(response_too_large(self.network.max_response_bytes));
+            return Err(response_too_large(max_bytes));
         }
         let final_url = response.url().clone();
         let content_type = response
@@ -302,6 +534,8 @@ impl SessionGeneration {
             .map(str::to_owned);
         let mut response = response;
         let mut body = BytesMut::new();
+        let total = response.content_length();
+        progress(0, total);
         loop {
             let chunk = tokio::select! {
                 biased;
@@ -311,19 +545,42 @@ impl SessionGeneration {
             let Some(chunk) = chunk else {
                 break;
             };
-            if body.len().saturating_add(chunk.len()) > self.network.max_response_bytes {
-                return Err(response_too_large(self.network.max_response_bytes));
+            if body.len().saturating_add(chunk.len()) > max_bytes {
+                return Err(response_too_large(max_bytes));
             }
             body.extend_from_slice(&chunk);
+            progress(body.len(), total);
         }
-        Ok(NetworkResponse {
+        let result = NetworkResponse {
             profile: self.key.clone(),
             generation: self.number,
             status: status.as_u16(),
             final_url,
             body: body.freeze(),
             content_type,
-        })
+        };
+        drop(permit);
+        Ok(result)
+    }
+
+    async fn wait_for_rate_limit(&self, cancellation: &CancellationToken) -> Result<(), CoreError> {
+        let interval = Duration::from_millis(self.config.min_request_interval_ms);
+        if interval.is_zero() {
+            return Ok(());
+        }
+        let mut next_start = self.rate_limit.lock().await;
+        let now = Instant::now();
+        if let Some(allowed_at) = *next_start {
+            if allowed_at > now {
+                tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => return Err(cancelled()),
+                    () = tokio::time::sleep_until(tokio::time::Instant::from_std(allowed_at)) => {}
+                }
+            }
+        }
+        *next_start = Some(Instant::now() + interval);
+        Ok(())
     }
 }
 
@@ -352,13 +609,13 @@ fn safe_join(base: &Url, relative_path: &str) -> Result<Url, CoreError> {
     Ok(url)
 }
 
-fn load_cookie(variable: Option<&str>) -> Result<Option<SecretString>, CoreError> {
+fn load_secret(variable: Option<&str>, label: &str) -> Result<Option<SecretString>, CoreError> {
     variable
         .map(|name| {
             std::env::var(name).map(SecretString::from).map_err(|_| {
                 CoreError::new(
                     ErrorCode::InvalidConfig,
-                    format!("required Cookie environment variable {name} is not set"),
+                    format!("required {label} environment variable {name} is not set"),
                     false,
                 )
             })
@@ -366,10 +623,24 @@ fn load_cookie(variable: Option<&str>) -> Result<Option<SecretString>, CoreError
         .transpose()
 }
 
+fn pixiv_user_id(cookie: &str) -> Option<&str> {
+    cookie.split(';').map(str::trim).find_map(|part| {
+        let value = part.strip_prefix("PHPSESSID=")?;
+        let end = value.find(['_', '%']).unwrap_or(value.len());
+        let user_id = &value[..end];
+        (!user_id.is_empty() && user_id.bytes().all(|byte| byte.is_ascii_digit()))
+            .then_some(user_id)
+    })
+}
+
 fn map_status(status: StatusCode) -> Result<(), CoreError> {
     let (code, retryable) = match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
+            (ErrorCode::InvalidInput, false)
+        }
         StatusCode::UNAUTHORIZED => (ErrorCode::AuthenticationRequired, false),
         StatusCode::FORBIDDEN => (ErrorCode::AccessDenied, false),
+        StatusCode::NOT_FOUND => (ErrorCode::ResourceNotFound, false),
         StatusCode::TOO_MANY_REQUESTS => (ErrorCode::RateLimited, true),
         status if status.is_server_error() => (ErrorCode::UnexpectedResponse, true),
         status if !status.is_success() => (ErrorCode::UnexpectedResponse, false),
@@ -425,10 +696,30 @@ mod tests {
     use super::{ProfileKey, SessionRegistry};
     use crate::{ErrorCode, NetworkConfig, ProviderProfileConfig};
     use axum::{Router, http::StatusCode, response::Redirect, routing::get};
-    use std::{collections::BTreeMap, sync::Arc, time::Duration};
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::{Duration, Instant},
+    };
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
     use url::Url;
+
+    #[test]
+    fn extracts_pixiv_user_id_without_exposing_the_cookie() {
+        assert_eq!(
+            super::pixiv_user_id("foo=bar; PHPSESSID=12345_abcd; x=y"),
+            Some("12345")
+        );
+        assert_eq!(
+            super::pixiv_user_id("PHPSESSID=12345%5Ftoken"),
+            Some("12345")
+        );
+        assert_eq!(super::pixiv_user_id("PHPSESSID=invalid"), None);
+    }
 
     async fn server(router: Router) -> std::net::SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -563,5 +854,86 @@ mod tests {
         assert_eq!(old_response.body, "old");
         assert_eq!(new_response.generation, 2);
         assert_eq!(new_response.body, "new");
+    }
+
+    #[tokio::test]
+    async fn limits_concurrency_and_request_start_rate() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let router = Router::new().route(
+            "/slow",
+            get({
+                let active = active.clone();
+                let maximum = maximum.clone();
+                move || {
+                    let active = active.clone();
+                    let maximum = maximum.clone();
+                    async move {
+                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        maximum.fetch_max(current, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        "ok"
+                    }
+                }
+            }),
+        );
+        let listen = server(router).await;
+        let mut profile = profile(listen);
+        profile.max_concurrent_requests = 1;
+        profile.min_request_interval_ms = 30;
+        let registry = Arc::new(registry(profile, NetworkConfig::default()));
+        let key = ProfileKey::new("test", "default");
+        let started = Instant::now();
+        let first = tokio::spawn({
+            let registry = registry.clone();
+            let key = key.clone();
+            async move { registry.get(&key, "slow", CancellationToken::new()).await }
+        });
+        let second = tokio::spawn({
+            let registry = registry.clone();
+            let key = key.clone();
+            async move { registry.get(&key, "slow", CancellationToken::new()).await }
+        });
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+        assert!(started.elapsed() >= Duration::from_millis(50));
+    }
+
+    #[tokio::test]
+    async fn queued_request_can_be_cancelled() {
+        let listen = server(Router::new().route(
+            "/slow",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                "ok"
+            }),
+        ))
+        .await;
+        let mut profile = profile(listen);
+        profile.max_concurrent_requests = 1;
+        let registry = Arc::new(registry(profile, NetworkConfig::default()));
+        let key = ProfileKey::new("test", "default");
+        let first = tokio::spawn({
+            let registry = registry.clone();
+            let key = key.clone();
+            async move { registry.get(&key, "slow", CancellationToken::new()).await }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let cancellation = CancellationToken::new();
+        let second = tokio::spawn({
+            let registry = registry.clone();
+            let key = key.clone();
+            let cancellation = cancellation.clone();
+            async move { registry.get(&key, "slow", cancellation).await }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancellation.cancel();
+        assert_eq!(
+            second.await.unwrap().unwrap_err().code(),
+            ErrorCode::Cancelled
+        );
+        first.await.unwrap().unwrap();
     }
 }

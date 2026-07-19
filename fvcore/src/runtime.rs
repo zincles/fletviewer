@@ -1,10 +1,14 @@
 //! Core Runtime lifecycle and embedded handle.
 
 use crate::{
-    CoreConfig, CoreError, CoreSnapshot, ErrorCode, EventBatch, EventSubscription,
-    FakeOperationRequest, OperationId, OperationSnapshot, ProfileKey, ProfileProbeSnapshot,
-    ProfileSnapshot, ProviderProfileConfig, RuntimeId, RuntimeState, StorageSnapshot, control,
-    operation_service::{OperationCompletion, OperationService},
+    BooruOriginalFetchRequest, ContentMd5, CoreConfig, CoreError, CoreSnapshot, ErrorCode,
+    EventBatch, EventSubscription, FakeOperationRequest, ImageResource, OperationId,
+    OperationSnapshot, PixivPageFetchRequest, ProfileKey, ProfileProbeSnapshot, ProfileSnapshot,
+    ProviderProfileConfig, RuntimeId, RuntimeState, StorageSnapshot, control,
+    image::ImageService,
+    operation_service::{OperationCompletion, OperationMessage, OperationService},
+    provider::booru::BooruService,
+    provider::eh::EhService,
     session::SessionRegistry,
     storage::StorageService,
 };
@@ -24,6 +28,14 @@ enum CoreCommand {
     },
     StartFake {
         request: FakeOperationRequest,
+        reply: oneshot::Sender<Result<OperationSnapshot, CoreError>>,
+    },
+    StartBooruOriginal {
+        request: BooruOriginalFetchRequest,
+        reply: oneshot::Sender<Result<OperationSnapshot, CoreError>>,
+    },
+    StartPixivPage {
+        request: PixivPageFetchRequest,
         reply: oneshot::Sender<Result<OperationSnapshot, CoreError>>,
     },
     GetOperation {
@@ -46,7 +58,7 @@ enum CoreCommand {
         reply: oneshot::Sender<Result<EventSubscription, CoreError>>,
     },
     ReplaceProfile {
-        config: ProviderProfileConfig,
+        config: Box<ProviderProfileConfig>,
         reply: oneshot::Sender<Result<ProfileSnapshot, CoreError>>,
     },
 }
@@ -108,16 +120,18 @@ impl CoreBuilder {
         let event_config = self.config.events.clone();
         let storage = StorageService::open(&self.config.storage)?;
         let storage_snapshot = storage.snapshot()?;
+        let cache_path = storage.cache_path();
         let sessions = Arc::new(SessionRegistry::new(
             &self.config.profiles,
             &self.config.network,
         )?);
         let (command_tx, command_rx) = mpsc::channel(command_capacity);
-        let (completion_tx, completion_rx) = mpsc::channel(command_capacity);
+        let (message_tx, message_rx) = mpsc::channel(command_capacity);
         let (state_tx, state_rx) = watch::channel(RuntimeState::Starting);
         let shutdown = CancellationToken::new();
         let actor_shutdown = shutdown.clone();
         let runtime_id = RuntimeId::new();
+        let images = ImageService::new(self.config.images.clone(), cache_path, sessions.clone())?;
         let data = RuntimeData {
             id: runtime_id,
             config: self.config,
@@ -130,14 +144,16 @@ impl CoreBuilder {
                 runtime_id,
                 operation_config,
                 &event_config,
-                completion_tx,
+                message_tx,
+                sessions.clone(),
+                images.clone(),
             ),
             sessions: sessions.clone(),
         };
         let mut actor = tokio::spawn(run_actor(
             data,
             command_rx,
-            completion_rx,
+            message_rx,
             state_tx,
             actor_shutdown,
         ));
@@ -147,10 +163,18 @@ impl CoreBuilder {
             shutdown: shutdown.clone(),
             shutdown_seconds,
             sessions,
+            images,
         };
         handle.wait_ready().await?;
         let control = if control_config.enabled {
-            match control::start(control_config.listen, handle.clone(), shutdown.clone()).await {
+            match control::start(
+                control_config.listen,
+                control_config.webui_enabled,
+                handle.clone(),
+                shutdown.clone(),
+            )
+            .await
+            {
                 Ok(server) => Some(server),
                 Err(error) => {
                     shutdown.cancel();
@@ -189,6 +213,7 @@ pub struct CoreHandle {
     shutdown: CancellationToken,
     shutdown_seconds: u64,
     sessions: Arc<SessionRegistry>,
+    images: Arc<ImageService>,
 }
 
 impl CoreHandle {
@@ -236,6 +261,44 @@ impl CoreHandle {
             .await?
     }
 
+    /// Starts a cancellable fetch for one Provider-declared Booru original.
+    pub async fn start_booru_original_fetch(
+        &self,
+        request: BooruOriginalFetchRequest,
+    ) -> Result<OperationSnapshot, CoreError> {
+        self.request(|reply| CoreCommand::StartBooruOriginal { request, reply })
+            .await?
+    }
+
+    /// Fetches Pixiv illustration detail and page metadata through the shared profile.
+    pub async fn pixiv_illust(
+        &self,
+        key: &ProfileKey,
+        illust_id: &str,
+    ) -> Result<crate::PixivIllust, CoreError> {
+        crate::provider::pixiv::PixivService::new(self.sessions.clone())
+            .illust(key, illust_id, self.shutdown.child_token())
+            .await
+    }
+
+    /// Starts a cancellable original image fetch for one Pixiv illustration page.
+    pub async fn start_pixiv_page_fetch(
+        &self,
+        request: PixivPageFetchRequest,
+    ) -> Result<OperationSnapshot, CoreError> {
+        self.request(|reply| CoreCommand::StartPixivPage { request, reply })
+            .await?
+    }
+
+    /// Returns immutable image bytes by their verified content address.
+    pub async fn image_resource(
+        &self,
+        md5: ContentMd5,
+        extension: &str,
+    ) -> Result<ImageResource, CoreError> {
+        self.images.resource(md5, extension).await
+    }
+
     /// Returns one operation snapshot.
     pub async fn operation(&self, id: OperationId) -> Result<OperationSnapshot, CoreError> {
         self.request(|reply| CoreCommand::GetOperation { id, reply })
@@ -276,13 +339,75 @@ impl CoreHandle {
         &self,
         config: ProviderProfileConfig,
     ) -> Result<ProfileSnapshot, CoreError> {
-        self.request(|reply| CoreCommand::ReplaceProfile { config, reply })
-            .await?
+        self.request(|reply| CoreCommand::ReplaceProfile {
+            config: Box::new(config),
+            reply,
+        })
+        .await?
     }
 
     /// Probes the configured root of one Provider profile with bounded response buffering.
     pub async fn probe_profile(&self, key: &ProfileKey) -> Result<ProfileProbeSnapshot, CoreError> {
         self.sessions.probe(key, self.shutdown.child_token()).await
+    }
+
+    /// Searches one Danbooru profile through its public JSON API.
+    pub async fn search_danbooru(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+    ) -> Result<crate::BooruSearchResult, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .search_danbooru(key, query, page, limit, self.shutdown.child_token())
+            .await
+    }
+
+    /// Fetches one Danbooru post through its public JSON API.
+    pub async fn danbooru_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+    ) -> Result<crate::BooruPost, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .get_danbooru_post(key, post_id, self.shutdown.child_token())
+            .await
+    }
+
+    /// Searches one Gelbooru profile through its public JSON DAPI.
+    pub async fn search_gelbooru(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+    ) -> Result<crate::BooruSearchResult, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .search_gelbooru(key, query, page, limit, self.shutdown.child_token())
+            .await
+    }
+
+    /// Fetches one Gelbooru post through its public JSON DAPI.
+    pub async fn gelbooru_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+    ) -> Result<crate::BooruPost, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .get_gelbooru_post(key, post_id, self.shutdown.child_token())
+            .await
+    }
+
+    /// Lists official Archive options for one EH gallery using the shared profile session.
+    pub async fn eh_archive_options(
+        &self,
+        key: &ProfileKey,
+        gallery: crate::EhGalleryRef,
+    ) -> Result<crate::EhArchiveOptions, CoreError> {
+        EhService::new(self.sessions.clone())
+            .archive_options(key, gallery, self.shutdown.child_token())
+            .await
     }
 
     async fn request<T>(
@@ -413,6 +538,11 @@ impl CoreRuntime {
                 }
             }
         }
+        let remaining = deadline.saturating_sub(started.elapsed());
+        if let Err(error) = self.handle.images.shutdown(remaining).await {
+            tracing::warn!(%error, "image service did not drain cleanly");
+            timed_out = true;
+        }
         self.storage.take();
         if timed_out {
             Err(CoreError::new(
@@ -435,7 +565,7 @@ impl Drop for CoreRuntime {
 async fn run_actor(
     mut data: RuntimeData,
     mut commands: mpsc::Receiver<CoreCommand>,
-    mut completions: mpsc::Receiver<OperationCompletion>,
+    mut messages: mpsc::Receiver<OperationMessage>,
     states: watch::Sender<RuntimeState>,
     shutdown: CancellationToken,
 ) {
@@ -458,6 +588,12 @@ async fn run_actor(
                 }
                 Some(CoreCommand::StartFake { request, reply }) => {
                     let _ = reply.send(data.operations.start_fake(request, &shutdown));
+                }
+                Some(CoreCommand::StartBooruOriginal { request, reply }) => {
+                    let _ = reply.send(data.operations.start_booru_original(request, &shutdown));
+                }
+                Some(CoreCommand::StartPixivPage { request, reply }) => {
+                    let _ = reply.send(data.operations.start_pixiv_page(request, &shutdown));
                 }
                 Some(CoreCommand::GetOperation { id, reply }) => {
                     let _ = reply.send(data.operations.get(id));
@@ -490,7 +626,7 @@ async fn run_actor(
                 Some(CoreCommand::ReplaceProfile { config, reply }) => {
                     let result = data
                         .sessions
-                        .replace(config, data.config.network.clone());
+                        .replace(*config, data.config.network.clone());
                     if result.is_ok() {
                         data.revision += 1;
                     }
@@ -498,8 +634,13 @@ async fn run_actor(
                 }
                 None => break,
             },
-            completion = completions.recv() => if let Some(completion) = completion {
-                data.operations.complete(completion);
+            message = messages.recv() => if let Some(message) = message {
+                match message {
+                    OperationMessage::Progress { id, progress } => data.operations.progress(id, progress),
+                    OperationMessage::Completion { id, result } => {
+                        data.operations.complete(OperationCompletion { id, result });
+                    }
+                }
             },
         }
     }
@@ -516,10 +657,19 @@ async fn run_actor(
 mod tests {
     use super::CoreBuilder;
     use crate::{
-        CoreConfig, ErrorCode, EventConfig, FakeOperationRequest, OperationConfig, OperationState,
-        ProfileKey, ProviderProfileConfig, RuntimeState, StorageConfig,
+        BooruOriginalFetchRequest, ContentMd5, CoreConfig, ErrorCode, EventConfig,
+        FakeOperationRequest, OperationConfig, OperationState, PixivPageFetchRequest, ProfileKey,
+        ProviderProfileConfig, ResourceSource, RuntimeState, StorageConfig,
     };
-    use std::time::Duration;
+    use md5::{Digest, Md5};
+    use std::{
+        str::FromStr,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use url::Url;
@@ -551,6 +701,173 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    async fn http_request(listen: std::net::SocketAddr, request: &[u8]) -> Vec<u8> {
+        let mut stream = tokio::net::TcpStream::connect(listen).await.unwrap();
+        stream.write_all(request).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        response
+    }
+
+    fn test_jpeg() -> Vec<u8> {
+        let mut bytes = b"\xff\xd8\xff\xe0JFIF\0".to_vec();
+        bytes.extend(std::iter::repeat_n(0x5a, 128 * 1024));
+        bytes.extend_from_slice(b"\xff\xd9");
+        bytes
+    }
+
+    fn md5_hex(bytes: &[u8]) -> String {
+        format!("{:x}", Md5::digest(bytes))
+    }
+
+    async fn image_provider(
+        image: Arc<Vec<u8>>,
+        declared_md5: String,
+        requests: Arc<AtomicUsize>,
+    ) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let router = axum::Router::new()
+            .route(
+                "/posts/{file}",
+                axum::routing::get({
+                    let declared_md5 = declared_md5.clone();
+                    let image_bytes = image.len();
+                    move |axum::extract::Path(file): axum::extract::Path<String>| {
+                        let declared_md5 = declared_md5.clone();
+                        async move {
+                            let post_id = file.trim_end_matches(".json").parse::<u64>().unwrap();
+                            axum::Json(serde_json::json!({
+                                "id": post_id,
+                                "md5": declared_md5,
+                                "file_ext": "jpeg",
+                                "file_size": image_bytes,
+                                "file_url": format!("http://{listen}/images/{post_id}.jpeg")
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/images/{file}",
+                axum::routing::get({
+                    let image = image.clone();
+                    move || {
+                        let image = image.clone();
+                        let requests = requests.clone();
+                        async move {
+                            requests.fetch_add(1, Ordering::SeqCst);
+                            tokio::time::sleep(Duration::from_millis(30)).await;
+                            (
+                                [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
+                                image.as_ref().clone(),
+                            )
+                        }
+                    }
+                }),
+            );
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        listen
+    }
+
+    fn danbooru_profile(listen: std::net::SocketAddr) -> ProviderProfileConfig {
+        ProviderProfileConfig {
+            provider: "danbooru".to_owned(),
+            base_url: Url::parse(&format!("http://{listen}/")).unwrap(),
+            ..ProviderProfileConfig::default()
+        }
+    }
+
+    async fn pixiv_provider(
+        image: Arc<Vec<u8>>,
+        requests: Arc<AtomicUsize>,
+    ) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let router = axum::Router::new()
+            .route(
+                "/ajax/illust/{illust_id}",
+                axum::routing::get(
+                    |axum::extract::Path(illust_id): axum::extract::Path<String>,
+                     headers: axum::http::HeaderMap| async move {
+                        assert_eq!(
+                            headers
+                                .get("x-requested-with")
+                                .and_then(|value| value.to_str().ok()),
+                            Some("XMLHttpRequest")
+                        );
+                        axum::Json(serde_json::json!({
+                            "error": false,
+                            "message": "",
+                            "body": {
+                                "id": illust_id,
+                                "title": "Local Pixiv fixture",
+                                "description": "fixture",
+                                "illustType": 0,
+                                "pageCount": 1,
+                                "width": 1200,
+                                "height": 1800,
+                                "userId": "42",
+                                "userName": "Artist",
+                                "tags": {"tags": [{"tag": "test"}]}
+                            }
+                        }))
+                    },
+                ),
+            )
+            .route(
+                "/ajax/illust/{illust_id}/pages",
+                axum::routing::get(move |headers: axum::http::HeaderMap| async move {
+                    assert!(
+                        headers
+                            .get(axum::http::header::REFERER)
+                            .and_then(|value| value.to_str().ok())
+                            .is_some_and(|value| value.contains("/artworks/12345678"))
+                    );
+                    axum::Json(serde_json::json!({
+                        "error": false,
+                        "message": "",
+                        "body": [{
+                            "urls": {
+                                "original": format!("http://{listen}/image.jpg")
+                            }
+                        }]
+                    }))
+                }),
+            )
+            .route(
+                "/image.jpg",
+                axum::routing::get(move |headers: axum::http::HeaderMap| {
+                    let image = image.clone();
+                    let requests = requests.clone();
+                    async move {
+                        assert!(
+                            headers
+                                .get(axum::http::header::REFERER)
+                                .and_then(|value| value.to_str().ok())
+                                .is_some_and(|value| value.contains("/artworks/12345678"))
+                        );
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(30)).await;
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
+                            image.as_ref().clone(),
+                        )
+                    }
+                }),
+            );
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        listen
+    }
+
+    fn pixiv_profile(listen: std::net::SocketAddr) -> ProviderProfileConfig {
+        ProviderProfileConfig {
+            provider: "pixiv".to_owned(),
+            base_url: Url::parse(&format!("http://{listen}/")).unwrap(),
+            ..ProviderProfileConfig::default()
+        }
     }
 
     #[tokio::test]
@@ -609,6 +926,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn webui_can_be_disabled_without_disabling_the_control_api() {
+        let temp = TempDir::new().unwrap();
+        let mut core_config = config(&temp);
+        core_config.control.enabled = true;
+        core_config.control.webui_enabled = false;
+        core_config.control.listen = "127.0.0.1:0".parse().unwrap();
+        let runtime = CoreBuilder::new(core_config).build().await.unwrap();
+        let listen = runtime.control_listen().unwrap();
+        let root = http_request(
+            listen,
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            String::from_utf8(root)
+                .unwrap()
+                .starts_with("HTTP/1.1 404 Not Found")
+        );
+        let api = http_request(
+            listen,
+            b"GET /api/v1/runtime HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(
+            String::from_utf8(api)
+                .unwrap()
+                .starts_with("HTTP/1.1 200 OK")
+        );
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dashboard_contains_runtime_storage_profiles_and_operations() {
+        let temp = TempDir::new().unwrap();
+        let mut core_config = config(&temp);
+        core_config.instance_name = "dashboard <test>".to_owned();
+        core_config.control.enabled = true;
+        core_config.control.listen = "127.0.0.1:0".parse().unwrap();
+        core_config.profiles.insert(
+            "danbooru".to_owned(),
+            ProviderProfileConfig {
+                provider: "danbooru".to_owned(),
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let runtime = CoreBuilder::new(core_config).build().await.unwrap();
+        let operation = runtime
+            .handle()
+            .start_fake_operation(FakeOperationRequest {
+                duration_ms: 1,
+                ..FakeOperationRequest::default()
+            })
+            .await
+            .unwrap();
+        wait_terminal(&runtime.handle(), operation.id).await;
+        let response = http_request(
+            runtime.control_listen().unwrap(),
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("dashboard &lt;test&gt;"));
+        assert!(response.contains("<html lang=\"zh-CN\">"));
+        assert!(response.contains("<h2>存储</h2>"));
+        assert!(response.contains("<h2>Provider 会话</h2>"));
+        assert!(response.contains("danbooru/default"));
+        assert!(response.contains("<h2>Booru 搜索</h2>"));
+        assert!(response.contains("<h2>最近操作</h2>"));
+        assert!(response.contains(&operation.id.to_string()));
+        assert!(!response.contains("Runtime JSON"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn serves_danbooru_through_integrated_http() {
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        let provider_router = axum::Router::new().route(
+            "/posts.json",
+            axum::routing::get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    r#"[{"id":9,"md5":"d256310bfab43e08b6422e311cd9b2c9","file_ext":"jpg","file_url":"https://cdn.example/9.jpg"}]"#,
+                )
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(provider_listener, provider_router)
+                .await
+                .unwrap()
+        });
+
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config.profiles.insert(
+            "danbooru".to_owned(),
+            ProviderProfileConfig {
+                provider: "danbooru".to_owned(),
+                base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let listen = runtime.control_listen().unwrap();
+        let mut stream = tokio::net::TcpStream::connect(listen).await.unwrap();
+        stream
+            .write_all(
+                b"GET /api/v1/providers/danbooru/default/posts?tags=test&page=1&limit=40 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"provider\":\"danbooru\""));
+        assert!(response.contains("\"id\":9"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn runtime_exclusively_owns_storage_until_shutdown() {
         let temp = TempDir::new().unwrap();
         let config = config(&temp);
@@ -626,6 +1067,328 @@ mod tests {
             .shutdown()
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn booru_original_fetch_is_shared_and_content_addressed() {
+        let image = Arc::new(test_jpeg());
+        let digest = md5_hex(&image);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let listen = image_provider(image.clone(), digest.clone(), requests.clone()).await;
+        let temp = TempDir::new().unwrap();
+        let mut core_config = config(&temp);
+        core_config
+            .profiles
+            .insert("danbooru".to_owned(), danbooru_profile(listen));
+        let runtime = CoreBuilder::new(core_config).build().await.unwrap();
+        let handle = runtime.handle();
+        let request = BooruOriginalFetchRequest {
+            profile: ProfileKey::new("danbooru", "default"),
+            post_id: 7,
+        };
+        let first = handle
+            .start_booru_original_fetch(request.clone())
+            .await
+            .unwrap();
+        let second = handle
+            .start_booru_original_fetch(request.clone())
+            .await
+            .unwrap();
+        let first = wait_terminal(&handle, first.id).await;
+        let second = wait_terminal(&handle, second.id).await;
+        assert_eq!(first.state, OperationState::Completed);
+        assert_eq!(second.state, OperationState::Completed);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(first.shared || second.shared);
+        let descriptor = first.resource.unwrap();
+        assert_eq!(descriptor.extension, "jpg");
+        assert_eq!(descriptor.source, ResourceSource::Network);
+        assert!(!descriptor.cache_persisted);
+        let digest = ContentMd5::from_str(&digest).unwrap();
+        assert_eq!(
+            handle.image_resource(digest, "jpeg").await.unwrap().bytes(),
+            image.as_ref().as_slice()
+        );
+        let blob = temp.path().join(format!(
+            "Cache/files/{}/{}/{}.jpg",
+            &digest.to_string()[0..2],
+            &digest.to_string()[2..4],
+            digest
+        ));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !blob.is_file() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let cached = handle.start_booru_original_fetch(request).await.unwrap();
+        let cached = wait_terminal(&handle, cached.id).await;
+        assert_eq!(cached.resource.unwrap().source, ResourceSource::Memory);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        runtime.shutdown().await.unwrap();
+
+        let mut restart_config = config(&temp);
+        restart_config
+            .profiles
+            .insert("danbooru".to_owned(), danbooru_profile(listen));
+        let restarted = CoreBuilder::new(restart_config).build().await.unwrap();
+        let restarted_fetch = restarted
+            .handle()
+            .start_booru_original_fetch(BooruOriginalFetchRequest {
+                profile: ProfileKey::new("danbooru", "default"),
+                post_id: 7,
+            })
+            .await
+            .unwrap();
+        let restarted_fetch = wait_terminal(&restarted.handle(), restarted_fetch.id).await;
+        assert_eq!(
+            restarted_fetch.resource.unwrap().source,
+            ResourceSource::Disk
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        restarted.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn booru_original_rejects_provider_md5_mismatch() {
+        let image = Arc::new(test_jpeg());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let listen = image_provider(
+            image,
+            "00000000000000000000000000000000".to_owned(),
+            requests,
+        )
+        .await;
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config
+            .profiles
+            .insert("danbooru".to_owned(), danbooru_profile(listen));
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let operation = runtime
+            .handle()
+            .start_booru_original_fetch(BooruOriginalFetchRequest {
+                profile: ProfileKey::new("danbooru", "default"),
+                post_id: 8,
+            })
+            .await
+            .unwrap();
+        let terminal = wait_terminal(&runtime.handle(), operation.id).await;
+        assert_eq!(terminal.state, OperationState::Failed);
+        assert_eq!(terminal.error.unwrap().code, ErrorCode::IntegrityMismatch);
+        assert!(!temp.path().join("Cache/files/00/00").exists());
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pixiv_unknown_md5_fetch_is_shared_and_alias_survives_restart() {
+        let image = Arc::new(test_jpeg());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let listen = pixiv_provider(image, requests.clone()).await;
+        let temp = TempDir::new().unwrap();
+        let mut core_config = config(&temp);
+        core_config
+            .profiles
+            .insert("pixiv".to_owned(), pixiv_profile(listen));
+        let runtime = CoreBuilder::new(core_config).build().await.unwrap();
+        let request = PixivPageFetchRequest {
+            profile: ProfileKey::new("pixiv", "default"),
+            illust_id: "12345678".to_owned(),
+            page: 0,
+        };
+        let first = runtime
+            .handle()
+            .start_pixiv_page_fetch(request.clone())
+            .await
+            .unwrap();
+        let second = runtime
+            .handle()
+            .start_pixiv_page_fetch(request.clone())
+            .await
+            .unwrap();
+        let first = wait_terminal(&runtime.handle(), first.id).await;
+        let second = wait_terminal(&runtime.handle(), second.id).await;
+        assert!(
+            first.error.is_none(),
+            "first Pixiv fetch failed: {:?}",
+            first.error
+        );
+        assert!(
+            second.error.is_none(),
+            "second Pixiv fetch failed: {:?}",
+            second.error
+        );
+        assert_eq!(first.state, OperationState::Completed);
+        assert_eq!(second.state, OperationState::Completed);
+        assert!(first.shared || second.shared);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let md5 = first.resource.unwrap().content_md5;
+        runtime.shutdown().await.unwrap();
+        assert!(temp.path().join("Cache/image_aliases.json").is_file());
+
+        let mut restart_config = config(&temp);
+        restart_config
+            .profiles
+            .insert("pixiv".to_owned(), pixiv_profile(listen));
+        let restarted = CoreBuilder::new(restart_config).build().await.unwrap();
+        let cached = restarted
+            .handle()
+            .start_pixiv_page_fetch(request)
+            .await
+            .unwrap();
+        let cached = wait_terminal(&restarted.handle(), cached.id).await;
+        assert_eq!(cached.state, OperationState::Completed);
+        let descriptor = cached.resource.unwrap();
+        assert_eq!(descriptor.content_md5, md5);
+        assert_eq!(descriptor.source, ResourceSource::Disk);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        restarted.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_one_shared_image_subscriber_keeps_the_transfer() {
+        let image = Arc::new(test_jpeg());
+        let digest = md5_hex(&image);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let listen = image_provider(image, digest, requests.clone()).await;
+        let temp = TempDir::new().unwrap();
+        let mut core_config = config(&temp);
+        core_config
+            .profiles
+            .insert("danbooru".to_owned(), danbooru_profile(listen));
+        let runtime = CoreBuilder::new(core_config).build().await.unwrap();
+        let handle = runtime.handle();
+        let request = BooruOriginalFetchRequest {
+            profile: ProfileKey::new("danbooru", "default"),
+            post_id: 10,
+        };
+        let cancelled = handle
+            .start_booru_original_fetch(request.clone())
+            .await
+            .unwrap();
+        let survivor = handle.start_booru_original_fetch(request).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        handle.cancel_operation(cancelled.id).await.unwrap();
+        assert_eq!(
+            wait_terminal(&handle, cancelled.id).await.state,
+            OperationState::Cancelled
+        );
+        assert_eq!(
+            wait_terminal(&handle, survivor.id).await.state,
+            OperationState::Completed
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn serves_content_addressed_image_resource_over_http() {
+        let image = Arc::new(test_jpeg());
+        let digest = md5_hex(&image);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let provider_listen = image_provider(image.clone(), digest.clone(), requests).await;
+        let temp = TempDir::new().unwrap();
+        let mut core_config = config(&temp);
+        core_config.control.enabled = true;
+        core_config.control.listen = "127.0.0.1:0".parse().unwrap();
+        core_config
+            .profiles
+            .insert("danbooru".to_owned(), danbooru_profile(provider_listen));
+        let runtime = CoreBuilder::new(core_config).build().await.unwrap();
+        let handle = runtime.handle();
+        let operation = handle
+            .start_booru_original_fetch(BooruOriginalFetchRequest {
+                profile: ProfileKey::new("danbooru", "default"),
+                post_id: 11,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            wait_terminal(&handle, operation.id).await.state,
+            OperationState::Completed
+        );
+
+        let mut stream = tokio::net::TcpStream::connect(runtime.control_listen().unwrap())
+            .await
+            .unwrap();
+        let request = format!(
+            "GET /api/v1/resources/images/{digest}/jpg HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let separator = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap();
+        let headers = String::from_utf8(response[..separator].to_vec()).unwrap();
+        assert!(headers.starts_with("HTTP/1.1 200 OK"));
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains("content-type: image/jpeg")
+        );
+        assert!(headers.contains(&format!("etag: \"{digest}\"")));
+        assert_eq!(&response[separator + 4..], image.as_ref().as_slice());
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn diagnostic_webui_starts_a_real_image_fetch() {
+        let image = Arc::new(test_jpeg());
+        let digest = md5_hex(&image);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let provider_listen = image_provider(image, digest, requests.clone()).await;
+        let temp = TempDir::new().unwrap();
+        let mut core_config = config(&temp);
+        core_config.control.enabled = true;
+        core_config.control.listen = "127.0.0.1:0".parse().unwrap();
+        core_config
+            .profiles
+            .insert("danbooru".to_owned(), danbooru_profile(provider_listen));
+        let runtime = CoreBuilder::new(core_config).build().await.unwrap();
+        let listen = runtime.control_listen().unwrap();
+
+        let detail = http_request(
+            listen,
+            b"GET /ui/post?provider=danbooru&profile=default&id=12 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let detail = String::from_utf8(detail).unwrap();
+        assert!(detail.starts_with("HTTP/1.1 200 OK"));
+        assert!(detail.contains("获取并校验原图"));
+        assert!(
+            detail.contains("form-action &#39;self&#39;") || detail.contains("form-action 'self'")
+        );
+
+        let body = "provider=danbooru&profile=default&post_id=12";
+        let request = format!(
+            "POST /ui/fetch HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let started = http_request(listen, request.as_bytes()).await;
+        let started = String::from_utf8(started).unwrap();
+        assert!(started.starts_with("HTTP/1.1 303 See Other"));
+        assert!(started.contains("location: /ui/operation?id="));
+        let operation = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Some(operation) = runtime.handle().operations().await.unwrap().first() {
+                    break operation.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            wait_terminal(&runtime.handle(), operation.id).await.state,
+            OperationState::Completed
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        runtime.shutdown().await.unwrap();
     }
 
     #[tokio::test]

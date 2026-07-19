@@ -1,0 +1,22 @@
+[
+  {
+    "id": 123,
+    "created_at": "2026-01-02T03:04:05.000Z",
+    "score": 42,
+    "source": "https://artist.example/work/1",
+    "md5": "d256310bfab43e08b6422e311cd9b2c9",
+    "rating": "s",
+    "image_width": 1920,
+    "image_height": 1080,
+    "file_size": 345678,
+    "file_ext": "webp",
+    "file_url": "https://cdn.example/data/d256310bfab43e08b6422e311cd9b2c9.webp",
+    "large_file_url": "https://cdn.example/sample/123.webp",
+    "preview_file_url": "https://cdn.example/preview/123.webp",
+    "tag_string_general": "blue_sky cloud",
+    "tag_string_artist": "example_artist",
+    "tag_string_character": "example_character",
+    "tag_string_copyright": "example_series",
+    "tag_string_meta": "highres"
+  }
+]

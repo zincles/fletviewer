@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use clap::{Parser, Subcommand};
-use fvcore::{ControlConfig, CoreBuilder, CoreConfig, CoreError};
+use fvcore::{CoreBuilder, CoreConfig, CoreError};
 use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
 use tracing_subscriber::EnvFilter;
 
@@ -25,6 +25,14 @@ struct Cli {
     /// Override the HTTP control-plane listen address.
     #[arg(long, global = true, value_name = "ADDR")]
     web_listen: Option<SocketAddr>,
+
+    /// Enable the embedded diagnostic WebUI and HTTP listening.
+    #[arg(long, global = true, conflicts_with = "no_webui")]
+    webui: bool,
+
+    /// Disable only the diagnostic WebUI while keeping configured HTTP APIs available.
+    #[arg(long, global = true, conflicts_with = "webui")]
+    no_webui: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -97,10 +105,14 @@ fn load_config(cli: &Cli) -> Result<CoreConfig, CoreError> {
         config.control.enabled = false;
     }
     if let Some(listen) = cli.web_listen {
-        config.control = ControlConfig {
-            enabled: true,
-            listen,
-        };
+        config.control.enabled = true;
+        config.control.listen = listen;
+    }
+    if cli.webui {
+        config.control.enabled = true;
+        config.control.webui_enabled = true;
+    } else if cli.no_webui {
+        config.control.webui_enabled = false;
     }
     Ok(config)
 }
@@ -126,9 +138,24 @@ mod tests {
         assert_eq!(config.shutdown_seconds, 15);
         assert!(!config.control.enabled);
         assert_eq!(config.control.listen.to_string(), "127.0.0.1:8787");
+        assert!(config.control.webui_enabled);
+        assert_eq!(config.profiles.len(), 4);
         assert_eq!(
             config.storage.data,
             PathBuf::from("FletViewer").join("Data")
         );
+    }
+
+    #[test]
+    fn webui_flags_are_independent_from_the_control_api() {
+        let enabled = Cli::try_parse_from(["fvcore", "--webui", "check"]).unwrap();
+        let enabled = load_config(&enabled).unwrap();
+        assert!(enabled.control.enabled);
+        assert!(enabled.control.webui_enabled);
+
+        let api_only = Cli::try_parse_from(["fvcore", "--web", "--no-webui", "check"]).unwrap();
+        let api_only = load_config(&api_only).unwrap();
+        assert!(api_only.control.enabled);
+        assert!(!api_only.control.webui_enabled);
     }
 }
