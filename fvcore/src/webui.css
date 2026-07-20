@@ -1,6 +1,10 @@
 :root { color-scheme: light dark; font: 15px/1.45 system-ui, sans-serif; }
 body { max-width: 72rem; margin: 0 auto; padding: 1rem; }
-nav { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
+nav { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 1.5rem; }
+.nav-links, .refresh-control { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; }
+.refresh-control { justify-content: flex-end; font-size: .88rem; }
+.refresh-status.live::before { content: ""; display: inline-block; width: .55rem; height: .55rem; margin-right: .4rem; border-radius: 50%; background: #16803c; box-shadow: 0 0 0 .2rem #16803c20; }
+.refresh-action { white-space: nowrap; }
 a { color: #2673c9; }
 h1, h2 { line-height: 1.15; }
 form, .card, table { border: 1px solid #8886; border-radius: .45rem; padding: 1rem; }
@@ -21,4 +25,4 @@ dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .25r
 dt { font-weight: 650; }
 dd { margin: 0; overflow-wrap: anywhere; }
 .wide { grid-column: 1 / -1; }
-@media (max-width: 42rem) { body { padding: .7rem; } table { display: block; overflow-x: auto; } }
+@media (max-width: 42rem) { body { padding: .7rem; } nav { align-items: flex-start; flex-direction: column; } .refresh-control { justify-content: flex-start; } table { display: block; overflow-x: auto; } }

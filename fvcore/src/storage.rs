@@ -89,6 +89,10 @@ impl StorageService {
     pub(crate) fn cache_path(&self) -> PathBuf {
         self.paths.cache.clone()
     }
+
+    pub(crate) fn downloads_path(&self) -> PathBuf {
+        self.paths.downloads.clone()
+    }
 }
 
 impl Drop for StorageService {

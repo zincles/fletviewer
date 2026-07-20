@@ -14,7 +14,10 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, Semaphore};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{Mutex, Semaphore},
+};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -105,6 +108,22 @@ pub(crate) struct NetworkResponse {
     pub(crate) body: Bytes,
     /// Optional response Content-Type.
     pub(crate) content_type: Option<String>,
+}
+
+pub(crate) struct DownloadResponse {
+    pub(crate) bytes_done: u64,
+    pub(crate) bytes_total: Option<u64>,
+    pub(crate) resumed: bool,
+    pub(crate) accept_ranges: bool,
+    pub(crate) etag: Option<String>,
+    pub(crate) last_modified: Option<String>,
+}
+
+pub(crate) struct DownloadRequest<'a> {
+    pub(crate) url: &'a Url,
+    pub(crate) referer: &'a Url,
+    pub(crate) offset: u64,
+    pub(crate) path: &'a std::path::Path,
 }
 
 struct SessionGeneration {
@@ -256,6 +275,43 @@ impl SessionRegistry {
         let session = self.session(key)?;
         session
             .get_pixiv_ajax(relative_path, query, referer_path, cancellation)
+            .await
+    }
+
+    pub(crate) async fn post_eh_api(
+        &self,
+        key: &ProfileKey,
+        payload: &serde_json::Value,
+        cancellation: CancellationToken,
+    ) -> Result<NetworkResponse, CoreError> {
+        let session = self.session(key)?;
+        session.post_eh_api(payload, cancellation).await
+    }
+
+    pub(crate) async fn post_eh_archive(
+        &self,
+        key: &ProfileKey,
+        path: &str,
+        form_body: &str,
+        cancellation: CancellationToken,
+    ) -> Result<NetworkResponse, CoreError> {
+        self.session(key)?
+            .post_eh_archive(path, form_body, cancellation)
+            .await
+    }
+
+    pub(crate) async fn download_to<F>(
+        &self,
+        key: &ProfileKey,
+        request: DownloadRequest<'_>,
+        cancellation: CancellationToken,
+        progress: F,
+    ) -> Result<DownloadResponse, CoreError>
+    where
+        F: FnMut(u64, Option<u64>) + Send,
+    {
+        self.session(key)?
+            .download_to(request, cancellation, progress)
             .await
     }
 
@@ -455,30 +511,9 @@ impl SessionGeneration {
     where
         F: FnMut(usize, Option<u64>) + Send,
     {
-        if url.scheme() != self.config.base_url.scheme()
-            || !url
-                .host_str()
-                .is_some_and(|host| self.allowed_hosts.contains(&host.to_ascii_lowercase()))
-            || !url.username().is_empty()
-            || url.password().is_some()
-        {
-            return Err(CoreError::new(
-                ErrorCode::AccessDenied,
-                "image URL is outside the Provider profile's allowed origin policy",
-                false,
-            ));
-        }
+        self.validate_absolute(url, referer)?;
         let mut request = self.client.get(url.clone());
         if let Some(referer) = referer {
-            if referer.scheme() != self.config.base_url.scheme()
-                || referer.host_str() != self.config.base_url.host_str()
-            {
-                return Err(CoreError::new(
-                    ErrorCode::AccessDenied,
-                    "image Referer is outside the Provider profile origin",
-                    false,
-                ));
-            }
             request = request.header(header::REFERER, referer.as_str());
         }
         if url.host_str() == self.config.base_url.host_str() {
@@ -488,6 +523,232 @@ impl SessionGeneration {
         }
         self.execute(request, max_bytes, cancellation, progress)
             .await
+    }
+
+    async fn post_eh_api(
+        &self,
+        payload: &serde_json::Value,
+        cancellation: CancellationToken,
+    ) -> Result<NetworkResponse, CoreError> {
+        if self.key.provider != "eh" {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH API requests require an EH profile",
+                false,
+            ));
+        }
+        let url = safe_join(&self.config.base_url, "api.php")?;
+        let mut request = self
+            .client
+            .post(url)
+            .header(header::ACCEPT, "application/json")
+            .header(header::REFERER, self.config.base_url.as_str())
+            .json(payload);
+        if let Some(cookie) = &self.cookie {
+            request = request.header(header::COOKIE, cookie.expose_secret());
+        }
+        self.execute(
+            request,
+            self.network.max_response_bytes,
+            cancellation,
+            |_, _| {},
+        )
+        .await
+    }
+
+    async fn post_eh_archive(
+        &self,
+        path: &str,
+        form_body: &str,
+        cancellation: CancellationToken,
+    ) -> Result<NetworkResponse, CoreError> {
+        if self.key.provider != "eh" {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH Archive requests require an EH profile",
+                false,
+            ));
+        }
+        let url = safe_join(&self.config.base_url, path)?;
+        let mut request = self
+            .client
+            .post(url)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::REFERER, self.config.base_url.as_str())
+            .body(form_body.to_owned());
+        if let Some(cookie) = &self.cookie {
+            request = request.header(header::COOKIE, cookie.expose_secret());
+        }
+        self.execute(
+            request,
+            self.network.max_response_bytes,
+            cancellation,
+            |_, _| {},
+        )
+        .await
+    }
+
+    async fn download_to<F>(
+        &self,
+        request: DownloadRequest<'_>,
+        cancellation: CancellationToken,
+        mut progress: F,
+    ) -> Result<DownloadResponse, CoreError>
+    where
+        F: FnMut(u64, Option<u64>) + Send,
+    {
+        let DownloadRequest {
+            url,
+            referer,
+            offset,
+            path,
+        } = request;
+        if self.key.provider != "eh"
+            || !matches!(url.scheme(), "http" | "https")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || referer.scheme() != self.config.base_url.scheme()
+            || referer.host_str() != self.config.base_url.host_str()
+        {
+            return Err(CoreError::new(
+                ErrorCode::AccessDenied,
+                "EH Archive URL or Referer violated the trusted submission policy",
+                false,
+            ));
+        }
+        self.queued_requests.fetch_add(1, Ordering::Relaxed);
+        let permit = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(cancelled()),
+            permit = self.concurrency.acquire() => permit.map_err(|_| CoreError::new(
+                ErrorCode::NotReady, "Provider session is shutting down", true)),
+        };
+        self.queued_requests.fetch_sub(1, Ordering::Relaxed);
+        let permit = permit?;
+        self.wait_for_rate_limit(&cancellation).await?;
+        let mut request = self
+            .client
+            .get(url.clone())
+            .header(header::REFERER, referer.as_str());
+        if offset > 0 {
+            request = request.header(header::RANGE, format!("bytes={offset}-"));
+        }
+        if url.host_str() == self.config.base_url.host_str() {
+            if let Some(cookie) = &self.cookie {
+                request = request.header(header::COOKIE, cookie.expose_secret());
+            }
+        }
+        let mut response = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(cancelled()),
+            response = request.send() => response.map_err(map_transport_error)?,
+        };
+        let status = response.status();
+        map_status(status)?;
+        let resumed = offset > 0 && status == StatusCode::PARTIAL_CONTENT;
+        let start = if resumed { offset } else { 0 };
+        let total = response
+            .content_length()
+            .map(|length| length.saturating_add(start));
+        let accept_ranges = response
+            .headers()
+            .get(header::ACCEPT_RANGES)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("bytes"))
+            || resumed;
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let last_modified = response
+            .headers()
+            .get(header::LAST_MODIFIED)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let mut options = tokio::fs::OpenOptions::new();
+        options.create(true).write(true);
+        if resumed {
+            options.append(true);
+        } else {
+            options.truncate(true);
+        }
+        let mut file = options.open(path).await.map_err(|error| {
+            CoreError::new(
+                ErrorCode::Io,
+                format!(
+                    "failed to open Archive part file {}: {error}",
+                    path.display()
+                ),
+                false,
+            )
+        })?;
+        let mut done = start;
+        progress(done, total);
+        while let Some(chunk) = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(cancelled()),
+            chunk = response.chunk() => chunk.map_err(map_transport_error)?,
+        } {
+            file.write_all(&chunk).await.map_err(|error| {
+                CoreError::new(
+                    ErrorCode::Io,
+                    format!(
+                        "failed to write Archive part file {}: {error}",
+                        path.display()
+                    ),
+                    false,
+                )
+            })?;
+            done = done.saturating_add(chunk.len() as u64);
+            progress(done, total);
+        }
+        file.flush().await.map_err(|error| {
+            CoreError::new(
+                ErrorCode::Io,
+                format!(
+                    "failed to flush Archive part file {}: {error}",
+                    path.display()
+                ),
+                false,
+            )
+        })?;
+        drop(permit);
+        Ok(DownloadResponse {
+            bytes_done: done,
+            bytes_total: total,
+            resumed,
+            accept_ranges,
+            etag,
+            last_modified,
+        })
+    }
+
+    fn validate_absolute(&self, url: &Url, referer: Option<&Url>) -> Result<(), CoreError> {
+        if url.scheme() != self.config.base_url.scheme()
+            || !url
+                .host_str()
+                .is_some_and(|host| self.allowed_hosts.contains(&host.to_ascii_lowercase()))
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(CoreError::new(
+                ErrorCode::AccessDenied,
+                "URL is outside the Provider profile's allowed origin policy",
+                false,
+            ));
+        }
+        if referer.is_some_and(|value| {
+            value.scheme() != self.config.base_url.scheme()
+                || value.host_str() != self.config.base_url.host_str()
+        }) {
+            return Err(CoreError::new(
+                ErrorCode::AccessDenied,
+                "Referer is outside the Provider profile origin",
+                false,
+            ));
+        }
+        Ok(())
     }
 
     async fn execute<F>(

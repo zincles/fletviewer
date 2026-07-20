@@ -3,9 +3,11 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod archive;
 mod config;
 mod control;
 mod error;
+mod gallery;
 mod id;
 mod image;
 mod operation;
@@ -17,22 +19,25 @@ mod snapshot;
 mod storage;
 mod webui;
 
+pub use archive::{ArchiveTaskSnapshot, ArchiveTaskState, EhArchiveDownloadRequest};
 pub use config::{
     ControlConfig, CoreConfig, EventConfig, ImageConfig, NetworkConfig, OperationConfig,
     ProviderProfileConfig, StorageConfig,
 };
 pub use error::{CoreError, ErrorCode};
+pub use gallery::LocalGallerySnapshot;
 pub use id::{OperationId, RuntimeId};
 pub use image::{ContentMd5, ImageResource, ImageResourceDescriptor, ResourceKey, ResourceSource};
 pub use operation::{
-    BooruOriginalFetchRequest, CoreEvent, ErrorSnapshot, EventBatch, EventStreamItem,
-    EventSubscription, FakeOperationRequest, FakeOutcome, OperationKind, OperationSnapshot,
-    OperationState, PixivPageFetchRequest,
+    BooruOriginalFetchRequest, CoreEvent, CoreEventSubject, EhPageFetchRequest, ErrorSnapshot,
+    EventBatch, EventStreamItem, EventSubscription, FakeOperationRequest, FakeOutcome,
+    OperationKind, OperationSnapshot, OperationState, PixivPageFetchRequest,
 };
 pub use provider::booru::{BooruPost, BooruSearchResult, ImageVariant};
 pub use provider::eh::{
-    EhArchiveDelivery, EhArchiveOption, EhArchiveOptions, EhGalleryRef, EhGallerySummary,
-    EhHomePage, EhPageCursor, EhPageDirection,
+    EhArchiveDelivery, EhArchiveOption, EhArchiveOptions, EhArchiveVariant, EhComment,
+    EhGalleryDetail, EhGalleryRef, EhGallerySummary, EhGalleryVersion, EhHomePage,
+    EhImageResolution, EhPageCursor, EhPageDirection, EhThumbnail, EhThumbnailPage,
 };
 pub use provider::pixiv::{PixivIllust, PixivPage, PixivUser};
 pub use runtime::{CoreBuilder, CoreHandle, CoreRuntime};

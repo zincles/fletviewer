@@ -1,8 +1,8 @@
 //! Integrated HTTP control plane and minimal status page.
 
 use crate::{
-    BooruOriginalFetchRequest, ContentMd5, CoreError, CoreHandle, ErrorCode, EventStreamItem,
-    FakeOperationRequest, OperationId, PixivPageFetchRequest, RuntimeState,
+    BooruOriginalFetchRequest, ContentMd5, CoreError, CoreHandle, EhPageFetchRequest, ErrorCode,
+    EventStreamItem, FakeOperationRequest, OperationId, PixivPageFetchRequest, RuntimeState,
 };
 use axum::{
     Json, Router,
@@ -53,6 +53,12 @@ struct BooruSearchQuery {
 struct EhHomeQuery {
     direction: Option<crate::EhPageDirection>,
     gid: Option<u64>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EhThumbnailQuery {
+    page: u32,
 }
 
 impl Default for BooruSearchQuery {
@@ -129,9 +135,33 @@ pub(crate) async fn start(
         )
         .route("/api/v1/providers/eh/{profile}/galleries", get(get_eh_home))
         .route(
+            "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}",
+            get(get_eh_gallery_detail),
+        )
+        .route(
+            "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/thumbnails",
+            get(get_eh_thumbnails),
+        )
+        .route(
+            "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/pages/{page}/fetch",
+            post(start_eh_page_fetch),
+        )
+        .route(
             "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/archives",
             get(get_eh_archive_options),
         )
+        .route(
+            "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/archives/{variant}/download",
+            post(start_eh_archive_download),
+        )
+        .route("/api/v1/archive-tasks", get(list_archive_tasks))
+        .route("/api/v1/local-galleries", get(list_local_galleries))
+        .route("/api/v1/archive-tasks/{id}", get(get_archive_task))
+        .route(
+            "/api/v1/archive-tasks/{id}/cancel",
+            post(cancel_archive_task),
+        )
+        .route("/api/v1/archive-tasks/{id}/retry", post(retry_archive_task))
         .route(
             "/api/v1/operations",
             get(list_operations).post(start_fake_operation),
@@ -361,6 +391,139 @@ async fn get_eh_archive_options(
     }
 }
 
+async fn start_eh_archive_download(
+    State(state): State<ControlState>,
+    Path((profile, gid, token, variant)): Path<(String, u64, String, String)>,
+) -> Response {
+    let variant = match variant.as_str() {
+        "original" => crate::EhArchiveVariant::Original,
+        "resample" => crate::EhArchiveVariant::Resample,
+        _ => {
+            return error_response(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH Archive variant must be original or resample",
+                false,
+            ));
+        }
+    };
+    match state
+        .core
+        .start_eh_archive_download(crate::EhArchiveDownloadRequest {
+            profile: crate::ProfileKey::new("eh", profile),
+            gallery: crate::EhGalleryRef { gid, token },
+            variant,
+        })
+        .await
+    {
+        Ok(task) => with_security_headers((StatusCode::ACCEPTED, Json(task)).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn list_archive_tasks(State(state): State<ControlState>) -> Response {
+    with_security_headers(Json(state.core.archive_tasks().await).into_response())
+}
+
+async fn list_local_galleries(State(state): State<ControlState>) -> Response {
+    with_security_headers(Json(state.core.local_galleries().await).into_response())
+}
+
+async fn get_archive_task(State(state): State<ControlState>, Path(id): Path<String>) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_archive_task_id()),
+    };
+    match state.core.archive_task(id).await {
+        Ok(task) => with_security_headers(Json(task).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn cancel_archive_task(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_archive_task_id()),
+    };
+    match state.core.cancel_archive_task(id).await {
+        Ok(task) => with_security_headers(Json(task).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn retry_archive_task(State(state): State<ControlState>, Path(id): Path<String>) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_archive_task_id()),
+    };
+    match state.core.retry_archive_task(id).await {
+        Ok(task) => with_security_headers(Json(task).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+fn invalid_archive_task_id() -> CoreError {
+    CoreError::new(
+        ErrorCode::InvalidInput,
+        "Archive task ID must be a valid UUID",
+        false,
+    )
+}
+
+async fn get_eh_gallery_detail(
+    State(state): State<ControlState>,
+    Path((profile, gid, token)): Path<(String, u64, String)>,
+) -> Response {
+    let key = crate::ProfileKey::new("eh", profile);
+    match state
+        .core
+        .eh_gallery_detail(&key, crate::EhGalleryRef { gid, token })
+        .await
+    {
+        Ok(detail) => with_security_headers(Json(detail).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_eh_thumbnails(
+    State(state): State<ControlState>,
+    Path((profile, gid, token)): Path<(String, u64, String)>,
+    Query(query): Query<EhThumbnailQuery>,
+) -> Response {
+    let key = crate::ProfileKey::new("eh", profile);
+    match state
+        .core
+        .eh_thumbnails(&key, crate::EhGalleryRef { gid, token }, query.page)
+        .await
+    {
+        Ok(page) => with_security_headers(Json(page).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn start_eh_page_fetch(
+    State(state): State<ControlState>,
+    Path((profile, gid, token, page)): Path<(String, u64, String, u32)>,
+) -> Response {
+    match state
+        .core
+        .start_eh_page_fetch(EhPageFetchRequest {
+            profile: crate::ProfileKey::new("eh", profile),
+            gallery: crate::EhGalleryRef { gid, token },
+            page,
+            nl: None,
+        })
+        .await
+    {
+        Ok(operation) => {
+            with_security_headers((StatusCode::ACCEPTED, Json(operation)).into_response())
+        }
+        Err(error) => error_response(&error),
+    }
+}
+
 async fn get_eh_home(
     State(state): State<ControlState>,
     Path(profile): Path<String>,
@@ -427,6 +590,10 @@ async fn events(State(state): State<ControlState>, Query(query): Query<EventQuer
         loop {
             match subscription.next().await {
                 EventStreamItem::Event(core_event) => {
+                    let event_name = match &core_event.subject {
+                        crate::CoreEventSubject::Operation { .. } => "operation",
+                        crate::CoreEventSubject::ArchiveTask { .. } => "archive_task",
+                    };
                     let data = match serde_json::to_string(&core_event) {
                         Ok(data) => data,
                         Err(error) => {
@@ -437,7 +604,7 @@ async fn events(State(state): State<ControlState>, Query(query): Query<EventQuer
                     yield Ok::<Event, Infallible>(
                         Event::default()
                             .id(core_event.sequence.to_string())
-                            .event("operation")
+                            .event(event_name)
                             .data(data)
                     );
                 }

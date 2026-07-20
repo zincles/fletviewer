@@ -627,10 +627,12 @@ mod tests {
             .route(
                 "/posts/123.json",
                 get(|| async {
-                    (
-                        [(header::CONTENT_TYPE, "application/json")],
-                        &DANBOORU_POSTS[1..DANBOORU_POSTS.len() - 2],
-                    )
+                    let detail = DANBOORU_POSTS
+                        .trim()
+                        .strip_prefix('[')
+                        .and_then(|value| value.strip_suffix(']'))
+                        .expect("fixture is a JSON array");
+                    ([(header::CONTENT_TYPE, "application/json")], detail)
                 }),
             );
         let listen = server(router).await;

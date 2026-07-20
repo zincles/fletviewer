@@ -1,8 +1,8 @@
 //! Optional server-rendered diagnostic WebUI.
 
 use crate::{
-    BooruOriginalFetchRequest, BooruPost, CoreError, ErrorCode, OperationSnapshot,
-    PixivPageFetchRequest, ProfileKey, control::ControlState,
+    BooruOriginalFetchRequest, BooruPost, CoreError, EhPageFetchRequest, ErrorCode,
+    OperationSnapshot, PixivPageFetchRequest, ProfileKey, control::ControlState,
 };
 use axum::{
     Form, Router,
@@ -15,6 +15,9 @@ use serde::Deserialize;
 use std::fmt::Write;
 
 const STYLE: &str = include_str!("webui.css");
+const DASHBOARD_REFRESH_SECONDS: u64 = 5;
+const OPERATIONS_REFRESH_SECONDS: u64 = 2;
+const OPERATION_REFRESH_SECONDS: u64 = 1;
 
 #[derive(Deserialize)]
 #[serde(default)]
@@ -73,6 +76,36 @@ struct EhHomeQuery {
 }
 
 #[derive(Deserialize)]
+struct EhGalleryQuery {
+    profile: String,
+    gid: u64,
+    token: String,
+    #[serde(default)]
+    page: u32,
+}
+
+#[derive(Deserialize)]
+struct EhPageFetchForm {
+    profile: String,
+    gid: u64,
+    token: String,
+    page: u32,
+}
+
+#[derive(Deserialize)]
+struct EhArchiveForm {
+    profile: String,
+    gid: u64,
+    token: String,
+    variant: String,
+}
+
+#[derive(Deserialize)]
+struct ArchiveTaskForm {
+    id: String,
+}
+
+#[derive(Deserialize)]
 struct OperationQuery {
     id: String,
 }
@@ -91,6 +124,13 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/pixiv", get(pixiv_detail))
         .route("/ui/pixiv/fetch", post(start_pixiv_fetch))
         .route("/ui/eh", get(eh_home))
+        .route("/ui/eh/gallery", get(eh_gallery))
+        .route("/ui/eh/fetch", post(start_eh_page_fetch))
+        .route("/ui/eh/archive", post(start_eh_archive))
+        .route("/ui/archive-tasks", get(archive_tasks))
+        .route("/ui/local-galleries", get(local_galleries))
+        .route("/ui/archive-task/cancel", post(cancel_archive))
+        .route("/ui/archive-task/retry", post(retry_archive))
         .route("/ui/operations", get(operations))
         .route("/ui/operation", get(operation))
         .route("/ui/cancel", post(cancel_operation))
@@ -272,7 +312,12 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
         pixiv_form,
         operation_rows,
     );
-    html_page(StatusCode::OK, "调试面板", &body, None)
+    html_page(
+        StatusCode::OK,
+        "调试面板",
+        &body,
+        Some(DASHBOARD_REFRESH_SECONDS),
+    )
 }
 
 async fn eh_home(State(state): State<ControlState>, Query(query): Query<EhHomeQuery>) -> Response {
@@ -325,9 +370,14 @@ async fn eh_home(State(state): State<ControlState>, Query(query): Query<EhHomeQu
         );
         let _ = write!(
             galleries,
-            "<article class=\"card\"><p class=\"muted\">{}</p><h2><a href=\"{}\" rel=\"noreferrer\">{}</a></h2><p>GID {} · {} · {} · {}</p><p class=\"muted\">{}</p></article>",
+            "<article class=\"card\"><p class=\"muted\">{}</p><h2><a href=\"{}\">{}</a></h2><p>GID {} · {} · {} · {}</p><p class=\"muted\">{}</p></article>",
             metadata,
-            escape(gallery.page_url.as_str()),
+            escape(&eh_gallery_url(
+                &query.profile,
+                gallery.gallery.gid,
+                &gallery.gallery.token,
+                0,
+            )),
             escape(&gallery.title),
             gallery.gallery.gid,
             pages,
@@ -365,6 +415,239 @@ async fn eh_home(State(state): State<ControlState>, Query(query): Query<EhHomeQu
         ),
         None,
     )
+}
+
+async fn eh_gallery(
+    State(state): State<ControlState>,
+    Query(query): Query<EhGalleryQuery>,
+) -> Response {
+    let key = ProfileKey::new("eh", &query.profile);
+    let gallery = crate::EhGalleryRef {
+        gid: query.gid,
+        token: query.token.clone(),
+    };
+    let detail = match state.core.eh_gallery_detail(&key, gallery.clone()).await {
+        Ok(detail) => detail,
+        Err(error) => return error_page(&error),
+    };
+    let thumbnails = match state.core.eh_thumbnails(&key, gallery, query.page).await {
+        Ok(page) => page,
+        Err(error) => return error_page(&error),
+    };
+    let tags = detail
+        .tags
+        .iter()
+        .map(|(namespace, values)| format!("{}: {}", escape(namespace), escape(&values.join(", "))))
+        .collect::<Vec<_>>()
+        .join("<br>");
+    let mut items = String::new();
+    for item in &thumbnails.items {
+        let _ = write!(
+            items,
+            "<article class=\"card\"><h2>第 {} 页 · {} x {}</h2><p><a href=\"{}\" rel=\"noreferrer\">打开图片页</a></p><code>{}</code><form method=\"post\" action=\"/ui/eh/fetch\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"gid\" value=\"{}\"><input type=\"hidden\" name=\"token\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"{}\"><button type=\"submit\">获取原图</button></form></article>",
+            item.page + 1,
+            optional_number(item.width),
+            optional_number(item.height),
+            escape(item.page_url.as_str()),
+            escape(&item.image_url),
+            escape(&query.profile),
+            query.gid,
+            escape(&query.token),
+            item.page,
+        );
+    }
+    let next = thumbnails.next_page.map_or_else(String::new, |page| {
+        format!(
+            "<a href=\"{}\">下一页</a>",
+            escape(&eh_gallery_url(
+                &query.profile,
+                query.gid,
+                &query.token,
+                page,
+            ))
+        )
+    });
+    html_page(
+        StatusCode::OK,
+        &detail.title,
+        &format!(
+            "<h1>{}</h1><p>{}</p><table><tr><th>GID</th><td>{}</td></tr><tr><th>上传者</th><td>{}</td></tr><tr><th>页数</th><td>{}</td></tr><tr><th>评分</th><td>{:.2} / {} 人</td></tr><tr><th>上传时间</th><td>{}</td></tr><tr><th>文件大小</th><td>{}</td></tr><tr><th>标签</th><td>{tags}</td></tr></table><h2>Archive 下载</h2><p class=\"error\">提交 Archive 可能消耗 GP。提交后中断不会自动重试，以避免重复扣费。</p><form method=\"post\" action=\"/ui/eh/archive\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"gid\" value=\"{}\"><input type=\"hidden\" name=\"token\" value=\"{}\"><label>类型<select name=\"variant\"><option value=\"resample\">Resample</option><option value=\"original\">Original</option></select></label><button type=\"submit\">确认提交并下载</button></form><h2>缩略图第 {} 页</h2><p>{next}</p><div class=\"grid gallery-grid\">{items}</div><p>{next}</p>",
+            escape(&detail.title),
+            escape(detail.subtitle.as_deref().unwrap_or("")),
+            detail.gallery.gid,
+            escape(detail.uploader.as_deref().unwrap_or("未知")),
+            detail.page_count,
+            detail.rating.unwrap_or(0.0),
+            detail.rating_count,
+            escape(detail.posted.as_deref().unwrap_or("未知")),
+            escape(detail.file_size.as_deref().unwrap_or("未知")),
+            escape(&query.profile),
+            query.gid,
+            escape(&query.token),
+            thumbnails.page + 1,
+        ),
+        None,
+    )
+}
+
+async fn start_eh_archive(
+    State(state): State<ControlState>,
+    Form(form): Form<EhArchiveForm>,
+) -> Response {
+    let variant = match form.variant.as_str() {
+        "original" => crate::EhArchiveVariant::Original,
+        "resample" => crate::EhArchiveVariant::Resample,
+        _ => {
+            return error_page(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "Archive 类型无效",
+                false,
+            ));
+        }
+    };
+    match state
+        .core
+        .start_eh_archive_download(crate::EhArchiveDownloadRequest {
+            profile: ProfileKey::new("eh", form.profile),
+            gallery: crate::EhGalleryRef {
+                gid: form.gid,
+                token: form.token,
+            },
+            variant,
+        })
+        .await
+    {
+        Ok(_) => Redirect::to("/ui/archive-tasks").into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
+async fn archive_tasks(State(state): State<ControlState>) -> Response {
+    let tasks = state.core.archive_tasks().await;
+    let active = tasks.iter().any(|task| !task.state.is_terminal());
+    let mut rows = String::new();
+    for task in tasks.iter().rev() {
+        let action = if !task.state.is_terminal() {
+            format!(
+                "<form method=\"post\" action=\"/ui/archive-task/cancel\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button type=\"submit\">取消</button></form>",
+                task.id
+            )
+        } else if matches!(
+            task.state,
+            crate::ArchiveTaskState::Failed | crate::ArchiveTaskState::Cancelled
+        ) {
+            format!(
+                "<form method=\"post\" action=\"/ui/archive-task/retry\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button type=\"submit\">仅重试下载</button></form>",
+                task.id
+            )
+        } else {
+            String::new()
+        };
+        let _ = write!(
+            rows,
+            "<tr><td><code>{}</code></td><td>{:?}</td><td>{} / {}</td><td>{:?}</td><td>{}</td><td>{}</td></tr>",
+            task.id,
+            task.state,
+            task.bytes_done,
+            task.bytes_total
+                .map_or_else(|| "?".to_owned(), |value| value.to_string()),
+            task.variant,
+            escape(task.error.as_deref().unwrap_or("")),
+            action
+        );
+    }
+    if rows.is_empty() {
+        rows.push_str("<tr><td colspan=\"6\" class=\"muted\">暂无 Archive 任务。</td></tr>");
+    }
+    html_page(
+        StatusCode::OK,
+        "Archive 任务",
+        &format!(
+            "<h1>Archive 任务</h1><p class=\"muted\">cost_unknown 任务不会自动重放付费提交。</p><table><thead><tr><th>ID</th><th>状态</th><th>字节</th><th>类型</th><th>错误</th><th>操作</th></tr></thead><tbody>{rows}</tbody></table>"
+        ),
+        active.then_some(2),
+    )
+}
+
+async fn local_galleries(State(state): State<ControlState>) -> Response {
+    let galleries = state.core.local_galleries().await;
+    let mut cards = String::new();
+    for gallery in &galleries {
+        let _ = write!(
+            cards,
+            "<article class=\"card\"><h2>{}</h2><p>GID {} · {} 字节</p><p><code>{}</code></p><p class=\"muted\">Archive: {}</p></article>",
+            escape(&gallery.title),
+            gallery.gid,
+            gallery.archive_bytes,
+            escape(&gallery.directory),
+            escape(&gallery.archive_filename),
+        );
+    }
+    if cards.is_empty() {
+        cards.push_str("<p class=\"muted\">暂无已提交的本地画廊。</p>");
+    }
+    html_page(
+        StatusCode::OK,
+        "本地画廊",
+        &format!("<h1>本地画廊</h1><div class=\"grid\">{cards}</div>"),
+        None,
+    )
+}
+
+async fn cancel_archive(
+    State(state): State<ControlState>,
+    Form(form): Form<ArchiveTaskForm>,
+) -> Response {
+    let Ok(id) = form.id.parse() else {
+        return error_page(&CoreError::new(
+            ErrorCode::InvalidInput,
+            "Archive 任务 ID 无效",
+            false,
+        ));
+    };
+    match state.core.cancel_archive_task(id).await {
+        Ok(_) => Redirect::to("/ui/archive-tasks").into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
+async fn retry_archive(
+    State(state): State<ControlState>,
+    Form(form): Form<ArchiveTaskForm>,
+) -> Response {
+    let Ok(id) = form.id.parse() else {
+        return error_page(&CoreError::new(
+            ErrorCode::InvalidInput,
+            "Archive 任务 ID 无效",
+            false,
+        ));
+    };
+    match state.core.retry_archive_task(id).await {
+        Ok(_) => Redirect::to("/ui/archive-tasks").into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
+async fn start_eh_page_fetch(
+    State(state): State<ControlState>,
+    Form(form): Form<EhPageFetchForm>,
+) -> Response {
+    match state
+        .core
+        .start_eh_page_fetch(EhPageFetchRequest {
+            profile: ProfileKey::new("eh", form.profile),
+            gallery: crate::EhGalleryRef {
+                gid: form.gid,
+                token: form.token,
+            },
+            page: form.page,
+            nl: None,
+        })
+        .await
+    {
+        Ok(operation) => Redirect::to(&operation_url(operation.id)).into_response(),
+        Err(error) => error_page(&error),
+    }
 }
 
 async fn search(State(state): State<ControlState>, Query(query): Query<SearchQuery>) -> Response {
@@ -594,13 +877,17 @@ async fn operations(State(state): State<ControlState>) -> Response {
     if rows.is_empty() {
         rows.push_str("<tr><td colspan=\"5\" class=\"muted\">暂无操作。</td></tr>");
     }
+    let refresh = operations
+        .iter()
+        .any(|operation| !operation.state.is_terminal())
+        .then_some(OPERATIONS_REFRESH_SECONDS);
     html_page(
         StatusCode::OK,
         "操作列表",
         &format!(
             "<h1>操作列表</h1><table><thead><tr><th>ID</th><th>类型</th><th>状态</th><th>阶段</th><th>字节</th></tr></thead><tbody>{rows}</tbody></table>"
         ),
-        None,
+        refresh,
     )
 }
 
@@ -622,7 +909,7 @@ async fn operation(
         Ok(operation) => operation,
         Err(error) => return error_page(&error),
     };
-    let refresh = (!operation.state.is_terminal()).then_some(1);
+    let refresh = (!operation.state.is_terminal()).then_some(OPERATION_REFRESH_SECONDS);
     html_page(
         StatusCode::OK,
         "操作详情",
@@ -738,11 +1025,22 @@ fn render_operation(operation: &OperationSnapshot) -> String {
 }
 
 fn html_page(status: StatusCode, title: &str, body: &str, refresh: Option<u64>) -> Response {
-    let refresh = refresh.map_or_else(String::new, |seconds| {
+    let refresh_meta = refresh.map_or_else(String::new, |seconds| {
         format!("<meta http-equiv=\"refresh\" content=\"{seconds}\">")
     });
+    let refresh_status = refresh.map_or_else(
+        || "<span class=\"refresh-status muted\">自动刷新已停止</span>".to_owned(),
+        |seconds| {
+            format!(
+                "<span class=\"refresh-status live\" role=\"status\">每 {seconds} 秒自动刷新</span>"
+            )
+        },
+    );
+    let refresh_action = refresh.map_or_else(String::new, |_| {
+        "<a class=\"refresh-action\" href=\"\">立即刷新</a>".to_owned()
+    });
     let html = format!(
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{refresh}<title>{}</title><style>{STYLE}</style></head><body><nav><a href=\"/\">调试面板</a><a href=\"/ui/eh?profile=default\">EH 主页</a><a href=\"/ui/search\">搜索</a><a href=\"/ui/operations\">操作列表</a></nav><main>{body}</main></body></html>",
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{refresh_meta}<title>{}</title><style>{STYLE}</style></head><body><nav><div class=\"nav-links\"><a href=\"/\">调试面板</a><a href=\"/ui/eh?profile=default\">EH 主页</a><a href=\"/ui/search\">搜索</a><a href=\"/ui/operations\">操作列表</a><a href=\"/ui/archive-tasks\">Archive 任务</a><a href=\"/ui/local-galleries\">本地画廊</a></div><div class=\"refresh-control\">{refresh_status}{refresh_action}</div></nav><main>{body}</main></body></html>",
         escape(title)
     );
     let mut response = (status, Html(html)).into_response();
@@ -826,6 +1124,16 @@ fn eh_home_url(profile: &str, cursor: Option<crate::EhPageCursor>) -> String {
     format!("/ui/eh?{}", query.finish())
 }
 
+fn eh_gallery_url(profile: &str, gid: u64, token: &str, page: u32) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("profile", profile)
+        .append_pair("gid", &gid.to_string())
+        .append_pair("token", token)
+        .append_pair("page", &page.to_string())
+        .finish();
+    format!("/ui/eh/gallery?{query}")
+}
+
 fn optional_number(value: Option<u32>) -> String {
     value.map_or_else(|| "?".to_owned(), |value| value.to_string())
 }
@@ -836,7 +1144,7 @@ fn yes_no(value: bool) -> &'static str {
 
 fn provider_capability(provider: &str) -> &'static str {
     match provider {
-        "eh" => "主页 / Archive 选项",
+        "eh" => "主页 / 详情 / 缩略图 / Archive 选项",
         "pixiv" => "详情 / 多页原图",
         "danbooru" | "gelbooru" => "搜索 / 详情 / 原图",
         _ => "未知",

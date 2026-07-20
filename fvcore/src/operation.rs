@@ -1,7 +1,8 @@
 //! Immutable operation and event contracts.
 
 use crate::{
-    ErrorCode, ImageResourceDescriptor, OperationId, ProfileKey, ResourceSource, RuntimeId,
+    ArchiveTaskSnapshot, EhGalleryRef, ErrorCode, ImageResourceDescriptor, OperationId, ProfileKey,
+    ResourceSource, RuntimeId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -134,6 +135,20 @@ pub struct PixivPageFetchRequest {
     pub page: u32,
 }
 
+/// Request for one original page of an EH gallery.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EhPageFetchRequest {
+    /// Configured EH profile.
+    pub profile: ProfileKey,
+    /// Stable EH gallery identity.
+    pub gallery: EhGalleryRef,
+    /// Zero-based gallery page index.
+    pub page: u32,
+    /// Optional EH reload nonce returned by a previous resolution attempt.
+    pub nl: Option<String>,
+}
+
 impl Default for FakeOperationRequest {
     fn default() -> Self {
         Self {
@@ -151,24 +166,41 @@ pub struct CoreEvent {
     pub sequence: u64,
     /// Runtime that emitted this event.
     pub runtime_id: RuntimeId,
-    /// Operation affected by this event.
-    pub operation_id: OperationId,
-    /// Operation revision represented by this event.
+    /// Subject revision represented by this event.
     pub revision: u64,
-    /// Current operation state.
-    pub state: OperationState,
-    /// Current operation phase.
-    pub phase: String,
-    /// Bytes processed at this revision.
-    pub bytes_done: u64,
-    /// Expected total bytes when known.
-    pub bytes_total: Option<u64>,
-    /// Cache or transfer layer represented by this event.
-    pub source: Option<ResourceSource>,
-    /// Whether the operation currently shares a transfer.
-    pub shared: bool,
-    /// Verified resource descriptor when the operation completed successfully.
-    pub resource: Option<ImageResourceDescriptor>,
+    /// Revisioned subject represented by this event.
+    #[serde(flatten)]
+    pub subject: CoreEventSubject,
+}
+
+/// Revisioned Runtime event subject.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CoreEventSubject {
+    /// Temporary operation transition or progress.
+    Operation {
+        /// Operation affected by this event.
+        operation_id: OperationId,
+        /// Current operation state.
+        state: OperationState,
+        /// Current operation phase.
+        phase: String,
+        /// Bytes processed at this revision.
+        bytes_done: u64,
+        /// Expected total bytes when known.
+        bytes_total: Option<u64>,
+        /// Cache or transfer layer represented by this event.
+        source: Option<ResourceSource>,
+        /// Whether the operation currently shares a transfer.
+        shared: bool,
+        /// Verified resource descriptor when the operation completed successfully.
+        resource: Option<ImageResourceDescriptor>,
+    },
+    /// Persistent EH Archive task transition or progress.
+    ArchiveTask {
+        /// Complete immutable Archive task snapshot at this revision.
+        task: ArchiveTaskSnapshot,
+    },
 }
 
 /// Cursor-based event replay result.
@@ -186,7 +218,7 @@ pub struct EventBatch {
 #[derive(Clone, Debug)]
 pub enum EventStreamItem {
     /// One operation event.
-    Event(CoreEvent),
+    Event(Box<CoreEvent>),
     /// Subscriber lagged and must query snapshots before continuing.
     ResyncRequired,
     /// Runtime closed the event stream.
@@ -210,10 +242,10 @@ impl EventSubscription {
     /// Waits for the next replayed or live event.
     pub async fn next(&mut self) -> EventStreamItem {
         if let Some(event) = self.replay.pop_front() {
-            return EventStreamItem::Event(event);
+            return EventStreamItem::Event(Box::new(event));
         }
         match self.receiver.recv().await {
-            Ok(event) => EventStreamItem::Event(event),
+            Ok(event) => EventStreamItem::Event(Box::new(event)),
             Err(broadcast::error::RecvError::Lagged(_)) => EventStreamItem::ResyncRequired,
             Err(broadcast::error::RecvError::Closed) => EventStreamItem::Closed,
         }

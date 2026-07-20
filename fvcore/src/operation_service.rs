@@ -1,12 +1,13 @@
 //! Runtime-owned operation registry, workers and event journal.
 
 use crate::{
-    BooruOriginalFetchRequest, CoreError, CoreEvent, ErrorCode, ErrorSnapshot, EventBatch,
-    EventConfig, FakeOperationRequest, FakeOutcome, ImageResourceDescriptor, OperationConfig,
-    OperationId, OperationKind, OperationSnapshot, OperationState, PixivPageFetchRequest,
-    ResourceKey, RuntimeId,
+    ArchiveTaskSnapshot, BooruOriginalFetchRequest, CoreError, CoreEvent, CoreEventSubject,
+    EhPageFetchRequest, ErrorCode, ErrorSnapshot, EventBatch, EventConfig, FakeOperationRequest,
+    FakeOutcome, ImageResourceDescriptor, OperationConfig, OperationId, OperationKind,
+    OperationSnapshot, OperationState, PixivPageFetchRequest, ResourceKey, RuntimeId,
     image::{ContentMd5, ImageFetchSpec, ImageProgress, ImageService},
     provider::booru::BooruService,
+    provider::eh::EhService,
     provider::pixiv::PixivService,
     session::SessionRegistry,
 };
@@ -30,6 +31,7 @@ pub(crate) enum OperationMessage {
         id: OperationId,
         result: WorkerResult,
     },
+    ArchiveTask(ArchiveTaskSnapshot),
 }
 
 #[derive(Clone)]
@@ -37,6 +39,7 @@ pub(crate) enum OperationRequest {
     Fake(FakeOperationRequest),
     BooruOriginal(BooruOriginalFetchRequest),
     PixivPage(PixivPageFetchRequest),
+    EhPage(EhPageFetchRequest),
 }
 
 #[derive(Clone)]
@@ -93,16 +96,32 @@ impl EventHub {
         let event = CoreEvent {
             sequence: self.next_sequence,
             runtime_id,
-            operation_id: snapshot.id,
             revision: snapshot.revision,
-            state: snapshot.state,
-            phase: snapshot.phase.clone(),
-            bytes_done: snapshot.bytes_done,
-            bytes_total: snapshot.bytes_total,
-            source: snapshot.source,
-            shared: snapshot.shared,
-            resource: snapshot.resource.clone(),
+            subject: CoreEventSubject::Operation {
+                operation_id: snapshot.id,
+                state: snapshot.state,
+                phase: snapshot.phase.clone(),
+                bytes_done: snapshot.bytes_done,
+                bytes_total: snapshot.bytes_total,
+                source: snapshot.source,
+                shared: snapshot.shared,
+                resource: snapshot.resource.clone(),
+            },
         };
+        self.push(event);
+    }
+
+    fn publish_archive(&mut self, runtime_id: RuntimeId, task: ArchiveTaskSnapshot) {
+        let event = CoreEvent {
+            sequence: self.next_sequence,
+            runtime_id,
+            revision: task.revision,
+            subject: CoreEventSubject::ArchiveTask { task },
+        };
+        self.push(event);
+    }
+
+    fn push(&mut self, event: CoreEvent) {
         self.next_sequence += 1;
         self.journal.push_back(event.clone());
         while self.journal.len() > self.retained {
@@ -226,6 +245,32 @@ impl OperationService {
         )
     }
 
+    pub(crate) fn start_eh_page(
+        &mut self,
+        request: EhPageFetchRequest,
+        runtime_shutdown: &CancellationToken,
+    ) -> Result<OperationSnapshot, CoreError> {
+        if request.profile.provider != "eh" {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH page fetch requires an EH profile",
+                false,
+            ));
+        }
+        if request.nl.as_deref().is_some_and(str::is_empty) {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH reload nonce cannot be empty",
+                false,
+            ));
+        }
+        self.start(
+            OperationKind::ImageFetch,
+            OperationRequest::EhPage(request),
+            runtime_shutdown,
+        )
+    }
+
     fn start(
         &mut self,
         kind: OperationKind,
@@ -344,6 +389,10 @@ impl OperationService {
         self.events.publish(self.runtime_id, &entry.snapshot);
     }
 
+    pub(crate) fn archive_event(&mut self, task: ArchiveTaskSnapshot) {
+        self.events.publish_archive(self.runtime_id, task);
+    }
+
     pub(crate) fn events_after(&self, cursor: u64) -> EventBatch {
         self.events.batch_after(cursor)
     }
@@ -412,6 +461,28 @@ impl OperationService {
                         match tokio::time::timeout(
                             Duration::from_secs(default_deadline),
                             run_pixiv_page(
+                                id,
+                                request,
+                                cancellation,
+                                sessions,
+                                images,
+                                message_tx.clone(),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => WorkerResult::Failed(ErrorSnapshot {
+                                code: ErrorCode::DeadlineExceeded,
+                                message: "operation deadline exceeded".to_owned(),
+                                retryable: true,
+                            }),
+                        }
+                    }
+                    OperationRequest::EhPage(request) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(default_deadline),
+                            run_eh_page(
                                 id,
                                 request,
                                 cancellation,
@@ -646,6 +717,69 @@ async fn run_pixiv_page(
                 resource_key: Some(resource_key),
                 expected_bytes: None,
                 referer: Some(illust.page_url),
+            },
+            cancellation,
+            |progress| {
+                let publish = progress.phase != last_phase
+                    || progress.bytes_done.saturating_sub(last_bytes) >= 64 * 1024
+                    || last_update.elapsed() >= Duration::from_millis(100);
+                if publish {
+                    last_phase = progress.phase;
+                    last_bytes = progress.bytes_done;
+                    last_update = std::time::Instant::now();
+                    let _ = messages.try_send(OperationMessage::Progress { id, progress });
+                }
+            },
+        )
+        .await;
+    match result {
+        Ok(resource) => WorkerResult::Completed(Some(resource.descriptor().clone())),
+        Err(error) => worker_error(error),
+    }
+}
+
+async fn run_eh_page(
+    id: OperationId,
+    request: EhPageFetchRequest,
+    cancellation: CancellationToken,
+    sessions: Arc<SessionRegistry>,
+    images: Arc<ImageService>,
+    messages: mpsc::Sender<OperationMessage>,
+) -> WorkerResult {
+    let resolved = match EhService::new(sessions)
+        .resolve_original(
+            &request.profile,
+            request.gallery.clone(),
+            request.page,
+            request.nl.as_deref(),
+            cancellation.child_token(),
+        )
+        .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => return worker_error(error),
+    };
+    let resource_key = match ResourceKey::new(
+        "eh",
+        format!("{}:{}", request.gallery.gid, request.gallery.token),
+        request.page,
+        "original",
+    ) {
+        Ok(key) => key,
+        Err(error) => return worker_error(error),
+    };
+    let mut last_phase = "";
+    let mut last_bytes = 0_u64;
+    let mut last_update = std::time::Instant::now();
+    let result = images
+        .fetch(
+            ImageFetchSpec {
+                profile: request.profile,
+                url: resolved.url,
+                expected_md5: None,
+                resource_key: Some(resource_key),
+                expected_bytes: None,
+                referer: Some(resolved.referer),
             },
             cancellation,
             |progress| {
