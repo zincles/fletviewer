@@ -128,19 +128,19 @@ impl Default for CoreConfig {
 }
 
 impl CoreConfig {
-    /// Parses TOML configuration from a UTF-8 string.
-    pub fn from_toml(input: &str) -> Result<Self, CoreError> {
-        toml::from_str(input).map_err(|error| {
+    /// Parses strict JSON configuration from a UTF-8 string.
+    pub fn from_json(input: &str) -> Result<Self, CoreError> {
+        serde_json::from_str(input).map_err(|error| {
             CoreError::new(
                 ErrorCode::Parse,
-                format!("failed to parse TOML configuration: {error}"),
+                format!("failed to parse JSON configuration: {error}"),
                 false,
             )
         })
     }
 
-    /// Reads and parses a TOML configuration file.
-    pub fn from_toml_file(path: &Path) -> Result<Self, CoreError> {
+    /// Reads and parses a strict JSON configuration file.
+    pub fn from_json_file(path: &Path) -> Result<Self, CoreError> {
         let input = std::fs::read_to_string(path).map_err(|error| {
             CoreError::new(
                 ErrorCode::Io,
@@ -148,7 +148,21 @@ impl CoreConfig {
                 false,
             )
         })?;
-        Self::from_toml(&input)
+        Self::from_json(&input)
+    }
+
+    /// Resolves relative storage domains against one stable configuration directory.
+    pub fn resolve_storage_paths(&mut self, base: &Path) {
+        for path in [
+            &mut self.storage.data,
+            &mut self.storage.cache,
+            &mut self.storage.downloads,
+            &mut self.storage.temp,
+        ] {
+            if path.is_relative() {
+                *path = base.join(&*path);
+            }
+        }
     }
 
     /// Validates invariants before Runtime resources are allocated.
@@ -584,13 +598,13 @@ mod tests {
 
     #[test]
     fn rejects_unknown_fields() {
-        let result = CoreConfig::from_toml("unknown = true");
+        let result = CoreConfig::from_json(r#"{"unknown":true}"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn omitted_profiles_keep_the_four_defaults() {
-        let config = CoreConfig::from_toml("instance_name = 'custom'").unwrap();
+        let config = CoreConfig::from_json(r#"{"instance_name":"custom"}"#).unwrap();
         assert_eq!(config.profiles.len(), 4);
         assert!(config.profiles.contains_key("eh"));
         assert!(config.profiles.contains_key("pixiv"));
@@ -600,8 +614,8 @@ mod tests {
 
     #[test]
     fn explicit_profiles_replace_the_default_map() {
-        let config = CoreConfig::from_toml(
-            "[profiles.local]\nprovider = 'danbooru'\nbase_url = 'http://127.0.0.1/'",
+        let config = CoreConfig::from_json(
+            r#"{"profiles":{"local":{"provider":"danbooru","base_url":"http://127.0.0.1/"}}}"#,
         )
         .unwrap();
         assert_eq!(config.profiles.len(), 1);

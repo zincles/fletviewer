@@ -25,7 +25,7 @@ pub use config::{
     ProviderProfileConfig, StorageConfig,
 };
 pub use error::{CoreError, ErrorCode};
-pub use gallery::LocalGallerySnapshot;
+pub use gallery::{ComicInfoSnapshot, LocalGallerySnapshot};
 pub use id::{OperationId, RuntimeId};
 pub use image::{ContentMd5, ImageResource, ImageResourceDescriptor, ResourceKey, ResourceSource};
 pub use operation::{

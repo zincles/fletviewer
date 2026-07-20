@@ -31,7 +31,7 @@
 | 状态 | 工作 | 验收点 |
 |---|---|---|
 | 已完成 | 单 crate library/executable、基础依赖与检查 | format、全部 target check/test、clippy `-D warnings` 通过 |
-| 已完成 | 严格配置、稳定错误、Runtime ID、snapshot | TOML 未知字段拒绝，公开状态可 JSON 序列化 |
+| 已完成 | 严格配置、稳定错误、Runtime ID、snapshot | Runtime 只读取 executable 同级必需 `config.json`，暂不允许自定义位置；`run` 不挂载 WebUI，`web` 强制启用 listener + WebUI；`check-config` 完整验证，`create-config` 确定性生成且拒绝覆盖 |
 | 已完成 | `CoreRuntime`、`CoreHandle` 与集成 HTTP | 有界命令队列、协作关闭、health/status 路由通过真实 loopback 测试 |
 | 已完成 | 四域存储、实例锁与 `redb` schema v1 | 第二 Runtime 被拒绝，关闭后可重新取得同一 Data 域 |
 | 已完成 | Command/Event/Operation 模型 | 状态机、deadline、取消、overload、revision、event cursor/SSE 和 fake operation 测试 |
@@ -44,7 +44,8 @@
 | 已完成 | EH Gallery 详情与缩略图 | 从 `/ui/eh` 条目进入详情；固定标题、标签、上传者、页数、评分、评论、版本链和缩略图 fixture；嵌入 API、JSON 和 WebUI 共用同一 EH profile generation |
 | 已完成 | EH 指定页原图阅读链路 | 解析 showkey/mpvkey 和单页 image key，按需获取指定页原图并接入 `ImageService`、operation、resource API 和 WebUI；不将逐页 fetch 用作批量下载 |
 | 已完成 | EH Archive 提交与流式持久下载 | 提交 Original/Resample、解析并隔离签名 URL，记录获取时间、86400 秒有效期和最大 IP 数 2；流式写入 Downloads、支持取消/Range 恢复，`submitting` 崩溃恢复为 `cost_unknown` 且不自动重放 |
-| 已完成 | EH Archive 本地画廊消费 | 读取完成任务，按 `[gid][token] title` 创建本地画廊目录，移动并保留原始 ZIP，写 gallery metadata、提取首张安全封面，按 task ID 幂等启动恢复并记录 consumed/consume_error |
+| 已完成 | EH Archive 本地画廊消费 | 读取完成任务，按 `[gid][token] title` 创建本地画廊目录，移动并保留原始文件名和 ZIP bytes，写 `gallery.json`、提取首张安全封面，按 task ID 幂等启动恢复并记录 consumed/consume_error |
+| 已完成 | 确定性 ComicInfo 派生 | 安全 ZIP 图片 member 使用无整数溢出的稳定自然排序；旁置 `ComicInfo.xml` 只由唯一原 ZIP 与 `gallery.json` 生成，消费时自动创建，也可通过 Runtime/HTTP 删除和逐字节一致地重建 |
 | 下一步 | 本地 ZIP 画廊阅读 API | 严格列出安全 ZIP 图片 member，提供有界单页解压和二进制 resource handle；本地详情/WebUI 复用在线画廊动线，不整包解压、不一次性读取 Archive |
 | 后续 | 完整图像缓存监管 | 全局 chunk 级在途预算、Cache snapshot/维护、alias schema/version、staging 清理和更多格式 fixture |
 | 后续 | 持久下载与 Provider 纵向迁移 | 图片下载复用 `ImageService`，EH Archive 使用流式持久任务；继续补齐 Pixiv、Booru 和 EH 的正式能力，最终覆盖 Python Core |

@@ -360,6 +360,19 @@ impl CoreHandle {
         self.galleries.list().await
     }
 
+    /// Deterministically creates or replaces a local gallery's derived `ComicInfo.xml`.
+    pub async fn generate_local_gallery_comic_info(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<crate::ComicInfoSnapshot, CoreError> {
+        self.galleries.generate_comic_info(id).await
+    }
+
+    /// Deletes a derived `ComicInfo.xml` without changing its authoritative ZIP or JSON inputs.
+    pub async fn delete_local_gallery_comic_info(&self, id: uuid::Uuid) -> Result<(), CoreError> {
+        self.galleries.delete_comic_info(id).await
+    }
+
     /// Returns immutable image bytes by their verified content address.
     pub async fn image_resource(
         &self,
@@ -1641,6 +1654,45 @@ mod tests {
         assert!(galleries.starts_with("HTTP/1.1 200 OK"));
         assert!(galleries.contains("\"gid\":123456"));
         assert!(galleries.contains("\"archive_filename\":\"archive.zip\""));
+        let gallery_id = runtime.handle().archive_tasks().await[0].id;
+        let generate = String::from_utf8(
+            http_request(
+                listen,
+                format!(
+                    "POST /api/v1/local-galleries/{gallery_id}/comic-info HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(generate.starts_with("HTTP/1.1 200 OK"));
+        assert!(generate.contains("\"filename\":\"ComicInfo.xml\""));
+        assert!(generate.contains("\"page_count\":1"));
+        let delete = String::from_utf8(
+            http_request(
+                listen,
+                format!(
+                    "DELETE /api/v1/local-galleries/{gallery_id}/comic-info HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(delete.starts_with("HTTP/1.1 204 No Content"));
+        let regenerate = String::from_utf8(
+            http_request(
+                listen,
+                format!(
+                    "POST /api/v1/local-galleries/{gallery_id}/comic-info HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert_eq!(generate, regenerate);
         let webui = String::from_utf8(
             http_request(
                 listen,

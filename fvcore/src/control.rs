@@ -156,6 +156,10 @@ pub(crate) async fn start(
         )
         .route("/api/v1/archive-tasks", get(list_archive_tasks))
         .route("/api/v1/local-galleries", get(list_local_galleries))
+        .route(
+            "/api/v1/local-galleries/{id}/comic-info",
+            post(generate_local_gallery_comic_info).delete(delete_local_gallery_comic_info),
+        )
         .route("/api/v1/archive-tasks/{id}", get(get_archive_task))
         .route(
             "/api/v1/archive-tasks/{id}/cancel",
@@ -428,6 +432,34 @@ async fn list_local_galleries(State(state): State<ControlState>) -> Response {
     with_security_headers(Json(state.core.local_galleries().await).into_response())
 }
 
+async fn generate_local_gallery_comic_info(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_local_gallery_id()),
+    };
+    match state.core.generate_local_gallery_comic_info(id).await {
+        Ok(snapshot) => with_security_headers(Json(snapshot).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn delete_local_gallery_comic_info(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_local_gallery_id()),
+    };
+    match state.core.delete_local_gallery_comic_info(id).await {
+        Ok(()) => with_security_headers(StatusCode::NO_CONTENT.into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
 async fn get_archive_task(State(state): State<ControlState>, Path(id): Path<String>) -> Response {
     let id = match uuid::Uuid::parse_str(&id) {
         Ok(id) => id,
@@ -468,6 +500,14 @@ fn invalid_archive_task_id() -> CoreError {
     CoreError::new(
         ErrorCode::InvalidInput,
         "Archive task ID must be a valid UUID",
+        false,
+    )
+}
+
+fn invalid_local_gallery_id() -> CoreError {
+    CoreError::new(
+        ErrorCode::InvalidInput,
+        "local gallery ID must be a valid UUID",
         false,
     )
 }

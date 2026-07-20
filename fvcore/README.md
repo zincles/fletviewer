@@ -18,22 +18,24 @@
 
 | 命令 | 行为 |
 |---|---|
-| `cargo run -- run` | 使用默认配置运行，HTTP 默认不监听 |
-| `cargo run -- --web` | 运行并监听默认地址 `127.0.0.1:8787` |
-| `cargo run -- --webui` | 开启 HTTP listener 和内嵌调试 WebUI |
-| `cargo run -- --web --no-webui` | 只提供 JSON/SSE/resource API，不挂载 HTML WebUI |
-| `cargo run -- --no-web` | 即使配置启用也不启动 HTTP listener |
-| `cargo run -- --web-listen 127.0.0.1:9000` | 运行并覆盖 HTTP 监听地址 |
-| `cargo run -- --config fvcore.toml run` | 从 TOML 配置运行 |
-| `cargo run -- --config fvcore.toml check` | 解析并验证配置后退出，不创建存储目录 |
+| `cargo run -- run` | 从 executable 同级 `config.json` 运行；不挂载 WebUI，HTTP listener 是否启用由配置决定 |
+| `cargo run -- web` | 从同一配置运行，并强制启用 HTTP listener 与内嵌 WebUI；监听地址来自配置 |
+| `cargo run -- check-config config.json` | 严格解析并完整验证指定 JSON，不创建存储目录 |
+| `cargo run -- create-config .` | 在指定的现有目录创建完整默认 `config.json`；拒绝覆盖已有文件 |
 
-配置文件始终可省略。未提供 `--config` 时，`run` 和 `check` 都构造完整的 `CoreConfig::default()`，其中包含 `eh/default`、`pixiv/default`、`danbooru/default`、`gelbooru/default` 四个无需凭据即可创建的默认会话。TOML 省略 `profiles` 时也保留这四项；一旦显式声明任意 `[profiles.*]`，整个 profile map 由配置文件提供，不与默认 map 隐式合并。
+Runtime 配置来源固定为实际 executable 同目录的 `config.json`，暂不提供 `--config` 或其他自定义位置。文件缺失时拒绝启动，并打印期望文件和目录；可用 `create-config` 在该目录生成默认配置。JSON 省略 `profiles` 时保留四个默认 profile；一旦显式提供 `profiles`，整个 profile map 由配置文件提供，不与默认 map 隐式合并。相对存储路径固定以 executable/config 所在目录为基准。
+
+`cargo run -- help` 与 `cargo run -- --help` 显示同一份中文根帮助；`check-config --help` 和 `create-config --help` 也使用中文说明。稳定命令名和参数名保持英文，便于脚本调用。
+
+`check-config` 的位置参数仅用于离线检查待验证文件，不改变 Runtime 的固定配置来源。`create-config` 输出固定 pretty JSON 和结尾换行，因此同一版本生成的默认配置逐字节一致；目标目录必须已经存在，`config.json` 已存在时命令失败且不会改写原文件。
+
+`check-config` 找不到文件时会打印展开后的期望文件路径及其所在目录；如果误传目录，则明确提示需要具体 JSON 文件，并显示该目录下默认的 `config.json` 路径。
 
 HTTP Foundation 路由：
 
 | 路径 | 内容 |
 |---|---|
-| `/` | 单页调试总览：Runtime、HTTP、存储、全部 profile session、EH/Booru/Pixiv 入口和最近 operation；可由配置或 `--no-webui` 移除 |
+| `/` | 单页调试总览：Runtime、HTTP、存储、全部 profile session、EH/Booru/Pixiv 入口和最近 operation；由 `web` 命令挂载 |
 | `/ui/eh` | EH 主页 Gallery 列表和 seek cursor 分页 |
 | `/ui/search` | Danbooru/Gelbooru 服务端渲染搜索和分页 |
 | `/ui/post` | Post metadata 与 original Fetch 表单 |
@@ -53,6 +55,8 @@ HTTP Foundation 路由：
 | `/api/v1/providers/eh/{profile}/galleries` | GET，EH 主页 Gallery 列表；可选 query 为成对出现的 `direction=previous|next` 与 `gid` |
 | `/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/archives` | GET，查询 EH Original/Resample/H@H Archive 选项 |
 | `/api/v1/resources/images/{md5}/{extension}` | GET，返回已验证的不可变图片 bytes，不使用 base64 |
+| `/api/v1/local-galleries` | GET，列出已提交的本地画廊 |
+| `/api/v1/local-galleries/{id}/comic-info` | POST 确定性生成/替换旁置 `ComicInfo.xml`；DELETE 删除该派生文件，不修改权威 ZIP/JSON |
 | `/api/v1/operations` | GET 查询 operation；POST 启动 Foundation fake operation |
 | `/api/v1/operations/{id}` | 查询单个 operation snapshot |
 | `/api/v1/operations/{id}/cancel` | 协作取消 operation |
@@ -60,57 +64,31 @@ HTTP Foundation 路由：
 
 最小配置示例：
 
-```toml
-schema_version = 1
-instance_name = "fvcore"
-command_capacity = 256
-shutdown_seconds = 15
-
-[control]
-enabled = true
-listen = "127.0.0.1:8787"
-webui_enabled = true
-
-[storage]
-data = "FletViewer/Data"
-cache = "FletViewer/Cache"
-downloads = "FletViewer/Downloads"
-temp = "FletViewer/Temp"
-
-[operations]
-max_active = 128
-max_queued = 256
-retained_terminal = 512
-default_deadline_seconds = 30
-
-[events]
-capacity = 1024
-retained = 2048
-
-[network]
-connect_timeout_seconds = 10
-request_timeout_seconds = 30
-max_response_bytes = 8388608
-max_redirects = 5
-# proxy_url = "http://127.0.0.1:7890"
-
-[images]
-max_image_bytes = 33554432
-memory_cache_bytes = 134217728
-max_inflight_bytes = 134217728
-cache_write_queue = 64
-
-[profiles.danbooru_default]
-provider = "danbooru"
-profile = "default"
-base_url = "https://danbooru.donmai.us/"
-user_agent = "fvcore/0.1.0"
-allowed_redirect_hosts = []
-# cookie_env = "FVCORE_DANBOORU_COOKIE"
-# api_user_env = "FVCORE_DANBOORU_LOGIN"
-# api_key_env = "FVCORE_DANBOORU_API_KEY"
-max_concurrent_requests = 4
-min_request_interval_ms = 0
+```json
+{
+  "schema_version": 1,
+  "instance_name": "fvcore",
+  "command_capacity": 256,
+  "shutdown_seconds": 15,
+  "control": {
+    "enabled": true,
+    "listen": "127.0.0.1:8787",
+    "webui_enabled": true
+  },
+  "storage": {
+    "data": "FletViewer/Data",
+    "cache": "FletViewer/Cache",
+    "downloads": "FletViewer/Downloads",
+    "temp": "FletViewer/Temp"
+  },
+  "network": {
+    "connect_timeout_seconds": 10,
+    "request_timeout_seconds": 30,
+    "max_response_bytes": 8388608,
+    "max_redirects": 5,
+    "proxy_url": null
+  }
+}
 ```
 
 四个内建 profile 的默认 origin 和图片 host allowlist：
@@ -122,7 +100,7 @@ min_request_interval_ms = 0
 | `danbooru/default` | Danbooru | `https://danbooru.donmai.us/` | `cdn.donmai.us` |
 | `gelbooru/default` | Gelbooru | `https://gelbooru.com/` | `img1` 至 `img4.gelbooru.com` |
 
-默认会话不包含 Cookie 或 API key。需要登录或 API 凭据时，通过 TOML 的 `cookie_env`、`api_user_env`、`api_key_env` 指向环境变量；secret value 不直接写进 TOML。当前 Rust 能力为 Danbooru/Gelbooru 搜索、详情和原图，EH 主页分页与 Archive 选项起点，以及 Pixiv AJAX 作品详情、多页 metadata 和 original page Fetch。EH 翻页公开接口只接受方向和正数 GID，不接受调用者提供的任意 page URL。
+默认会话不包含 Cookie 或 API key。需要登录或 API 凭据时，通过 JSON 的 `cookie_env`、`api_user_env`、`api_key_env` 指向环境变量；secret value 不直接写进配置。当前 Rust 能力为 Danbooru/Gelbooru 搜索、详情和原图，EH 主页分页与 Archive 选项起点，以及 Pixiv AJAX 作品详情、多页 metadata 和 original page Fetch。EH 翻页公开接口只接受方向和正数 GID，不接受调用者提供的任意 page URL。
 
 `run` 会在任何 Runtime actor 或 HTTP listener 启动前创建并规范化四个存储域，在 Data 域取得 `.fvcore.lock` 独占锁，并打开 `Data/fvcore.redb`。四域必须互不相同且不能互相嵌套；同一 Data 域同时只允许一个 Runtime 持有。
 
