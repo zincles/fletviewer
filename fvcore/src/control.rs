@@ -55,6 +55,22 @@ struct EhHomeQuery {
     gid: Option<u64>,
 }
 
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LocalGalleryQuery {
+    offset: u32,
+    limit: u32,
+}
+
+impl Default for LocalGalleryQuery {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            limit: 100,
+        }
+    }
+}
+
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct EhThumbnailQuery {
@@ -156,6 +172,23 @@ pub(crate) async fn start(
         )
         .route("/api/v1/archive-tasks", get(list_archive_tasks))
         .route("/api/v1/local-galleries", get(list_local_galleries))
+        .route("/api/v1/local-galleries/{id}", get(get_local_gallery))
+        .route(
+            "/api/v1/local-galleries/{id}/delete-preview",
+            post(prepare_local_gallery_delete),
+        )
+        .route(
+            "/api/v1/local-galleries/{id}/delete",
+            post(delete_local_gallery),
+        )
+        .route(
+            "/api/v1/local-galleries/{id}/cover",
+            get(get_local_gallery_cover),
+        )
+        .route(
+            "/api/v1/local-galleries/{id}/pages/{page_id}",
+            get(get_local_gallery_page),
+        )
         .route(
             "/api/v1/local-galleries/{id}/comic-info",
             post(generate_local_gallery_comic_info).delete(delete_local_gallery_comic_info),
@@ -430,6 +463,102 @@ async fn list_archive_tasks(State(state): State<ControlState>) -> Response {
 
 async fn list_local_galleries(State(state): State<ControlState>) -> Response {
     with_security_headers(Json(state.core.local_galleries().await).into_response())
+}
+
+async fn get_local_gallery(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+    Query(query): Query<LocalGalleryQuery>,
+) -> Response {
+    let id = match id.parse() {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_local_gallery_id()),
+    };
+    match state
+        .core
+        .local_gallery(id, query.offset, query.limit)
+        .await
+    {
+        Ok(gallery) => with_security_headers(Json(gallery).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_local_gallery_page(
+    State(state): State<ControlState>,
+    Path((id, page_id)): Path<(String, u32)>,
+) -> Response {
+    let id = match id.parse() {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_local_gallery_id()),
+    };
+    match state.core.local_gallery_page(id, page_id).await {
+        Ok(resource) => local_gallery_resource_response(resource),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_local_gallery_cover(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match id.parse() {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_local_gallery_id()),
+    };
+    match state.core.local_gallery_cover(id).await {
+        Ok(resource) => local_gallery_resource_response(resource),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn prepare_local_gallery_delete(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match id.parse() {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_local_gallery_id()),
+    };
+    match state.core.prepare_local_gallery_delete(id).await {
+        Ok(confirmation) => with_security_headers(Json(confirmation).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn delete_local_gallery(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+    Json(request): Json<crate::LocalGalleryDeleteRequest>,
+) -> Response {
+    let id = match id.parse() {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_local_gallery_id()),
+    };
+    match state.core.delete_local_gallery(id, request).await {
+        Ok(result) => with_security_headers(Json(result).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+fn local_gallery_resource_response(resource: crate::LocalGalleryResource) -> Response {
+    let Ok(content_type) = HeaderValue::from_str(&resource.descriptor().mime_type) else {
+        return error_response(&CoreError::new(
+            ErrorCode::Internal,
+            "local gallery resource has an invalid MIME type",
+            false,
+        ));
+    };
+    let mut response = Response::new(Body::from(resource.bytes()));
+    *response.status_mut() = StatusCode::OK;
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, content_type);
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=86400"),
+    );
+    with_resource_security_headers(response)
 }
 
 async fn generate_local_gallery_comic_info(

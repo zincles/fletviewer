@@ -14,6 +14,10 @@ input, select, button { font: inherit; padding: .45rem .55rem; }
 button { cursor: pointer; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: .8rem; }
 .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr)); }
+.local-pages { grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); }
+.local-page img { display: block; width: 100%; height: 18rem; object-fit: contain; background: #111; }
+.gallery-cover { display: block; width: 100%; height: 16rem; object-fit: contain; background: #111; }
+.detail-cover { display: block; max-width: 22rem; width: 100%; max-height: 32rem; object-fit: contain; background: #111; }
 .card { overflow-wrap: anywhere; }
 .muted { opacity: .72; }
 .error { border-left: .3rem solid #b42318; padding: .7rem 1rem; background: #b4231815; }

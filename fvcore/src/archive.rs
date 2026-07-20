@@ -420,6 +420,32 @@ impl ArchiveService {
         Ok(snapshot)
     }
 
+    pub(crate) async fn mark_local_gallery_deleted(
+        &self,
+        id: Uuid,
+    ) -> Result<ArchiveTaskSnapshot, CoreError> {
+        let mut tasks = self.tasks.lock().await;
+        let task = tasks.get_mut(&id).ok_or_else(task_not_found)?;
+        if task.snapshot.state != ArchiveTaskState::Consumed {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "only consumed Archive tasks can release a deleted local gallery",
+                false,
+            ));
+        }
+        if task.snapshot.final_path.is_none() {
+            return Ok(task.snapshot.clone());
+        }
+        task.snapshot.final_path = None;
+        task.snapshot.revision += 1;
+        task.snapshot.updated_at = OffsetDateTime::now_utc();
+        persist(task).await?;
+        let snapshot = task.snapshot.clone();
+        drop(tasks);
+        self.publish(snapshot.clone()).await;
+        Ok(snapshot)
+    }
+
     async fn run_submission(self: Arc<Self>, id: Uuid, cancellation: CancellationToken) {
         let (profile, gallery, variant) = {
             let tasks = self.tasks.lock().await;

@@ -5,14 +5,14 @@
 - 当前 Python `core/` 不另行打包，仅作为重写期间的只读行为和 fixture 参考；它不是长期兼容目标，完整决策见 `FVCORE.md`。
 - 最终迁移范围覆盖 Python Core 的全部正式业务能力；实现仍按可独立验收的纵向批次推进，避免一次同时写多个未闭环子系统。
 - HTTP 控制面始终编译进标准 executable，由 args/配置决定是否启用监听；它与嵌入 API 共用同一 Runtime 和业务方法。
-- 先建立配置、统一 Runtime、command/snapshot/event/resource、Provider session generation 和有界 operation，再实现内存优先图像链路、内容 MD5 缓存与下载。
+- 配置、统一 Runtime、command/snapshot/event/resource、Provider session generation、有界 operation、内存优先图像链路、EH 持久 Archive、本地 ZIP 阅读资源及显式确认删除已建立；当前继续设计大文件导出和平台文件交换语义。
 - Python/Rust 迁移期间禁止双写同一 SQLite、Cache、Downloads 或本地画廊。
 - 已终止独立 Flutter UI 与 Flutter + Serious Python bridge 路线；Flet 是当前正式产品 UI，但未来可由其他前端通过 `fvcore` library 或 adapter 取代。
 - 已完成的 `core/`、Runtime、Facade 和 JSON-safe DTO 继续作为稳定业务边界，避免页面直接持有 Provider client、网络响应、数据库连接和任务内部对象。
 - Flet 缺失的原生能力只通过带 Python wrapper 的小型 Flutter extension 补齐；extension 不得进入 `core/`，且必须为 Web/不支持平台提供 fallback、禁用状态或服务器侧实现。
 - UX 优先级切到整体体验重设计：主题基础采用 Material 3，颜色走设置驱动的自适应/手动色种，后续页面只使用语义色和主题入口。
-- 下一步先重做主浏览体验的信息架构：阅读首页、搜索、详情页、查看器、下载/本地画廊之间的动线要比 provider 功能更优先。
-- 画廊列表仍需补回分页能力：支持自动加载下一页，并保留手动翻页按钮作为显式控制。
+- Flet 产品线后续重做主浏览体验的信息架构：阅读首页、搜索、详情页、查看器、下载/本地画廊之间保持连续动线；`fvcore` 已提供不暴露 Archive 路径的本地 ZIP 分页与单页 resource，后续前端只包装该公开语义。
+- Flet 画廊列表仍需补回自动加载下一页，并保留手动翻页、失败重试和当前页反馈；Rust WebUI 的 EH seek cursor 手动分页已经完成，不等同于 Flet 产品分页验收。
 - 存储可靠性完成后增加受限的“存储浏览器”页面：仅浏览 Data/Cache/Downloads/Temp 四域，支持路径、大小、mtime、JSON/文本预览、ZIP 文件列表、缓存/临时文件维护和导出诊断；不得允许路径逃逸，Android 外部文件继续通过 FilePicker/SAF 交换，Web 端明确展示的是服务器文件而非浏览器设备文件。
 
 ## 当前产品与未来 Core
@@ -46,9 +46,12 @@
 | 已完成 | EH Archive 提交与流式持久下载 | 提交 Original/Resample、解析并隔离签名 URL，记录获取时间、86400 秒有效期和最大 IP 数 2；流式写入 Downloads、支持取消/Range 恢复，`submitting` 崩溃恢复为 `cost_unknown` 且不自动重放 |
 | 已完成 | EH Archive 本地画廊消费 | 读取完成任务，按 `[gid][token] title` 创建本地画廊目录，移动并保留原始文件名和 ZIP bytes，写 `gallery.json`、提取首张安全封面，按 task ID 幂等启动恢复并记录 consumed/consume_error |
 | 已完成 | 确定性 ComicInfo 派生 | 安全 ZIP 图片 member 使用无整数溢出的稳定自然排序；旁置 `ComicInfo.xml` 只由唯一原 ZIP 与 `gallery.json` 生成，消费时自动创建，也可通过 Runtime/HTTP 删除和逐字节一致地重建 |
-| 下一步 | 本地 ZIP 画廊阅读 API | 严格列出安全 ZIP 图片 member，提供有界单页解压和二进制 resource handle；本地详情/WebUI 复用在线画廊动线，不整包解压、不一次性读取 Archive |
+| 已完成 | 本地 ZIP 画廊阅读 API | 稳定 gallery/page ID、自然排序和分页 member snapshot、有界单页解压与 magic MIME；规范化重复名、隐藏/逃逸路径、member 数、单页和总声明大小均受限；`CoreHandle`、JSON metadata、二进制 resource 和本地阅读 WebUI 已贯通，公开结果不含 Archive Path/文件名 |
+| 已完成 | 本地画廊统一 resource | 封面和 ZIP 页面共用带 kind 的 resource descriptor、图像预算、并发上限、magic MIME 和二进制安全响应；封面路径限制在画廊目录内，WebUI 列表和详情直接消费 resource URL |
+| 已完成 | 本地画廊显式确认删除 | 删除必须先预检并取得五分钟一次性令牌；令牌绑定直接普通文件名与大小清单，文件集合或大小变化即拒绝；阅读/旁置写入/消费/删除共用读写占用，提交先持久化确认清单并隐藏目录，再清除 Archive task 路径；启动仅按 unchanged 清单恢复中断删除，WebUI 必须二次提交确认 |
+| 下一步 | 本地画廊导出语义 | 设计有界 stream/resource handle、任务占用以及 Windows/Linux/Android/server 的目标文件交换；Web 下载不得伪装成本地服务器 Path |
 | 后续 | 完整图像缓存监管 | 全局 chunk 级在途预算、Cache snapshot/维护、alias schema/version、staging 清理和更多格式 fixture |
-| 后续 | 持久下载与 Provider 纵向迁移 | 图片下载复用 `ImageService`，EH Archive 使用流式持久任务；继续补齐 Pixiv、Booru 和 EH 的正式能力，最终覆盖 Python Core |
+| 后续 | Provider 纵向迁移 | 补齐 EH 搜索/feed、Pixiv 搜索/推荐/关注/收藏/排行、Gelbooru-style/Moebooru 协议族及各 Provider 正式下载能力，最终覆盖 Python Core |
 
 ## Core 独立化进度
 

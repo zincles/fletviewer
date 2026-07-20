@@ -105,6 +105,19 @@ struct ArchiveTaskForm {
     id: String,
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct LocalGalleryQuery {
+    id: String,
+    offset: u32,
+}
+
+#[derive(Deserialize)]
+struct LocalGalleryDeleteForm {
+    id: String,
+    confirmation_token: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct OperationQuery {
     id: String,
@@ -129,6 +142,8 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/eh/archive", post(start_eh_archive))
         .route("/ui/archive-tasks", get(archive_tasks))
         .route("/ui/local-galleries", get(local_galleries))
+        .route("/ui/local-gallery", get(local_gallery))
+        .route("/ui/local-gallery/delete", post(local_gallery_delete))
         .route("/ui/archive-task/cancel", post(cancel_archive))
         .route("/ui/archive-task/retry", post(retry_archive))
         .route("/ui/operations", get(operations))
@@ -573,14 +588,26 @@ async fn local_galleries(State(state): State<ControlState>) -> Response {
     let galleries = state.core.local_galleries().await;
     let mut cards = String::new();
     for gallery in &galleries {
+        let cover = if gallery.cover_available {
+            format!(
+                "<img class=\"gallery-cover\" loading=\"lazy\" src=\"/api/v1/local-galleries/{}/cover\" alt=\"{} 封面\">",
+                gallery.id,
+                escape(&gallery.title),
+            )
+        } else {
+            String::new()
+        };
         let _ = write!(
             cards,
-            "<article class=\"card\"><h2>{}</h2><p>GID {} · {} 字节</p><p><code>{}</code></p><p class=\"muted\">Archive: {}</p></article>",
+            "<article class=\"card\">{}<h2><a href=\"{}\">{}</a></h2><p>GID {} · {} 字节</p><p>{} · 封面 {} · ComicInfo {}</p></article>",
+            cover,
+            escape(&local_gallery_url(gallery.id, 0)),
             escape(&gallery.title),
             gallery.gid,
             gallery.archive_bytes,
-            escape(&gallery.directory),
-            escape(&gallery.archive_filename),
+            escape(&gallery.provider),
+            yes_no(gallery.cover_available),
+            yes_no(gallery.comic_info_available),
         );
     }
     if cards.is_empty() {
@@ -592,6 +619,149 @@ async fn local_galleries(State(state): State<ControlState>) -> Response {
         &format!("<h1>本地画廊</h1><div class=\"grid\">{cards}</div>"),
         None,
     )
+}
+
+async fn local_gallery(
+    State(state): State<ControlState>,
+    Query(query): Query<LocalGalleryQuery>,
+) -> Response {
+    let id = match query.id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return error_page(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "本地画廊 ID 无效",
+                false,
+            ));
+        }
+    };
+    const LIMIT: u32 = 100;
+    let detail = match state.core.local_gallery(id, query.offset, LIMIT).await {
+        Ok(detail) => detail,
+        Err(error) => return error_page(&error),
+    };
+    let cover = if detail.gallery.cover_available {
+        format!(
+            "<img class=\"detail-cover\" src=\"/api/v1/local-galleries/{}/cover\" alt=\"{} 封面\">",
+            detail.gallery.id,
+            escape(&detail.gallery.title),
+        )
+    } else {
+        String::new()
+    };
+    let mut pages = String::new();
+    for page in &detail.pages {
+        let resource = format!(
+            "/api/v1/local-galleries/{}/pages/{}",
+            detail.gallery.id, page.id
+        );
+        let _ = write!(
+            pages,
+            "<article class=\"card local-page\"><a href=\"{}\"><img loading=\"lazy\" src=\"{}\" alt=\"第 {} 页\"></a><p>第 {} 页 · {} · {} 字节</p></article>",
+            escape(&resource),
+            escape(&resource),
+            page.number,
+            page.number,
+            escape(&page.filename),
+            page.byte_length,
+        );
+    }
+    if pages.is_empty() {
+        pages.push_str("<p class=\"muted\">该窗口没有可读取页面。</p>");
+    }
+    let mut paging = String::new();
+    if detail.offset > 0 {
+        let previous = detail.offset.saturating_sub(LIMIT);
+        let _ = write!(
+            paging,
+            "<a href=\"{}\">上一批</a> ",
+            escape(&local_gallery_url(id, previous))
+        );
+    }
+    let next = detail.offset.saturating_add(detail.pages.len() as u32);
+    if next < detail.total_pages {
+        let _ = write!(
+            paging,
+            "<a href=\"{}\">下一批</a>",
+            escape(&local_gallery_url(id, next))
+        );
+    }
+    html_page(
+        StatusCode::OK,
+        &detail.gallery.title,
+        &format!(
+            "<h1>{}</h1>{}<p>EH GID {} · 共 {} 页 · 当前 {} - {}</p><p>{paging}</p><div class=\"grid local-pages\">{pages}</div><p>{paging}</p><h2>画廊管理</h2><p class=\"error\">删除会永久移除原始 ZIP、封面、gallery.json 和 ComicInfo.xml。</p><form method=\"post\" action=\"/ui/local-gallery/delete\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button type=\"submit\">预览永久删除</button></form>",
+            escape(&detail.gallery.title),
+            cover,
+            detail.gallery.gid,
+            detail.total_pages,
+            detail.offset.saturating_add(1),
+            next,
+            detail.gallery.id,
+        ),
+        None,
+    )
+}
+
+async fn local_gallery_delete(
+    State(state): State<ControlState>,
+    Form(form): Form<LocalGalleryDeleteForm>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&form.id) {
+        Ok(id) => id,
+        Err(_) => {
+            return error_page(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "本地画廊 ID 无效",
+                false,
+            ));
+        }
+    };
+    if let Some(token) = form.confirmation_token {
+        let confirmation_token = match uuid::Uuid::parse_str(&token) {
+            Ok(token) => token,
+            Err(_) => {
+                return error_page(&CoreError::new(
+                    ErrorCode::InvalidInput,
+                    "删除确认令牌无效",
+                    false,
+                ));
+            }
+        };
+        return match state
+            .core
+            .delete_local_gallery(id, crate::LocalGalleryDeleteRequest { confirmation_token })
+            .await
+        {
+            Ok(result) => html_page(
+                StatusCode::OK,
+                "本地画廊已删除",
+                &format!(
+                    "<h1>本地画廊已永久删除</h1><p>已删除 {} 个文件，共 {} 字节。</p><p><a href=\"/ui/local-galleries\">返回本地画廊</a></p>",
+                    result.deleted_files, result.deleted_bytes
+                ),
+                None,
+            ),
+            Err(error) => error_page(&error),
+        };
+    }
+    match state.core.prepare_local_gallery_delete(id).await {
+        Ok(confirmation) => html_page(
+            StatusCode::OK,
+            "确认删除本地画廊",
+            &format!(
+                "<h1>确认永久删除</h1><p class=\"error\">此操作不可撤销，将删除 {} 个文件，共 {} 字节。确认令牌将在 {} 失效，且画廊有任何变化都会拒绝删除。</p><form method=\"post\" action=\"/ui/local-gallery/delete\"><input type=\"hidden\" name=\"id\" value=\"{}\"><input type=\"hidden\" name=\"confirmation_token\" value=\"{}\"><button type=\"submit\">确认永久删除原始 ZIP 和画廊</button></form><p><a href=\"{}\">取消</a></p>",
+                confirmation.file_count,
+                confirmation.total_bytes,
+                confirmation.expires_at,
+                confirmation.gallery_id,
+                confirmation.confirmation_token,
+                escape(&local_gallery_url(confirmation.gallery_id, 0)),
+            ),
+            None,
+        ),
+        Err(error) => error_page(&error),
+    }
 }
 
 async fn cancel_archive(
@@ -1106,6 +1276,10 @@ fn post_url(provider: &str, profile: &str, id: u64) -> String {
 
 fn operation_url(id: crate::OperationId) -> String {
     format!("/ui/operation?id={id}")
+}
+
+fn local_gallery_url(id: uuid::Uuid, offset: u32) -> String {
+    format!("/ui/local-gallery?id={id}&offset={offset}")
 }
 
 fn eh_home_url(profile: &str, cursor: Option<crate::EhPageCursor>) -> String {

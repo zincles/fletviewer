@@ -753,7 +753,7 @@ fn cache_path(root: &Path, md5: ContentMd5, extension: &str) -> PathBuf {
         .join(format!("{digest}.{extension}"))
 }
 
-fn detect_format(bytes: &[u8]) -> Result<(&'static str, &'static str), CoreError> {
+pub(crate) fn detect_format(bytes: &[u8]) -> Result<(&'static str, &'static str), CoreError> {
     if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
         Ok(("jpg", "image/jpeg"))
     } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {

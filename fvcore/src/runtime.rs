@@ -148,7 +148,13 @@ impl CoreBuilder {
             message_tx.clone(),
         )
         .await?;
-        let galleries = GalleryService::open(downloads_path, archives.clone()).await?;
+        let galleries = GalleryService::open(
+            downloads_path,
+            archives.clone(),
+            self.config.images.max_image_bytes,
+            self.config.images.max_inflight_bytes,
+        )
+        .await?;
         let data = RuntimeData {
             id: runtime_id,
             config: self.config,
@@ -355,9 +361,37 @@ impl CoreHandle {
     }
 
     /// Returns committed local galleries after idempotently consuming completed Archive tasks.
-    pub async fn local_galleries(&self) -> Vec<crate::LocalGallerySnapshot> {
+    pub async fn local_galleries(&self) -> Vec<crate::LocalGallerySummary> {
         self.galleries.consume_pending().await;
         self.galleries.list().await
+    }
+
+    /// Returns safe metadata and naturally sorted pages for one local gallery ZIP.
+    pub async fn local_gallery(
+        &self,
+        id: uuid::Uuid,
+        offset: u32,
+        limit: u32,
+    ) -> Result<crate::LocalGalleryDetail, CoreError> {
+        self.galleries.consume_pending().await;
+        self.galleries.detail(id, offset, limit).await
+    }
+
+    /// Extracts one bounded immutable image page from a local gallery ZIP.
+    pub async fn local_gallery_page(
+        &self,
+        id: uuid::Uuid,
+        page_id: u32,
+    ) -> Result<crate::LocalGalleryResource, CoreError> {
+        self.galleries.page(id, page_id).await
+    }
+
+    /// Returns one bounded immutable cover image from a local gallery.
+    pub async fn local_gallery_cover(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<crate::LocalGalleryResource, CoreError> {
+        self.galleries.cover(id).await
     }
 
     /// Deterministically creates or replaces a local gallery's derived `ComicInfo.xml`.
@@ -371,6 +405,23 @@ impl CoreHandle {
     /// Deletes a derived `ComicInfo.xml` without changing its authoritative ZIP or JSON inputs.
     pub async fn delete_local_gallery_comic_info(&self, id: uuid::Uuid) -> Result<(), CoreError> {
         self.galleries.delete_comic_info(id).await
+    }
+
+    /// Previews a local gallery deletion and returns a short-lived one-use confirmation token.
+    pub async fn prepare_local_gallery_delete(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<crate::LocalGalleryDeleteConfirmation, CoreError> {
+        self.galleries.prepare_delete(id).await
+    }
+
+    /// Permanently deletes a local gallery after an unchanged preview is explicitly confirmed.
+    pub async fn delete_local_gallery(
+        &self,
+        id: uuid::Uuid,
+        request: crate::LocalGalleryDeleteRequest,
+    ) -> Result<crate::LocalGalleryDeleteResult, CoreError> {
+        self.galleries.delete(id, request).await
     }
 
     /// Returns immutable image bytes by their verified content address.
@@ -861,9 +912,15 @@ mod tests {
         let mut cursor = std::io::Cursor::new(Vec::new());
         {
             let mut zip = zip::ZipWriter::new(&mut cursor);
-            zip.start_file("1.jpg", zip::write::SimpleFileOptions::default())
+            zip.start_file("10.jpg", zip::write::SimpleFileOptions::default())
                 .unwrap();
-            std::io::Write::write_all(&mut zip, b"cover").unwrap();
+            std::io::Write::write_all(&mut zip, &test_jpeg()).unwrap();
+            zip.start_file("2.png", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+            zip.start_file("../hidden.jpg", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, &test_jpeg()).unwrap();
             zip.finish().unwrap();
         }
         cursor.into_inner()
@@ -1653,8 +1710,94 @@ mod tests {
         .unwrap();
         assert!(galleries.starts_with("HTTP/1.1 200 OK"));
         assert!(galleries.contains("\"gid\":123456"));
-        assert!(galleries.contains("\"archive_filename\":\"archive.zip\""));
         let gallery_id = runtime.handle().archive_tasks().await[0].id;
+        assert!(galleries.contains(&format!("\"id\":\"{gallery_id}\"")));
+        assert!(!galleries.contains("archive_filename"));
+        assert!(!galleries.contains("directory"));
+        assert!(!galleries.contains("archive.zip"));
+        let detail = String::from_utf8(
+            http_request(
+                listen,
+                format!(
+                    "GET /api/v1/local-galleries/{gallery_id}?offset=0&limit=100 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(detail.starts_with("HTTP/1.1 200 OK"));
+        assert!(detail.contains("\"total_pages\":2"));
+        assert!(detail.contains("\"id\":0,\"number\":1,\"filename\":\"2.png\""));
+        assert!(detail.contains("\"id\":1,\"number\":2,\"filename\":\"10.jpg\""));
+        assert!(!detail.contains("hidden.jpg"));
+        assert!(!detail.contains("directory"));
+        let page = http_request(
+            listen,
+            format!(
+                "GET /api/v1/local-galleries/{gallery_id}/pages/0 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await;
+        assert!(page.starts_with(b"HTTP/1.1 200 OK"));
+        assert!(
+            page.windows("content-type: image/png".len())
+                .any(|window| window == b"content-type: image/png")
+        );
+        assert!(page.windows(8).any(|window| window == b"\x89PNG\r\n\x1a\n"));
+        let local_webui = String::from_utf8(
+            http_request(
+                listen,
+                format!(
+                    "GET /ui/local-gallery?id={gallery_id}&offset=0 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(local_webui.starts_with("HTTP/1.1 200 OK"));
+        assert!(local_webui.contains("Runtime Archive Fixture"));
+        assert!(local_webui.contains("第 1 页"));
+        assert!(local_webui.contains(&format!("/api/v1/local-galleries/{gallery_id}/cover")));
+        assert!(local_webui.contains("预览永久删除"));
+        assert!(!local_webui.contains("archive.zip"));
+        let delete_preview_form = format!("id={gallery_id}");
+        let delete_preview_page = String::from_utf8(
+            http_request(
+                listen,
+                format!(
+                    "POST /ui/local-gallery/delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{delete_preview_form}",
+                    delete_preview_form.len()
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(delete_preview_page.starts_with("HTTP/1.1 200 OK"));
+        assert!(delete_preview_page.contains("此操作不可撤销"));
+        assert!(delete_preview_page.contains("确认永久删除原始 ZIP 和画廊"));
+        let cover = http_request(
+            listen,
+            format!(
+                "GET /api/v1/local-galleries/{gallery_id}/cover HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await;
+        assert!(cover.starts_with(b"HTTP/1.1 200 OK"));
+        assert!(
+            cover
+                .windows("content-type: image/png".len())
+                .any(|window| window == b"content-type: image/png")
+        );
+        assert!(
+            cover
+                .windows(8)
+                .any(|window| window == b"\x89PNG\r\n\x1a\n")
+        );
         let generate = String::from_utf8(
             http_request(
                 listen,
@@ -1668,7 +1811,7 @@ mod tests {
         .unwrap();
         assert!(generate.starts_with("HTTP/1.1 200 OK"));
         assert!(generate.contains("\"filename\":\"ComicInfo.xml\""));
-        assert!(generate.contains("\"page_count\":1"));
+        assert!(generate.contains("\"page_count\":2"));
         let delete = String::from_utf8(
             http_request(
                 listen,
@@ -1704,6 +1847,106 @@ mod tests {
         assert!(webui.starts_with("HTTP/1.1 200 OK"));
         assert!(webui.contains("<h1>Archive 任务</h1>"));
         assert!(webui.contains("Consumed"));
+        let invalid_payload = "{\"confirmation_token\":\"00000000-0000-0000-0000-000000000000\"}";
+        let invalid_delete = String::from_utf8(
+            http_request(
+                listen,
+                format!(
+                    "POST /api/v1/local-galleries/{gallery_id}/delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{invalid_payload}",
+                    invalid_payload.len()
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(invalid_delete.starts_with("HTTP/1.1 403 Forbidden"));
+        assert!(
+            runtime
+                .handle()
+                .local_gallery(gallery_id, 0, 100)
+                .await
+                .is_ok()
+        );
+        let changed_confirmation = runtime
+            .handle()
+            .prepare_local_gallery_delete(gallery_id)
+            .await
+            .unwrap();
+        let gallery_directory = std::fs::read_dir(temp.path().join("Downloads/EHArchieve"))
+            .unwrap()
+            .find_map(|entry| {
+                let path = entry.ok()?.path();
+                path.join("gallery.json").is_file().then_some(path)
+            })
+            .unwrap();
+        let unexpected = gallery_directory.join("unexpected.txt");
+        std::fs::write(&unexpected, b"changed after preview").unwrap();
+        let changed_error = runtime
+            .handle()
+            .delete_local_gallery(
+                gallery_id,
+                crate::LocalGalleryDeleteRequest {
+                    confirmation_token: changed_confirmation.confirmation_token,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(changed_error.code(), crate::ErrorCode::IntegrityMismatch);
+        assert!(gallery_directory.is_dir());
+        std::fs::remove_file(unexpected).unwrap();
+        let preview = String::from_utf8(
+            http_request(
+                listen,
+                format!(
+                    "POST /api/v1/local-galleries/{gallery_id}/delete-preview HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(preview.starts_with("HTTP/1.1 200 OK"));
+        let body = preview.split_once("\r\n\r\n").unwrap().1;
+        let confirmation: crate::LocalGalleryDeleteConfirmation =
+            serde_json::from_str(body).unwrap();
+        assert_eq!(confirmation.gallery_id, gallery_id);
+        assert_eq!(confirmation.file_count, 4);
+        let payload = format!(
+            "{{\"confirmation_token\":\"{}\"}}",
+            confirmation.confirmation_token
+        );
+        let delete = String::from_utf8(
+            http_request(
+                listen,
+                format!(
+                    "POST /api/v1/local-galleries/{gallery_id}/delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(delete.starts_with("HTTP/1.1 200 OK"));
+        assert!(delete.contains("\"deleted_files\":4"));
+        assert!(runtime.handle().local_galleries().await.is_empty());
+        let consumed = runtime.handle().archive_task(gallery_id).await.unwrap();
+        assert_eq!(consumed.state, crate::ArchiveTaskState::Consumed);
+        assert!(consumed.final_path.is_none());
+        let reused = String::from_utf8(
+            http_request(
+                listen,
+                format!(
+                    "POST /api/v1/local-galleries/{gallery_id}/delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(reused.starts_with("HTTP/1.1 403 Forbidden"));
         runtime.shutdown().await.unwrap();
     }
 

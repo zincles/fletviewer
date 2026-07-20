@@ -3,24 +3,166 @@
 use crate::{
     ArchiveTaskState, CoreError, ErrorCode,
     archive::{ArchiveConsumption, ArchiveService},
+    image::detect_format,
 };
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
+    collections::{HashMap, HashSet},
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
 use time::OffsetDateTime;
+use tokio::sync::{Mutex, RwLock, Semaphore};
 
 const MAX_COVER_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMAGE_MEMBERS: usize = 100_000;
+const MAX_TOTAL_IMAGE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const COMIC_INFO_FILENAME: &str = "ComicInfo.xml";
+const DELETE_CONFIRMATION_SECONDS: i64 = 300;
 
-/// Immutable local gallery snapshot backed by one original EH Archive ZIP.
+/// Safe summary of one local gallery backed by an original EH Archive ZIP.
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalGallerySummary {
+    /// Stable local gallery ID derived from the Archive task.
+    pub id: uuid::Uuid,
+    /// Provider implementation identifier. Currently always `eh`.
+    pub provider: String,
+    /// EH gallery ID.
+    pub gid: u64,
+    /// EH gallery token.
+    pub token: String,
+    /// Gallery title captured before Archive submission.
+    pub title: String,
+    /// Archive byte length.
+    pub archive_bytes: u64,
+    /// Whether an extracted local cover is available.
+    pub cover_available: bool,
+    /// Whether the deterministic `ComicInfo.xml` is available.
+    pub comic_info_available: bool,
+    /// Creation timestamp.
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    /// Last metadata update timestamp.
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
+/// Safe metadata for one naturally sorted image member in a local gallery ZIP.
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalGalleryPage {
+    /// Stable zero-based page ID within the immutable original ZIP.
+    pub id: u32,
+    /// One-based display number.
+    pub number: u32,
+    /// Original ZIP member name for display only.
+    pub filename: String,
+    /// MIME type inferred from the member extension before bytes are read.
+    pub mime_type: String,
+    /// Declared uncompressed byte length.
+    pub byte_length: u64,
+}
+
+/// Local gallery metadata together with its readable pages.
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalGalleryDetail {
+    /// Gallery summary without server paths.
+    pub gallery: LocalGallerySummary,
+    /// Total number of naturally sorted safe image members.
+    pub total_pages: u32,
+    /// Zero-based offset of the returned page window.
+    pub offset: u32,
+    /// Naturally sorted safe image members in the requested window.
+    pub pages: Vec<LocalGalleryPage>,
+}
+
+/// Kind of an immutable local gallery binary resource.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalGalleryResourceKind {
+    /// Extracted cover bytes.
+    Cover,
+    /// One image page extracted from the original ZIP.
+    Page,
+}
+
+/// Descriptor for one bounded local gallery image resource.
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalGalleryResourceDescriptor {
+    /// Stable local gallery ID.
+    pub gallery_id: uuid::Uuid,
+    /// Resource kind.
+    pub kind: LocalGalleryResourceKind,
+    /// Stable zero-based page ID for page resources.
+    pub page_id: Option<u32>,
+    /// MIME type detected from the actual bytes.
+    pub mime_type: String,
+    /// Exact resource byte length.
+    pub byte_length: usize,
+}
+
+/// Immutable bounded binary image resource from a local gallery.
+#[derive(Clone, Debug)]
+pub struct LocalGalleryResource {
+    descriptor: LocalGalleryResourceDescriptor,
+    bytes: Bytes,
+}
+
+impl LocalGalleryResource {
+    /// Returns the safe resource descriptor.
+    #[must_use]
+    pub fn descriptor(&self) -> &LocalGalleryResourceDescriptor {
+        &self.descriptor
+    }
+
+    /// Returns a cheap clone of the immutable page bytes.
+    #[must_use]
+    pub fn bytes(&self) -> Bytes {
+        self.bytes.clone()
+    }
+}
+
+/// Short-lived preview that must be returned unchanged to delete a local gallery.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct LocalGallerySnapshot {
+pub struct LocalGalleryDeleteConfirmation {
+    /// Gallery that will be deleted.
+    pub gallery_id: uuid::Uuid,
+    /// One-use confirmation token bound to the current direct file set.
+    pub confirmation_token: uuid::Uuid,
+    /// Number of ordinary files that will be removed.
+    pub file_count: usize,
+    /// Total bytes occupied by those files.
+    pub total_bytes: u64,
+    /// Token expiry timestamp.
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
+}
+
+/// Explicit request committing a previously previewed local gallery deletion.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalGalleryDeleteRequest {
+    /// One-use token returned by [`LocalGalleryDeleteConfirmation`].
+    pub confirmation_token: uuid::Uuid,
+}
+
+/// Result of an explicitly confirmed local gallery deletion.
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalGalleryDeleteResult {
+    /// Deleted gallery ID.
+    pub gallery_id: uuid::Uuid,
+    /// Number of ordinary files removed.
+    pub deleted_files: usize,
+    /// Total bytes represented by the confirmed file set.
+    pub deleted_bytes: u64,
+}
+
+/// Persisted local gallery record backed by one original EH Archive ZIP.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LocalGalleryRecord {
     /// Metadata schema version. Currently `1`.
     pub schema_version: u32,
     /// Archive task that committed this gallery.
@@ -47,6 +189,28 @@ pub struct LocalGallerySnapshot {
     pub updated_at: OffsetDateTime,
 }
 
+#[derive(Debug)]
+struct ImageMember {
+    key: NaturalKey,
+    zip_index: usize,
+    filename: String,
+    byte_length: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct GalleryDeletePlan {
+    directory: PathBuf,
+    files: Vec<(String, u64)>,
+    total_bytes: u64,
+}
+
+#[derive(Debug)]
+struct PendingGalleryDelete {
+    gallery_id: uuid::Uuid,
+    expires_at: OffsetDateTime,
+    plan: GalleryDeletePlan,
+}
+
 /// Snapshot of a deterministic `ComicInfo.xml` derived from a local gallery.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ComicInfoSnapshot {
@@ -63,18 +227,34 @@ pub struct ComicInfoSnapshot {
 pub(crate) struct GalleryService {
     root: PathBuf,
     archives: Arc<ArchiveService>,
+    max_resource_bytes: usize,
+    resource_permits: Arc<Semaphore>,
+    occupancy: Arc<RwLock<()>>,
+    pending_deletes: Mutex<HashMap<uuid::Uuid, PendingGalleryDelete>>,
 }
 
 impl GalleryService {
     pub(crate) async fn open(
         downloads: PathBuf,
         archives: Arc<ArchiveService>,
+        max_resource_bytes: usize,
+        max_inflight_bytes: usize,
     ) -> Result<Arc<Self>, CoreError> {
         let root = downloads.join("EHArchieve");
         tokio::fs::create_dir_all(&root)
             .await
             .map_err(|error| io_error("create local gallery directory", &root, error))?;
-        let service = Arc::new(Self { root, archives });
+        let service = Arc::new(Self {
+            root,
+            archives,
+            max_resource_bytes,
+            resource_permits: Arc::new(Semaphore::new(
+                max_inflight_bytes.saturating_div(max_resource_bytes).max(1),
+            )),
+            occupancy: Arc::new(RwLock::new(())),
+            pending_deletes: Mutex::new(HashMap::new()),
+        });
+        service.recover_deletions().await?;
         service.consume_pending().await;
         Ok(service)
     }
@@ -98,28 +278,234 @@ impl GalleryService {
         }
     }
 
-    pub(crate) async fn list(&self) -> Vec<LocalGallerySnapshot> {
+    async fn recover_deletions(&self) -> Result<(), CoreError> {
         let root = self.root.clone();
-        tokio::task::spawn_blocking(move || scan(&root))
+        let deletions = tokio::task::spawn_blocking(move || pending_deletion_tickets(&root))
             .await
-            .unwrap_or_default()
+            .map_err(|_| {
+                CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false)
+            })??;
+        for deletion in deletions {
+            self.archives
+                .mark_local_gallery_deleted(deletion.id)
+                .await?;
+            tokio::task::spawn_blocking(move || {
+                delete_tombstone(&deletion.tombstone, &deletion.plan)?;
+                std::fs::remove_file(&deletion.ticket).map_err(|error| {
+                    io_error(
+                        "remove local gallery deletion ticket",
+                        &deletion.ticket,
+                        error,
+                    )
+                })
+            })
+            .await
+            .map_err(|_| {
+                CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false)
+            })??;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn list(&self) -> Vec<LocalGallerySummary> {
+        let _occupancy = self.occupancy.read().await;
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || {
+            scan(&root)
+                .into_iter()
+                .map(|record| summary(&record))
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    pub(crate) async fn detail(
+        &self,
+        id: uuid::Uuid,
+        offset: u32,
+        limit: u32,
+    ) -> Result<LocalGalleryDetail, CoreError> {
+        if limit == 0 || limit > 500 {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "local gallery page limit must be between 1 and 500",
+                false,
+            ));
+        }
+        let occupancy = self.occupancy.clone().read_owned().await;
+        let root = self.root.clone();
+        let max_page_bytes = self.max_resource_bytes;
+        tokio::task::spawn_blocking(move || {
+            let _occupancy = occupancy;
+            gallery_detail(&root, id, offset, limit, max_page_bytes)
+        })
+        .await
+        .map_err(|_| CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false))?
+    }
+
+    pub(crate) async fn page(
+        &self,
+        id: uuid::Uuid,
+        page_id: u32,
+    ) -> Result<LocalGalleryResource, CoreError> {
+        let occupancy = self.occupancy.clone().read_owned().await;
+        let root = self.root.clone();
+        let max_page_bytes = self.max_resource_bytes;
+        let permit = self
+            .resource_permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| {
+                CoreError::new(ErrorCode::NotReady, "local gallery is shutting down", true)
+            })?;
+        tokio::task::spawn_blocking(move || {
+            let _occupancy = occupancy;
+            let _permit = permit;
+            read_gallery_page(&root, id, page_id, max_page_bytes)
+        })
+        .await
+        .map_err(|_| CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false))?
+    }
+
+    pub(crate) async fn cover(&self, id: uuid::Uuid) -> Result<LocalGalleryResource, CoreError> {
+        let occupancy = self.occupancy.clone().read_owned().await;
+        let root = self.root.clone();
+        let max_resource_bytes = self.max_resource_bytes;
+        let permit = self
+            .resource_permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| {
+                CoreError::new(ErrorCode::NotReady, "local gallery is shutting down", true)
+            })?;
+        tokio::task::spawn_blocking(move || {
+            let _occupancy = occupancy;
+            let _permit = permit;
+            read_gallery_cover(&root, id, max_resource_bytes)
+        })
+        .await
+        .map_err(|_| CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false))?
     }
 
     pub(crate) async fn generate_comic_info(
         &self,
         id: uuid::Uuid,
     ) -> Result<ComicInfoSnapshot, CoreError> {
+        let occupancy = self.occupancy.clone().write_owned().await;
         let root = self.root.clone();
-        tokio::task::spawn_blocking(move || generate_comic_info_by_id(&root, id))
-            .await
-            .map_err(|_| CoreError::new(ErrorCode::Internal, "ComicInfo worker panicked", false))?
+        tokio::task::spawn_blocking(move || {
+            let _occupancy = occupancy;
+            generate_comic_info_by_id(&root, id)
+        })
+        .await
+        .map_err(|_| CoreError::new(ErrorCode::Internal, "ComicInfo worker panicked", false))?
     }
 
     pub(crate) async fn delete_comic_info(&self, id: uuid::Uuid) -> Result<(), CoreError> {
+        let occupancy = self.occupancy.clone().write_owned().await;
         let root = self.root.clone();
-        tokio::task::spawn_blocking(move || delete_comic_info_by_id(&root, id))
+        tokio::task::spawn_blocking(move || {
+            let _occupancy = occupancy;
+            delete_comic_info_by_id(&root, id)
+        })
+        .await
+        .map_err(|_| CoreError::new(ErrorCode::Internal, "ComicInfo worker panicked", false))?
+    }
+
+    pub(crate) async fn prepare_delete(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<LocalGalleryDeleteConfirmation, CoreError> {
+        let occupancy = self.occupancy.clone().read_owned().await;
+        let root = self.root.clone();
+        let plan = tokio::task::spawn_blocking(move || {
+            let _occupancy = occupancy;
+            gallery_delete_plan(&root, id)
+        })
+        .await
+        .map_err(|_| {
+            CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false)
+        })??;
+        let confirmation_token = uuid::Uuid::now_v7();
+        let expires_at = OffsetDateTime::now_utc()
+            .checked_add(time::Duration::seconds(DELETE_CONFIRMATION_SECONDS))
+            .expect("short confirmation lifetime fits timestamp");
+        let confirmation = LocalGalleryDeleteConfirmation {
+            gallery_id: id,
+            confirmation_token,
+            file_count: plan.files.len(),
+            total_bytes: plan.total_bytes,
+            expires_at,
+        };
+        let now = OffsetDateTime::now_utc();
+        let mut pending = self.pending_deletes.lock().await;
+        pending.retain(|_, value| value.expires_at > now);
+        pending.insert(
+            confirmation_token,
+            PendingGalleryDelete {
+                gallery_id: id,
+                expires_at,
+                plan,
+            },
+        );
+        Ok(confirmation)
+    }
+
+    pub(crate) async fn delete(
+        &self,
+        id: uuid::Uuid,
+        request: LocalGalleryDeleteRequest,
+    ) -> Result<LocalGalleryDeleteResult, CoreError> {
+        let pending = self
+            .pending_deletes
+            .lock()
             .await
-            .map_err(|_| CoreError::new(ErrorCode::Internal, "ComicInfo worker panicked", false))?
+            .remove(&request.confirmation_token)
+            .ok_or_else(invalid_delete_confirmation)?;
+        if pending.gallery_id != id || pending.expires_at <= OffsetDateTime::now_utc() {
+            return Err(invalid_delete_confirmation());
+        }
+        let _occupancy = self.occupancy.write().await;
+        let current = gallery_delete_plan(&self.root, id)?;
+        if current != pending.plan {
+            return Err(CoreError::new(
+                ErrorCode::IntegrityMismatch,
+                "local gallery changed after deletion was previewed",
+                true,
+            ));
+        }
+        let tombstone = self
+            .root
+            .join(format!(".delete.{}.{}", id, request.confirmation_token));
+        let ticket = self.root.join(format!(
+            ".delete.{}.{}.json",
+            id, request.confirmation_token
+        ));
+        atomic_json(&ticket, &current)?;
+        std::fs::rename(&current.directory, &tombstone).map_err(|error| {
+            let _ = std::fs::remove_file(&ticket);
+            io_error(
+                "hide local gallery before confirmed deletion",
+                &current.directory,
+                error,
+            )
+        })?;
+        if let Err(error) = self.archives.mark_local_gallery_deleted(id).await {
+            let _ = std::fs::rename(&tombstone, &current.directory);
+            let _ = std::fs::remove_file(&ticket);
+            return Err(error);
+        }
+        delete_tombstone(&tombstone, &current)?;
+        std::fs::remove_file(&ticket)
+            .map_err(|error| io_error("remove local gallery deletion ticket", &ticket, error))?;
+        Ok(LocalGalleryDeleteResult {
+            gallery_id: id,
+            deleted_files: current.files.len(),
+            deleted_bytes: current.total_bytes,
+        })
     }
 
     async fn consume(
@@ -127,17 +513,21 @@ impl GalleryService {
         consumption: ArchiveConsumption,
     ) -> Result<(uuid::Uuid, PathBuf), (uuid::Uuid, CoreError)> {
         let id = consumption.task.id;
+        let occupancy = self.occupancy.clone().write_owned().await;
         let root = self.root.clone();
-        tokio::task::spawn_blocking(move || consume_blocking(&root, consumption))
-            .await
-            .map_err(|_| {
-                (
-                    id,
-                    CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false),
-                )
-            })?
-            .map(|path| (id, path))
-            .map_err(|error| (id, error))
+        tokio::task::spawn_blocking(move || {
+            let _occupancy = occupancy;
+            consume_blocking(&root, consumption)
+        })
+        .await
+        .map_err(|_| {
+            (
+                id,
+                CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false),
+            )
+        })?
+        .map(|path| (id, path))
+        .map_err(|error| (id, error))
     }
 }
 
@@ -195,7 +585,7 @@ fn consume_blocking(root: &Path, consumption: ArchiveConsumption) -> Result<Path
     let result = (|| {
         let cover_filename = inspect_and_extract_cover(&staging_archive, &staging)?;
         let now = OffsetDateTime::now_utc();
-        let metadata = LocalGallerySnapshot {
+        let metadata = LocalGalleryRecord {
             schema_version: 1,
             download_task_id: consumption.task.id,
             gid: consumption.task.gallery.gid,
@@ -237,11 +627,11 @@ fn inspect_and_extract_cover(zip_path: &Path, output: &Path) -> Result<Option<St
             false,
         )
     })?;
-    let candidates = image_members(&mut archive)?;
-    let Some((_, index)) = candidates.first() else {
+    let candidates = image_members(&mut archive, u64::MAX)?;
+    let Some(candidate) = candidates.first() else {
         return Ok(None);
     };
-    let mut member = archive.by_index(*index).map_err(|error| {
+    let mut member = archive.by_index(candidate.zip_index).map_err(|error| {
         CoreError::new(
             ErrorCode::Parse,
             format!("failed to open ZIP cover: {error}"),
@@ -285,6 +675,369 @@ fn generate_comic_info_by_id(root: &Path, id: uuid::Uuid) -> Result<ComicInfoSna
     generate_comic_info(Path::new(&gallery.directory), &gallery)
 }
 
+fn summary(record: &LocalGalleryRecord) -> LocalGallerySummary {
+    let directory = Path::new(&record.directory);
+    LocalGallerySummary {
+        id: record.download_task_id,
+        provider: "eh".to_owned(),
+        gid: record.gid,
+        token: record.token.clone(),
+        title: record.title.clone(),
+        archive_bytes: record.archive_bytes,
+        cover_available: record
+            .cover_filename
+            .as_deref()
+            .and_then(safe_sidecar_name)
+            .is_some_and(|filename| directory.join(filename).is_file()),
+        comic_info_available: directory.join(COMIC_INFO_FILENAME).is_file(),
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }
+}
+
+fn gallery_detail(
+    root: &Path,
+    id: uuid::Uuid,
+    offset: u32,
+    limit: u32,
+    max_page_bytes: usize,
+) -> Result<LocalGalleryDetail, CoreError> {
+    let record = find_record(root, id)?;
+    let archive_path = Path::new(&record.directory).join(&record.archive_filename);
+    let file = File::open(&archive_path)
+        .map_err(|error| io_error("open local gallery ZIP", &archive_path, error))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|error| invalid_zip(error.to_string()))?;
+    let members = image_members(&mut archive, max_page_bytes as u64)?;
+    let total_pages = u32::try_from(members.len()).expect("image member limit fits in u32");
+    if offset > total_pages {
+        return Err(local_gallery_page_not_found());
+    }
+    let pages = members
+        .into_iter()
+        .enumerate()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .map(|(index, member)| {
+            let id = u32::try_from(index).expect("image member limit fits in u32");
+            LocalGalleryPage {
+                id,
+                number: id + 1,
+                mime_type: mime_for_name(&member.filename).to_owned(),
+                filename: member.filename,
+                byte_length: member.byte_length,
+            }
+        })
+        .collect();
+    Ok(LocalGalleryDetail {
+        gallery: summary(&record),
+        total_pages,
+        offset,
+        pages,
+    })
+}
+
+fn read_gallery_page(
+    root: &Path,
+    id: uuid::Uuid,
+    page_id: u32,
+    max_page_bytes: usize,
+) -> Result<LocalGalleryResource, CoreError> {
+    let record = find_record(root, id)?;
+    let archive_path = Path::new(&record.directory).join(&record.archive_filename);
+    let file = File::open(&archive_path)
+        .map_err(|error| io_error("open local gallery ZIP", &archive_path, error))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|error| invalid_zip(error.to_string()))?;
+    let members = image_members(&mut archive, max_page_bytes as u64)?;
+    let member = members
+        .get(page_id as usize)
+        .ok_or_else(local_gallery_page_not_found)?;
+    let mut source = archive
+        .by_index(member.zip_index)
+        .map_err(|error| invalid_zip(error.to_string()))?;
+    let mut bytes = Vec::with_capacity(member.byte_length as usize);
+    source
+        .by_ref()
+        .take(max_page_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error("extract local gallery page", &archive_path, error))?;
+    if bytes.len() > max_page_bytes {
+        return Err(CoreError::new(
+            ErrorCode::ResponseTooLarge,
+            format!("gallery page exceeds the configured {max_page_bytes} byte limit"),
+            false,
+        ));
+    }
+    let (_, mime_type) = detect_format(&bytes)?;
+    Ok(LocalGalleryResource {
+        descriptor: LocalGalleryResourceDescriptor {
+            gallery_id: id,
+            kind: LocalGalleryResourceKind::Page,
+            page_id: Some(page_id),
+            mime_type: mime_type.to_owned(),
+            byte_length: bytes.len(),
+        },
+        bytes: Bytes::from(bytes),
+    })
+}
+
+fn read_gallery_cover(
+    root: &Path,
+    id: uuid::Uuid,
+    max_resource_bytes: usize,
+) -> Result<LocalGalleryResource, CoreError> {
+    let record = find_record(root, id)?;
+    let filename = record
+        .cover_filename
+        .as_deref()
+        .ok_or_else(local_gallery_cover_not_found)?;
+    let filename = safe_sidecar_name(filename).ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::IntegrityMismatch,
+            "local gallery cover filename is unsafe",
+            false,
+        )
+    })?;
+    let path = Path::new(&record.directory).join(filename);
+    let metadata = std::fs::metadata(&path)
+        .map_err(|error| io_error("read local gallery cover metadata", &path, error))?;
+    if !metadata.is_file() {
+        return Err(local_gallery_cover_not_found());
+    }
+    if metadata.len() > max_resource_bytes as u64 {
+        return Err(CoreError::new(
+            ErrorCode::ResponseTooLarge,
+            format!("gallery cover exceeds the configured {max_resource_bytes} byte limit"),
+            false,
+        ));
+    }
+    let mut file =
+        File::open(&path).map_err(|error| io_error("open local gallery cover", &path, error))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    Read::by_ref(&mut file)
+        .take(max_resource_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error("read local gallery cover", &path, error))?;
+    if bytes.len() > max_resource_bytes {
+        return Err(CoreError::new(
+            ErrorCode::ResponseTooLarge,
+            format!("gallery cover exceeds the configured {max_resource_bytes} byte limit"),
+            false,
+        ));
+    }
+    let (_, mime_type) = detect_format(&bytes)?;
+    Ok(LocalGalleryResource {
+        descriptor: LocalGalleryResourceDescriptor {
+            gallery_id: id,
+            kind: LocalGalleryResourceKind::Cover,
+            page_id: None,
+            mime_type: mime_type.to_owned(),
+            byte_length: bytes.len(),
+        },
+        bytes: Bytes::from(bytes),
+    })
+}
+
+fn find_record(root: &Path, id: uuid::Uuid) -> Result<LocalGalleryRecord, CoreError> {
+    scan(root)
+        .into_iter()
+        .find(|gallery| gallery.download_task_id == id)
+        .ok_or_else(local_gallery_not_found)
+}
+
+fn gallery_delete_plan(root: &Path, id: uuid::Uuid) -> Result<GalleryDeletePlan, CoreError> {
+    let record = find_record(root, id)?;
+    let directory = PathBuf::from(record.directory);
+    if directory.parent() != Some(root)
+        || directory
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_none_or(|value| value.is_empty() || value.starts_with('.'))
+    {
+        return Err(CoreError::new(
+            ErrorCode::IntegrityMismatch,
+            "local gallery directory is outside the managed root",
+            false,
+        ));
+    }
+    let (files, total_bytes) = direct_gallery_files(&directory)?;
+    Ok(GalleryDeletePlan {
+        directory,
+        files,
+        total_bytes,
+    })
+}
+
+fn direct_gallery_files(directory: &Path) -> Result<(Vec<(String, u64)>, u64), CoreError> {
+    let mut files = Vec::new();
+    let mut total_bytes = 0_u64;
+    for entry in std::fs::read_dir(directory)
+        .map_err(|error| io_error("inspect local gallery files", directory, error))?
+    {
+        let entry =
+            entry.map_err(|error| io_error("inspect local gallery files", directory, error))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| io_error("inspect local gallery file type", &entry.path(), error))?;
+        let filename = entry.file_name().into_string().map_err(|_| {
+            CoreError::new(
+                ErrorCode::IntegrityMismatch,
+                "local gallery contains a non-UTF-8 filename",
+                false,
+            )
+        })?;
+        if !file_type.is_file() || safe_sidecar_name(&filename).is_none() {
+            return Err(CoreError::new(
+                ErrorCode::IntegrityMismatch,
+                "local gallery deletion only accepts direct ordinary files",
+                false,
+            ));
+        }
+        let bytes = entry
+            .metadata()
+            .map_err(|error| io_error("inspect local gallery file", &entry.path(), error))?
+            .len();
+        total_bytes = total_bytes.checked_add(bytes).ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::ResponseTooLarge,
+                "local gallery file sizes overflow the supported total",
+                false,
+            )
+        })?;
+        files.push((filename, bytes));
+    }
+    files.sort_unstable();
+    Ok((files, total_bytes))
+}
+
+#[derive(Debug)]
+struct RecoverableGalleryDelete {
+    id: uuid::Uuid,
+    tombstone: PathBuf,
+    ticket: PathBuf,
+    plan: GalleryDeletePlan,
+}
+
+fn pending_deletion_tickets(root: &Path) -> Result<Vec<RecoverableGalleryDelete>, CoreError> {
+    let mut deletions = Vec::new();
+    for entry in std::fs::read_dir(root)
+        .map_err(|error| io_error("scan local gallery deletion recovery", root, error))?
+    {
+        let entry =
+            entry.map_err(|error| io_error("scan local gallery deletion recovery", root, error))?;
+        let filename = entry.file_name();
+        let Some(filename) = filename.to_str() else {
+            continue;
+        };
+        let Some(remainder) = filename
+            .strip_prefix(".delete.")
+            .and_then(|value| value.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        let Some((id, token)) = remainder.split_once('.') else {
+            continue;
+        };
+        let (Ok(id), Ok(_token)) = (uuid::Uuid::parse_str(id), uuid::Uuid::parse_str(token)) else {
+            continue;
+        };
+        let ticket = entry.path();
+        if !entry
+            .file_type()
+            .map_err(|error| io_error("inspect local gallery deletion recovery", &ticket, error))?
+            .is_file()
+        {
+            continue;
+        }
+        let bytes = std::fs::read(&ticket)
+            .map_err(|error| io_error("read local gallery deletion ticket", &ticket, error))?;
+        let plan: GalleryDeletePlan = serde_json::from_slice(&bytes).map_err(|error| {
+            CoreError::new(
+                ErrorCode::Parse,
+                format!("invalid local gallery deletion ticket: {error}"),
+                false,
+            )
+        })?;
+        if plan.directory.parent() != Some(root) {
+            return Err(CoreError::new(
+                ErrorCode::IntegrityMismatch,
+                "local gallery deletion ticket is outside the managed root",
+                false,
+            ));
+        }
+        let tombstone = root.join(format!(".delete.{id}.{token}"));
+        if plan.directory.exists() && !tombstone.exists() {
+            std::fs::remove_file(&ticket).map_err(|error| {
+                io_error(
+                    "remove uncommitted local gallery deletion ticket",
+                    &ticket,
+                    error,
+                )
+            })?;
+            continue;
+        }
+        if !tombstone.exists() {
+            std::fs::remove_file(&ticket).map_err(|error| {
+                io_error(
+                    "remove completed local gallery deletion ticket",
+                    &ticket,
+                    error,
+                )
+            })?;
+            continue;
+        }
+        if plan.directory.exists() {
+            return Err(CoreError::new(
+                ErrorCode::IntegrityMismatch,
+                "local gallery deletion has both visible and hidden directories",
+                false,
+            ));
+        }
+        let (files, _) = direct_gallery_files(&tombstone)?;
+        if files.iter().any(|file| !plan.files.contains(file)) {
+            return Err(CoreError::new(
+                ErrorCode::IntegrityMismatch,
+                "local gallery deletion tombstone changed after confirmation",
+                false,
+            ));
+        }
+        deletions.push(RecoverableGalleryDelete {
+            id,
+            tombstone,
+            ticket,
+            plan,
+        });
+    }
+    Ok(deletions)
+}
+
+fn delete_tombstone(tombstone: &Path, plan: &GalleryDeletePlan) -> Result<(), CoreError> {
+    for (filename, expected_bytes) in &plan.files {
+        let path = tombstone.join(filename);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(io_error(
+                    "verify confirmed local gallery file",
+                    &path,
+                    error,
+                ));
+            }
+        };
+        if !metadata.file_type().is_file() || metadata.len() != *expected_bytes {
+            return Err(CoreError::new(
+                ErrorCode::IntegrityMismatch,
+                "local gallery changed during confirmed deletion",
+                false,
+            ));
+        }
+        std::fs::remove_file(&path)
+            .map_err(|error| io_error("delete confirmed local gallery file", &path, error))?;
+    }
+    std::fs::remove_dir(tombstone)
+        .map_err(|error| io_error("delete confirmed local gallery directory", tombstone, error))
+}
+
 fn delete_comic_info_by_id(root: &Path, id: uuid::Uuid) -> Result<(), CoreError> {
     let gallery = scan(root)
         .into_iter()
@@ -300,12 +1053,12 @@ fn delete_comic_info_by_id(root: &Path, id: uuid::Uuid) -> Result<(), CoreError>
 
 fn generate_comic_info(
     directory: &Path,
-    gallery: &LocalGallerySnapshot,
+    gallery: &LocalGalleryRecord,
 ) -> Result<ComicInfoSnapshot, CoreError> {
     let metadata_path = directory.join("gallery.json");
     let metadata_bytes = std::fs::read(&metadata_path)
         .map_err(|error| io_error("read gallery metadata", &metadata_path, error))?;
-    let persisted: LocalGallerySnapshot =
+    let persisted: LocalGalleryRecord =
         serde_json::from_slice(&metadata_bytes).map_err(|error| {
             CoreError::new(
                 ErrorCode::Parse,
@@ -332,7 +1085,7 @@ fn generate_comic_info(
             false,
         )
     })?;
-    let pages = image_members(&mut archive)?;
+    let pages = image_members(&mut archive, u64::MAX)?;
     let xml = comic_info_xml(&persisted, pages.len());
     let path = directory.join(COMIC_INFO_FILENAME);
     atomic_bytes(&path, xml.as_bytes())?;
@@ -346,7 +1099,8 @@ fn generate_comic_info(
 
 fn image_members<R: Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
-) -> Result<Vec<(NaturalKey, usize)>, CoreError> {
+    max_page_bytes: u64,
+) -> Result<Vec<ImageMember>, CoreError> {
     if archive.len() > MAX_IMAGE_MEMBERS {
         return Err(CoreError::new(
             ErrorCode::ResponseTooLarge,
@@ -355,6 +1109,8 @@ fn image_members<R: Read + std::io::Seek>(
         ));
     }
     let mut candidates = Vec::new();
+    let mut names = HashSet::new();
+    let mut total_bytes = 0_u64;
     for index in 0..archive.len() {
         let member = archive.by_index_raw(index).map_err(|error| {
             CoreError::new(
@@ -364,14 +1120,48 @@ fn image_members<R: Read + std::io::Seek>(
             )
         })?;
         if !member.is_dir() && safe_image_member(member.name()) {
-            candidates.push((natural_key(member.name()), index));
+            let normalized = member.name().replace('\\', "/");
+            if !names.insert(normalized.clone()) {
+                return Err(CoreError::new(
+                    ErrorCode::IntegrityMismatch,
+                    "gallery ZIP contains duplicate image member names",
+                    false,
+                ));
+            }
+            if member.size() > max_page_bytes {
+                return Err(CoreError::new(
+                    ErrorCode::ResponseTooLarge,
+                    format!("gallery page exceeds the configured {max_page_bytes} byte limit"),
+                    false,
+                ));
+            }
+            total_bytes = total_bytes.checked_add(member.size()).ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::ResponseTooLarge,
+                    "gallery ZIP image sizes overflow the supported total",
+                    false,
+                )
+            })?;
+            if total_bytes > MAX_TOTAL_IMAGE_BYTES {
+                return Err(CoreError::new(
+                    ErrorCode::ResponseTooLarge,
+                    "gallery ZIP declares more than 64 GiB of image data",
+                    false,
+                ));
+            }
+            candidates.push(ImageMember {
+                key: natural_key(&normalized),
+                zip_index: index,
+                filename: normalized,
+                byte_length: member.size(),
+            });
         }
     }
-    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    candidates.sort_by(|left, right| left.key.cmp(&right.key));
     Ok(candidates)
 }
 
-fn comic_info_xml(gallery: &LocalGallerySnapshot, page_count: usize) -> String {
+fn comic_info_xml(gallery: &LocalGalleryRecord, page_count: usize) -> String {
     let mut xml = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<ComicInfo>\n");
     xml_element(&mut xml, "Title", &gallery.title);
     xml_element(
@@ -424,7 +1214,7 @@ fn valid_xml_character(character: char) -> bool {
     matches!(character, '\u{9}' | '\u{a}' | '\u{d}') || character >= '\u{20}'
 }
 
-fn scan(root: &Path) -> Vec<LocalGallerySnapshot> {
+fn scan(root: &Path) -> Vec<LocalGalleryRecord> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
@@ -435,12 +1225,23 @@ fn scan(root: &Path) -> Vec<LocalGallerySnapshot> {
         })
         .filter_map(|entry| {
             let bytes = std::fs::read(entry.path().join("gallery.json")).ok()?;
-            let gallery: LocalGallerySnapshot = serde_json::from_slice(&bytes).ok()?;
-            entry
-                .path()
-                .join(&gallery.archive_filename)
-                .is_file()
-                .then_some(gallery)
+            let mut gallery: LocalGalleryRecord = serde_json::from_slice(&bytes).ok()?;
+            let archive_name = Path::new(&gallery.archive_filename);
+            if archive_name.is_absolute()
+                || archive_name
+                    .parent()
+                    .is_some_and(|parent| parent != Path::new(""))
+                || archive_name.file_name().and_then(|value| value.to_str())
+                    != Some(gallery.archive_filename.as_str())
+            {
+                return None;
+            }
+            let directory = entry.path();
+            if !directory.join(&gallery.archive_filename).is_file() {
+                return None;
+            }
+            gallery.directory = directory.to_string_lossy().into_owned();
+            Some(gallery)
         })
         .collect::<Vec<_>>();
     galleries.sort_by_key(|gallery| std::cmp::Reverse(gallery.updated_at));
@@ -472,6 +1273,30 @@ fn safe_image_member(name: &str) -> bool {
             .as_deref(),
         Some("jpg" | "jpeg" | "png" | "webp" | "gif")
     )
+}
+
+fn safe_sidecar_name(name: &str) -> Option<&str> {
+    let path = Path::new(name);
+    (!name.is_empty()
+        && !path.is_absolute()
+        && path.parent().is_some_and(|parent| parent == Path::new(""))
+        && path.file_name().and_then(|value| value.to_str()) == Some(name))
+    .then_some(name)
+}
+
+fn mime_for_name(name: &str) -> &'static str {
+    match Path::new(name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    }
 }
 
 fn natural_key(value: &str) -> NaturalKey {
@@ -511,7 +1336,7 @@ fn natural_key(value: &str) -> NaturalKey {
     }
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 struct NaturalKey {
     parts: Vec<NaturalPart>,
     original: String,
@@ -531,7 +1356,7 @@ impl PartialOrd for NaturalKey {
     }
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 enum NaturalPart {
     Number {
         significant: String,
@@ -688,6 +1513,38 @@ fn local_gallery_not_found() -> CoreError {
     )
 }
 
+fn local_gallery_page_not_found() -> CoreError {
+    CoreError::new(
+        ErrorCode::ResourceNotFound,
+        "local gallery page was not found",
+        false,
+    )
+}
+
+fn local_gallery_cover_not_found() -> CoreError {
+    CoreError::new(
+        ErrorCode::ResourceNotFound,
+        "local gallery cover was not found",
+        false,
+    )
+}
+
+fn invalid_delete_confirmation() -> CoreError {
+    CoreError::new(
+        ErrorCode::AccessDenied,
+        "local gallery deletion confirmation is invalid or expired",
+        false,
+    )
+}
+
+fn invalid_zip(message: impl Into<String>) -> CoreError {
+    CoreError::new(
+        ErrorCode::Parse,
+        format!("invalid gallery ZIP: {}", message.into()),
+        false,
+    )
+}
+
 fn io_error(action: &str, path: &Path, error: std::io::Error) -> CoreError {
     CoreError::new(
         ErrorCode::Io,
@@ -699,11 +1556,13 @@ fn io_error(action: &str, path: &Path, error: std::io::Error) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
-        consume_blocking, delete_comic_info_by_id, generate_comic_info_by_id, natural_key, scan,
+        atomic_json, consume_blocking, delete_comic_info_by_id, delete_tombstone,
+        gallery_delete_plan, gallery_detail, generate_comic_info_by_id, image_members, natural_key,
+        pending_deletion_tickets, read_gallery_cover, read_gallery_page, scan,
     };
     use crate::{
-        ArchiveTaskSnapshot, ArchiveTaskState, EhArchiveVariant, EhGalleryRef, ProfileKey,
-        archive::ArchiveConsumption,
+        ArchiveTaskSnapshot, ArchiveTaskState, EhArchiveVariant, EhGalleryRef, ErrorCode,
+        ProfileKey, archive::ArchiveConsumption,
     };
     use std::{fs::File, io::Write};
     use tempfile::TempDir;
@@ -811,6 +1670,88 @@ mod tests {
     }
 
     #[test]
+    fn delete_plan_is_stable_and_rejects_nested_content() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("EHArchieve");
+        std::fs::create_dir(&root).unwrap();
+        let archive_path = temp.path().join("delete.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        zip.start_file("1.jpg", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"\xff\xd8\xffpage").unwrap();
+        zip.finish().unwrap();
+        let id = uuid::Uuid::now_v7();
+        let directory = consume_blocking(
+            &root,
+            ArchiveConsumption {
+                task: task(id),
+                archive_path,
+            },
+        )
+        .unwrap();
+        let first = gallery_delete_plan(&root, id).unwrap();
+        let second = gallery_delete_plan(&root, id).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.files.len(), 4);
+        assert!(first.total_bytes > 0);
+
+        std::fs::create_dir(directory.join("nested")).unwrap();
+        assert_eq!(
+            gallery_delete_plan(&root, id).unwrap_err().code(),
+            ErrorCode::IntegrityMismatch
+        );
+    }
+
+    #[test]
+    fn confirmed_delete_ticket_recovers_partial_file_removal_safely() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("EHArchieve");
+        std::fs::create_dir(&root).unwrap();
+        let archive_path = temp.path().join("recover.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        zip.start_file("1.jpg", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"\xff\xd8\xffpage").unwrap();
+        zip.finish().unwrap();
+        let id = uuid::Uuid::now_v7();
+        consume_blocking(
+            &root,
+            ArchiveConsumption {
+                task: task(id),
+                archive_path,
+            },
+        )
+        .unwrap();
+        let plan = gallery_delete_plan(&root, id).unwrap();
+        let token = uuid::Uuid::now_v7();
+        let tombstone = root.join(format!(".delete.{id}.{token}"));
+        let ticket = root.join(format!(".delete.{id}.{token}.json"));
+        atomic_json(&ticket, &plan).unwrap();
+        std::fs::rename(&plan.directory, &tombstone).unwrap();
+        std::fs::remove_file(tombstone.join(&plan.files[0].0)).unwrap();
+
+        let pending = pending_deletion_tickets(&root).unwrap();
+        assert_eq!(pending.len(), 1);
+        delete_tombstone(&pending[0].tombstone, &pending[0].plan).unwrap();
+        assert!(!tombstone.exists());
+
+        let changed = root.join(format!(".delete.{id}.{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir(&changed).unwrap();
+        std::fs::write(changed.join("unexpected"), b"data").unwrap();
+        let changed_ticket = changed.with_file_name(format!(
+            "{}.json",
+            changed.file_name().unwrap().to_string_lossy()
+        ));
+        atomic_json(&changed_ticket, &plan).unwrap();
+        assert_eq!(
+            pending_deletion_tickets(&root).unwrap_err().code(),
+            ErrorCode::IntegrityMismatch
+        );
+    }
+
+    #[test]
     fn comic_info_is_deterministic_deletable_and_does_not_change_zip() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("EHArchieve");
@@ -857,5 +1798,143 @@ mod tests {
             std::fs::read(gallery.join("original fixture.zip")).unwrap(),
             original_zip
         );
+    }
+
+    #[test]
+    fn local_pages_are_safe_sorted_bounded_and_detected_from_bytes() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("EHArchieve");
+        std::fs::create_dir(&root).unwrap();
+        let archive_path = temp.path().join("pages.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        zip.start_file("10.jpg", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"\xff\xd8\xfften").unwrap();
+        zip.start_file("folder/2.png", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"\x89PNG\r\n\x1a\ntwo").unwrap();
+        zip.start_file("../escape.jpg", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"\xff\xd8\xffescape").unwrap();
+        zip.start_file(".hidden/1.jpg", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"\xff\xd8\xffhidden").unwrap();
+        zip.finish().unwrap();
+        let id = uuid::Uuid::now_v7();
+        consume_blocking(
+            &root,
+            ArchiveConsumption {
+                task: task(id),
+                archive_path,
+            },
+        )
+        .unwrap();
+
+        let detail = gallery_detail(&root, id, 0, 100, 1024).unwrap();
+        assert_eq!(detail.total_pages, 2);
+        assert_eq!(detail.pages[0].id, 0);
+        assert_eq!(detail.pages[0].filename, "10.jpg");
+        assert_eq!(detail.pages[1].filename, "folder/2.png");
+        assert!(
+            !serde_json::to_string(&detail)
+                .unwrap()
+                .contains("directory")
+        );
+        let first = read_gallery_page(&root, id, 0, 1024).unwrap();
+        assert_eq!(first.descriptor().mime_type, "image/jpeg");
+        assert_eq!(
+            first.descriptor().kind,
+            super::LocalGalleryResourceKind::Page
+        );
+        assert_eq!(first.descriptor().page_id, Some(0));
+        assert_eq!(first.bytes().as_ref(), b"\xff\xd8\xfften");
+        assert!(read_gallery_page(&root, id, 2, 1024).is_err());
+    }
+
+    #[test]
+    fn local_cover_is_bounded_and_detected_from_actual_bytes() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("EHArchieve");
+        std::fs::create_dir(&root).unwrap();
+        let archive_path = temp.path().join("cover.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        zip.start_file("1.jpg", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"\xff\xd8\xffcover").unwrap();
+        zip.finish().unwrap();
+        let id = uuid::Uuid::now_v7();
+        let directory = consume_blocking(
+            &root,
+            ArchiveConsumption {
+                task: task(id),
+                archive_path,
+            },
+        )
+        .unwrap();
+        let cover = read_gallery_cover(&root, id, 1024).unwrap();
+        assert_eq!(
+            cover.descriptor().kind,
+            super::LocalGalleryResourceKind::Cover
+        );
+        assert_eq!(cover.descriptor().page_id, None);
+        assert_eq!(cover.descriptor().mime_type, "image/jpeg");
+        assert_eq!(cover.bytes().as_ref(), b"\xff\xd8\xffcover");
+
+        std::fs::write(directory.join("thumb.jpg"), b"not an image").unwrap();
+        assert_eq!(
+            read_gallery_cover(&root, id, 1024).unwrap_err().code(),
+            ErrorCode::UnexpectedResponse
+        );
+        std::fs::write(directory.join("thumb.jpg"), [0_u8; 9]).unwrap();
+        assert_eq!(
+            read_gallery_cover(&root, id, 8).unwrap_err().code(),
+            ErrorCode::ResponseTooLarge
+        );
+
+        let metadata_path = directory.join("gallery.json");
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
+        metadata["cover_filename"] = serde_json::Value::String("../outside.jpg".to_owned());
+        std::fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+        assert_eq!(
+            read_gallery_cover(&root, id, 1024).unwrap_err().code(),
+            ErrorCode::IntegrityMismatch
+        );
+    }
+
+    #[test]
+    fn zip_index_rejects_duplicate_names_and_oversized_pages() {
+        let temp = TempDir::new().unwrap();
+        let duplicate = temp.path().join("duplicate.zip");
+        let file = File::create(&duplicate).unwrap();
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file("folder/1.jpg", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"one").unwrap();
+        writer
+            .start_file("folder\\1.jpg", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"two").unwrap();
+        writer.finish().unwrap();
+        let file = File::open(&duplicate).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let error = image_members(&mut archive, 1024).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::IntegrityMismatch);
+
+        let oversized = temp.path().join("oversized.zip");
+        let file = File::create(&oversized).unwrap();
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file("1.jpg", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(&[0_u8; 9]).unwrap();
+        writer.finish().unwrap();
+        let file = File::open(&oversized).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let error = image_members(&mut archive, 8).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ResponseTooLarge);
     }
 }
