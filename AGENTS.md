@@ -51,6 +51,29 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - 图像磁盘缓存使用真实内容的 128-bit MD5，即 32 位小写十六进制文件名加规范化后缀，并按前四位两级分片；Booru original 的 Provider MD5 用于 fetch 前去重及 fetch 后校验。
 - `fvcore` 可以引入支持 Windows、Linux、Android 和 server 的成熟 Rust 依赖；WASM 不在本轮目标。依赖引入前检查目标构建、feature、维护状态、许可证和安全公告。
 
+## fvcore executable 与配置
+
+- Runtime 配置固定为 `fvcore` executable 同目录的 `config.json`，暂不允许通过参数指定其他运行时配置路径；相对存储路径以该目录为基准。
+- `fvcore run` 不挂载 WebUI，HTTP listener 是否启用由配置决定；`fvcore web` 强制启用 HTTP listener 和 WebUI，监听地址仍来自配置。
+- `run` 和 `web` 必须在创建 Runtime、数据库、锁或存储目录前严格解析并完整验证 `config.json`；文件缺失、JSON 错误、未知字段或约束失败均拒绝启动。
+- `fvcore check-config` 默认检查当前工作目录的 `config.json`，也可接受一个显式文件用于离线检查；缺失时报告完整期望路径、目录和 `create-config` 命令。
+- `fvcore create-config` 默认在当前工作目录生成完整 `config.json`，也可接受一个已存在目录；固定 pretty JSON 和结尾换行，安全发布，拒绝覆盖已有配置。
+- `fvcore help` 与 `fvcore --help` 显示同一份中文根帮助；稳定命令名和参数名保持英文。
+- 通过 Cargo 开发运行时，实际 executable 位于 `fvcore/target/debug/`，因此 `cargo run -- run` / `web` 读取 `fvcore/target/debug/config.json`；可先运行 `cargo run -- create-config target/debug`。
+
+## fvcore 控制面
+
+- HTTP API、SSE、resource 和 WebUI 复用同一 Runtime；WebUI 由 Axum 服务端渲染，CSS 编译进 executable，不依赖 Node.js、npm、外部 CDN 或 base64 图片。
+- `control.enabled = false` 不监听 HTTP；`control.enabled = true` 且 WebUI 关闭时为 API-only；`web` 命令强制同时启用 listener 与 WebUI。
+- 当前控制面没有内置认证；默认监听 loopback。暴露到其他网络时由可信反向代理提供 TLS、认证和访问控制。
+- Provider transport 只接受配置 origin 下的请求及 allowlist redirect host，限制 redirect 和响应体大小；Cookie/API secret 只通过配置指向的环境变量注入，不进入 snapshot、缓存键、任务、配置输出或日志。
+
+## 标准验证
+
+- Python 改动至少按影响范围运行 `python -m compileall -q app core tests` 和相关 `python -m unittest`；图像链路基线为 `python -m unittest -v tests.test_async_image tests.test_image_fetcher`。
+- Rust 改动的完整门禁为 `cargo fmt --all -- --check`、`cargo check --all-targets`、`cargo test --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo doc --no-deps`，均在 `fvcore/` 内运行。
+- 文档或代码修改完成后从仓库根运行 `git diff --check`；CRLF 提示本身不是失败，但不得留下 whitespace error。
+
 ## Flet 与 Flutter 扩展
 
 - `app/` 是当前正式产品前端，不是等待独立 Flutter UI 替换的兼容层；已完成的 Python Core/Facade 解耦用于控制业务边界、测试，并为纯 Rust `fvcore` 提供迁移基线。

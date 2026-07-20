@@ -31,7 +31,7 @@
 | 状态 | 工作 | 验收点 |
 |---|---|---|
 | 已完成 | 单 crate library/executable、基础依赖与检查 | format、全部 target check/test、clippy `-D warnings` 通过 |
-| 已完成 | 严格配置、稳定错误、Runtime ID、snapshot | Runtime 只读取 executable 同级必需 `config.json`，暂不允许自定义位置；`run` 不挂载 WebUI，`web` 强制启用 listener + WebUI；`check-config` 完整验证，`create-config` 确定性生成且拒绝覆盖 |
+| 已完成 | 严格配置、稳定错误、Runtime ID、snapshot | Runtime 只读取 executable 同级必需 `config.json`，`run/web` 分配资源前完整验证；`run` 不挂载 WebUI，`web` 强制启用 listener + WebUI；无参数 `check-config` 检查当前目录并给出创建提示，`create-config` 确定性生成且拒绝覆盖 |
 | 已完成 | `CoreRuntime`、`CoreHandle` 与集成 HTTP | 有界命令队列、协作关闭、health/status 路由通过真实 loopback 测试 |
 | 已完成 | 四域存储、实例锁与 `redb` schema v1 | 第二 Runtime 被拒绝，关闭后可重新取得同一 Data 域 |
 | 已完成 | Command/Event/Operation 模型 | 状态机、deadline、取消、overload、revision、event cursor/SSE 和 fake operation 测试 |

@@ -12,6 +12,11 @@ dependencies = [
     "Pillow",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*", "core*"]
+namespaces = true
+
 [project.optional-dependencies]
 web = [
     "flet-web==0.85.3",

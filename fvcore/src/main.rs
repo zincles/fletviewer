@@ -50,18 +50,18 @@ enum Command {
         help_template = "{about}\n\n用法: {usage}\n\n参数:\n{positionals}\n\n选项:\n{options}"
     )]
     CheckConfig {
-        /// 要验证的 JSON 配置文件。
+        /// 要验证的 JSON 配置文件；省略时检查当前目录的 config.json。
         #[arg(value_name = "文件")]
-        file: PathBuf,
+        file: Option<PathBuf>,
     },
     /// 在现有目录中创建完整的默认 config.json。
     #[command(
         help_template = "{about}\n\n用法: {usage}\n\n参数:\n{positionals}\n\n选项:\n{options}"
     )]
     CreateConfig {
-        /// 用于保存 config.json 的现有目录。
+        /// 用于保存 config.json 的现有目录；省略时使用当前目录。
         #[arg(value_name = "目录")]
-        directory: PathBuf,
+        directory: Option<PathBuf>,
     },
 }
 
@@ -97,12 +97,14 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
             return Ok(());
         }
         Some(Command::CheckConfig { file }) => {
-            check_config(file)?;
-            println!("configuration is valid: {}", file.display());
+            let path = check_config_path(file.as_deref())?;
+            check_config(&path)?;
+            println!("配置文件有效: {}", path.display());
             return Ok(());
         }
         Some(Command::CreateConfig { directory }) => {
-            let path = create_config(directory)?;
+            let directory = create_config_directory(directory.as_deref())?;
+            let path = create_config(&directory)?;
             println!("configuration created: {}", path.display());
             return Ok(());
         }
@@ -150,8 +152,9 @@ fn check_config(path: &Path) -> Result<(), CoreError> {
         return Err(CoreError::new(
             fvcore::ErrorCode::Io,
             format!(
-                "未找到配置文件: {}；配置文件应位于目录: {}",
+                "未找到配置文件: {}；配置文件应位于目录: {}；请执行 `fvcore create-config {}` 创建默认配置",
                 path.display(),
+                directory.display(),
                 directory.display()
             ),
             false,
@@ -160,6 +163,21 @@ fn check_config(path: &Path) -> Result<(), CoreError> {
     let mut config = CoreConfig::from_json_file(&path)?;
     config.resolve_storage_paths(path.parent().unwrap_or_else(|| Path::new(".")));
     config.validate()
+}
+
+fn check_config_path(path: Option<&Path>) -> Result<PathBuf, CoreError> {
+    match path {
+        Some(path) => absolute_path(path),
+        None => std::env::current_dir()
+            .map(|directory| directory.join("config.json"))
+            .map_err(|error| {
+                CoreError::new(
+                    fvcore::ErrorCode::Io,
+                    format!("无法确定当前目录中的 config.json: {error}"),
+                    false,
+                )
+            }),
+    }
 }
 
 fn absolute_path(path: &Path) -> Result<PathBuf, CoreError> {
@@ -269,6 +287,19 @@ fn create_config(directory: &Path) -> Result<PathBuf, CoreError> {
     Ok(path)
 }
 
+fn create_config_directory(directory: Option<&Path>) -> Result<PathBuf, CoreError> {
+    match directory {
+        Some(directory) => absolute_path(directory),
+        None => std::env::current_dir().map_err(|error| {
+            CoreError::new(
+                fvcore::ErrorCode::Io,
+                format!("无法确定用于创建 config.json 的当前目录: {error}"),
+                false,
+            )
+        }),
+    }
+}
+
 fn load_config(web: bool) -> Result<CoreConfig, CoreError> {
     let executable = std::env::current_exe().map_err(|error| {
         CoreError::new(
@@ -309,6 +340,7 @@ fn load_config_for_executable(executable: &Path, web: bool) -> Result<CoreConfig
     } else {
         config.control.webui_enabled = false;
     }
+    config.validate()?;
     Ok(config)
 }
 
@@ -319,7 +351,10 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, check_config, create_config, load_config_for_executable};
+    use super::{
+        Cli, check_config, check_config_path, create_config, create_config_directory,
+        load_config_for_executable,
+    };
     use clap::{CommandFactory, Parser};
     use std::fs;
     use tempfile::TempDir;
@@ -378,7 +413,9 @@ mod tests {
     fn parses_configuration_management_commands() {
         assert!(Cli::try_parse_from(["fvcore", "help"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "web"]).is_ok());
+        assert!(Cli::try_parse_from(["fvcore", "check-config"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "check-config", "custom.json"]).is_ok());
+        assert!(Cli::try_parse_from(["fvcore", "create-config"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "create-config", "."]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "check"]).is_err());
     }
@@ -437,6 +474,13 @@ mod tests {
     }
 
     #[test]
+    fn create_config_without_argument_targets_current_directory() {
+        let directory = create_config_directory(None).unwrap();
+        assert!(directory.is_absolute());
+        assert_eq!(directory, std::env::current_dir().unwrap());
+    }
+
+    #[test]
     fn check_config_rejects_unknown_fields_and_invalid_values() {
         let temp = TempDir::new().unwrap();
         let unknown = temp.path().join("unknown.json");
@@ -467,6 +511,7 @@ mod tests {
                 .contains(&temp.path().join("nested").display().to_string())
         );
         assert!(error.message().contains("配置文件应位于目录"));
+        assert!(error.message().contains("fvcore create-config"));
     }
 
     #[test]
@@ -480,5 +525,23 @@ mod tests {
                 .message()
                 .contains(&temp.path().join("config.json").display().to_string())
         );
+    }
+
+    #[test]
+    fn check_config_without_argument_targets_current_config_json() {
+        let path = check_config_path(None).unwrap();
+        assert_eq!(
+            path.file_name().and_then(|value| value.to_str()),
+            Some("config.json")
+        );
+        assert!(path.is_absolute());
+    }
+
+    #[test]
+    fn runtime_rejects_invalid_adjacent_config_before_startup() {
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("config.json"), r#"{"command_capacity":0}"#).unwrap();
+        let error = load_config_for_executable(&temp.path().join("fvcore.exe"), false).unwrap_err();
+        assert_eq!(error.code(), fvcore::ErrorCode::InvalidConfig);
     }
 }

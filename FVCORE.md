@@ -136,7 +136,7 @@ gelbooru/default
 
 可执行模式只使用严格 JSON 配置，Runtime 配置来源固定为 executable 同目录的 `config.json`，暂不允许通过参数指定其他位置；文件缺失则拒绝启动并报告期望路径。`run` 不挂载 WebUI，HTTP listener 是否启动由配置决定；`web` 强制启用 listener 和 WebUI，监听地址仍只来自配置。Runtime 默认创建 `eh/default`、`pixiv/default`、`danbooru/default`、`gelbooru/default` 四个无 secret 会话；JSON 省略 `profiles` 时沿用这些默认值，显式提供 `profiles` 时由配置完整替换默认 profile map。配置中的相对存储路径以 executable/config 所在目录为基准。默认存在只表示会话和 origin 可用，不得把尚未实现的方法伪装为已完成。
 
-核心 executable 自主管理默认配置：`fvcore check-config <file.json>` 严格解析并完整验证指定文件，不创建 Runtime 或存储目录；`fvcore create-config <directory>` 在已存在目录中确定性生成完整默认 `config.json`，使用安全发布并拒绝覆盖已有配置。
+核心 executable 自主管理默认配置：`fvcore check-config` 检查当前目录的 `config.json`，缺失时报告完整路径并提示 `create-config`；也可用 `fvcore check-config <file.json>` 离线检查指定文件。`fvcore create-config` 默认在当前目录确定性生成完整 `config.json`，也可显式提供已存在目录；使用安全发布并拒绝覆盖已有配置。`run` 和 `web` 必须在分配 Runtime 或存储资源前严格解析并完整验证 executable 同级配置，缺失或非法均拒绝启动。
 
 不得持有 registry/session 锁跨越网络 `.await`。锁只保护短时状态交换，网络请求取得 `Arc<SessionGeneration>` 后独立运行。
 
