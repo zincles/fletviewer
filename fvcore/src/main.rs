@@ -3,12 +3,18 @@
 #![forbid(unsafe_code)]
 
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
+use fs2::FileExt;
 use fvcore::{CoreBuilder, CoreConfig, CoreError};
 use std::{
+    fs::File,
     path::{Path, PathBuf},
     process::ExitCode,
 };
 use tracing_subscriber::EnvFilter;
+
+const CONFIG_FILENAME: &str = "config.json";
+const CONFIG_BACKUP_FILENAME: &str = ".config.json.override-backup";
+const CONFIG_LOCK_FILENAME: &str = ".config.json.lock";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -50,7 +56,7 @@ enum Command {
         help_template = "{about}\n\n用法: {usage}\n\n参数:\n{positionals}\n\n选项:\n{options}"
     )]
     CheckConfig {
-        /// 要验证的 JSON 配置文件；省略时检查当前目录的 config.json。
+        /// 要验证的 JSON 配置文件；省略时检查 executable 同级的 config.json。
         #[arg(value_name = "文件")]
         file: Option<PathBuf>,
     },
@@ -59,9 +65,12 @@ enum Command {
         help_template = "{about}\n\n用法: {usage}\n\n参数:\n{positionals}\n\n选项:\n{options}"
     )]
     CreateConfig {
-        /// 用于保存 config.json 的现有目录；省略时使用当前目录。
+        /// 用于保存 config.json 的现有目录；省略时使用 executable 所在目录。
         #[arg(value_name = "目录")]
         directory: Option<PathBuf>,
+        /// 将现有配置安全重置为完整默认配置；不合并或保留旧字段。
+        #[arg(long = "override")]
+        override_existing: bool,
     },
 }
 
@@ -102,10 +111,17 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
             println!("配置文件有效: {}", path.display());
             return Ok(());
         }
-        Some(Command::CreateConfig { directory }) => {
+        Some(Command::CreateConfig {
+            directory,
+            override_existing,
+        }) => {
             let directory = create_config_directory(directory.as_deref())?;
-            let path = create_config(&directory)?;
-            println!("configuration created: {}", path.display());
+            let result = create_config(&directory, *override_existing)?;
+            if result.replaced {
+                println!("已用完整默认配置覆盖: {}", result.path.display());
+            } else {
+                println!("已创建配置文件: {}", result.path.display());
+            }
             return Ok(());
         }
         Some(Command::Run) | Some(Command::Web) | None => {}
@@ -147,8 +163,17 @@ fn check_config(path: &Path) -> Result<(), CoreError> {
             false,
         ));
     }
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let _lock = if directory.is_dir()
+        && path.file_name().and_then(|value| value.to_str()) == Some(CONFIG_FILENAME)
+    {
+        let lock = lock_config(directory)?;
+        recover_config_override(directory)?;
+        Some(lock)
+    } else {
+        None
+    };
     if !path.is_file() {
-        let directory = path.parent().unwrap_or_else(|| Path::new("."));
         return Err(CoreError::new(
             fvcore::ErrorCode::Io,
             format!(
@@ -160,23 +185,13 @@ fn check_config(path: &Path) -> Result<(), CoreError> {
             false,
         ));
     }
-    let mut config = CoreConfig::from_json_file(&path)?;
-    config.resolve_storage_paths(path.parent().unwrap_or_else(|| Path::new(".")));
-    config.validate()
+    validate_config_file(&path)
 }
 
 fn check_config_path(path: Option<&Path>) -> Result<PathBuf, CoreError> {
     match path {
         Some(path) => absolute_path(path),
-        None => std::env::current_dir()
-            .map(|directory| directory.join("config.json"))
-            .map_err(|error| {
-                CoreError::new(
-                    fvcore::ErrorCode::Io,
-                    format!("无法确定当前目录中的 config.json: {error}"),
-                    false,
-                )
-            }),
+        None => executable_directory().map(|directory| directory.join(CONFIG_FILENAME)),
     }
 }
 
@@ -195,7 +210,29 @@ fn absolute_path(path: &Path) -> Result<PathBuf, CoreError> {
         })
 }
 
-fn create_config(directory: &Path) -> Result<PathBuf, CoreError> {
+#[derive(Debug)]
+struct ConfigCreateResult {
+    path: PathBuf,
+    replaced: bool,
+}
+
+#[derive(Debug)]
+struct ConfigLock {
+    file: File,
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        if let Err(error) = FileExt::unlock(&self.file) {
+            tracing::warn!(%error, "failed to release configuration lock");
+        }
+    }
+}
+
+fn create_config(
+    directory: &Path,
+    override_existing: bool,
+) -> Result<ConfigCreateResult, CoreError> {
     if !directory.is_dir() {
         return Err(CoreError::new(
             fvcore::ErrorCode::InvalidInput,
@@ -206,11 +243,30 @@ fn create_config(directory: &Path) -> Result<PathBuf, CoreError> {
             false,
         ));
     }
-    let path = directory.join("config.json");
-    if path.exists() {
+    let _lock = lock_config(directory)?;
+    recover_config_override(directory)?;
+    let path = directory.join(CONFIG_FILENAME);
+    let replaced = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_file() => true,
+        Ok(_) => {
+            return Err(CoreError::new(
+                fvcore::ErrorCode::InvalidInput,
+                format!("现有配置不是普通文件，拒绝覆盖: {}", path.display()),
+                false,
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(config_io_error("检查现有配置", &path, error)),
+    };
+    if replaced && !override_existing {
         return Err(CoreError::new(
             fvcore::ErrorCode::InvalidInput,
-            format!("configuration already exists: {}", path.display()),
+            format!(
+                "配置文件已存在，拒绝覆盖: {}；可执行 `fvcore check-config {}` 验证现有配置；若要丢弃现有配置并重置为完整默认配置，请执行 `fvcore create-config {} --override`",
+                path.display(),
+                path.display(),
+                directory.display()
+            ),
             false,
         ));
     }
@@ -222,7 +278,7 @@ fn create_config(directory: &Path) -> Result<PathBuf, CoreError> {
         )
     })?;
     bytes.push(b'\n');
-    let temporary = directory.join(".config.json.tmp");
+    let temporary = directory.join(format!(".config.{}.tmp", uuid::Uuid::now_v7()));
     let result = (|| {
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
@@ -259,58 +315,179 @@ fn create_config(directory: &Path) -> Result<PathBuf, CoreError> {
                 false,
             )
         })?;
-        std::fs::hard_link(&temporary, &path).map_err(|error| {
-            CoreError::new(
-                fvcore::ErrorCode::Io,
-                format!(
-                    "failed to publish configuration {}: {error}",
-                    path.display()
-                ),
-                false,
-            )
-        })?;
-        std::fs::remove_file(&temporary).map_err(|error| {
-            CoreError::new(
-                fvcore::ErrorCode::Io,
-                format!(
-                    "configuration was created but temporary file {} could not be removed: {error}",
-                    temporary.display()
-                ),
-                false,
-            )
-        })
+        validate_config_file(&temporary)?;
+        if replaced {
+            replace_config(&temporary, &path, directory)
+        } else {
+            std::fs::hard_link(&temporary, &path)
+                .map_err(|error| config_io_error("发布配置", &path, error))?;
+            std::fs::remove_file(&temporary).map_err(|error| {
+                CoreError::new(
+                    fvcore::ErrorCode::Io,
+                    format!(
+                        "configuration was created but temporary file {} could not be removed: {error}",
+                        temporary.display()
+                    ),
+                    false,
+                )
+            })
+        }
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
     result?;
-    Ok(path)
+    validate_config_file(&path)?;
+    Ok(ConfigCreateResult { path, replaced })
+}
+
+fn replace_config(temporary: &Path, path: &Path, directory: &Path) -> Result<(), CoreError> {
+    let backup = directory.join(CONFIG_BACKUP_FILENAME);
+    std::fs::rename(path, &backup).map_err(|error| config_io_error("备份现有配置", path, error))?;
+    if let Err(error) = std::fs::rename(temporary, path) {
+        let rollback = std::fs::rename(&backup, path);
+        return Err(if let Err(rollback) = rollback {
+            CoreError::new(
+                fvcore::ErrorCode::Io,
+                format!(
+                    "发布覆盖配置失败: {error}；恢复旧配置也失败: {rollback}；恢复副本位于 {}",
+                    backup.display()
+                ),
+                false,
+            )
+        } else {
+            config_io_error("发布覆盖配置，旧配置已恢复", path, error)
+        });
+    }
+    std::fs::remove_file(&backup).map_err(|error| {
+        CoreError::new(
+            fvcore::ErrorCode::Io,
+            format!(
+                "新配置已发布，但无法删除恢复副本 {}: {error}；下次配置操作会自动恢复事务",
+                backup.display()
+            ),
+            false,
+        )
+    })
+}
+
+fn lock_config(directory: &Path) -> Result<ConfigLock, CoreError> {
+    let path = directory.join(CONFIG_LOCK_FILENAME);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|error| config_io_error("打开配置锁", &path, error))?;
+    file.try_lock_exclusive().map_err(|error| {
+        CoreError::new(
+            fvcore::ErrorCode::AlreadyRunning,
+            format!(
+                "另一个 fvcore 进程正在管理该目录的配置 {}: {error}",
+                directory.display()
+            ),
+            true,
+        )
+    })?;
+    Ok(ConfigLock { file })
+}
+
+fn recover_config_override(directory: &Path) -> Result<(), CoreError> {
+    let path = directory.join(CONFIG_FILENAME);
+    let backup = directory.join(CONFIG_BACKUP_FILENAME);
+    let backup_metadata = match std::fs::symlink_metadata(&backup) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(config_io_error("检查配置恢复副本", &backup, error)),
+    };
+    if !backup_metadata.file_type().is_file() {
+        return Err(CoreError::new(
+            fvcore::ErrorCode::InvalidInput,
+            format!(
+                "配置恢复副本不是普通文件，拒绝自动处理: {}",
+                backup.display()
+            ),
+            false,
+        ));
+    }
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::rename(&backup, &path)
+                .map_err(|error| config_io_error("恢复中断覆盖前的配置", &path, error))
+        }
+        Err(error) => Err(config_io_error("检查当前配置", &path, error)),
+        Ok(metadata) if !metadata.file_type().is_file() => Err(CoreError::new(
+            fvcore::ErrorCode::InvalidInput,
+            format!(
+                "当前配置不是普通文件，无法处理恢复副本: {}；恢复副本保留在 {}",
+                path.display(),
+                backup.display()
+            ),
+            false,
+        )),
+        Ok(_) if validate_config_file(&path).is_ok() => std::fs::remove_file(&backup)
+            .map_err(|error| config_io_error("清理已完成覆盖的恢复副本", &backup, error)),
+        Ok(_) => restore_invalid_config(&path, &backup, directory),
+    }
+}
+
+fn restore_invalid_config(path: &Path, backup: &Path, directory: &Path) -> Result<(), CoreError> {
+    let invalid = directory.join(format!(".config.{}.invalid", uuid::Uuid::now_v7()));
+    std::fs::rename(path, &invalid)
+        .map_err(|error| config_io_error("暂存未完成的覆盖配置", path, error))?;
+    if let Err(error) = std::fs::rename(backup, path) {
+        let _ = std::fs::rename(&invalid, path);
+        return Err(config_io_error("恢复覆盖前的配置", path, error));
+    }
+    std::fs::remove_file(&invalid)
+        .map_err(|error| config_io_error("清理未完成的覆盖配置", &invalid, error))
+}
+
+fn validate_config_file(path: &Path) -> Result<(), CoreError> {
+    let mut config = CoreConfig::from_json_file(path)?;
+    config.resolve_storage_paths(path.parent().unwrap_or_else(|| Path::new(".")));
+    config.validate()
+}
+
+fn config_io_error(action: &str, path: &Path, error: std::io::Error) -> CoreError {
+    CoreError::new(
+        fvcore::ErrorCode::Io,
+        format!("无法{action} {}: {error}", path.display()),
+        false,
+    )
 }
 
 fn create_config_directory(directory: Option<&Path>) -> Result<PathBuf, CoreError> {
     match directory {
         Some(directory) => absolute_path(directory),
-        None => std::env::current_dir().map_err(|error| {
-            CoreError::new(
-                fvcore::ErrorCode::Io,
-                format!("无法确定用于创建 config.json 的当前目录: {error}"),
-                false,
-            )
-        }),
+        None => executable_directory(),
     }
 }
 
-fn load_config(web: bool) -> Result<CoreConfig, CoreError> {
+fn executable_directory() -> Result<PathBuf, CoreError> {
     let executable = std::env::current_exe().map_err(|error| {
         CoreError::new(
             fvcore::ErrorCode::Io,
-            format!("failed to locate fvcore executable: {error}"),
+            format!("无法确定 fvcore executable 路径: {error}"),
             false,
         )
     })?;
-    load_config_for_executable(&executable, web)
+    executable.parent().map(Path::to_owned).ok_or_else(|| {
+        CoreError::new(
+            fvcore::ErrorCode::Io,
+            format!("fvcore executable 路径没有父目录: {}", executable.display()),
+            false,
+        )
+    })
 }
 
+fn load_config(web: bool) -> Result<CoreConfig, CoreError> {
+    let executable_directory = executable_directory()?;
+    load_config_from_directory(&executable_directory, web)
+}
+
+#[cfg(test)]
 fn load_config_for_executable(executable: &Path, web: bool) -> Result<CoreConfig, CoreError> {
     let executable_directory = executable.parent().ok_or_else(|| {
         CoreError::new(
@@ -319,7 +496,16 @@ fn load_config_for_executable(executable: &Path, web: bool) -> Result<CoreConfig
             false,
         )
     })?;
-    let config_path = executable_directory.join("config.json");
+    load_config_from_directory(executable_directory, web)
+}
+
+fn load_config_from_directory(
+    executable_directory: &Path,
+    web: bool,
+) -> Result<CoreConfig, CoreError> {
+    let _lock = lock_config(executable_directory)?;
+    recover_config_override(executable_directory)?;
+    let config_path = executable_directory.join(CONFIG_FILENAME);
     if !config_path.is_file() {
         return Err(CoreError::new(
             fvcore::ErrorCode::Io,
@@ -352,8 +538,9 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, check_config, check_config_path, create_config, create_config_directory,
-        load_config_for_executable,
+        CONFIG_BACKUP_FILENAME, Cli, check_config, check_config_path, create_config,
+        create_config_directory, executable_directory, load_config_for_executable, lock_config,
+        recover_config_override,
     };
     use clap::{CommandFactory, Parser};
     use std::fs;
@@ -417,6 +604,8 @@ mod tests {
         assert!(Cli::try_parse_from(["fvcore", "check-config", "custom.json"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "create-config"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "create-config", "."]).is_ok());
+        assert!(Cli::try_parse_from(["fvcore", "create-config", "--override"]).is_ok());
+        assert!(Cli::try_parse_from(["fvcore", "create-config", ".", "--override"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "check"]).is_err());
     }
 
@@ -443,6 +632,10 @@ mod tests {
             assert!(!help.contains("Usage:"));
             assert!(!help.contains("Arguments:"));
             assert!(!help.contains("Options:"));
+            if name == "create-config" {
+                assert!(help.contains("--override"));
+                assert!(help.contains("重置为完整默认配置"));
+            }
         }
     }
 
@@ -461,23 +654,107 @@ mod tests {
     fn creates_deterministic_valid_config_without_overwriting() {
         let first = TempDir::new().unwrap();
         let second = TempDir::new().unwrap();
-        let first_path = create_config(first.path()).unwrap();
-        let second_path = create_config(second.path()).unwrap();
+        let first_path = create_config(first.path(), false).unwrap().path;
+        let second_path = create_config(second.path(), false).unwrap().path;
         let first_bytes = fs::read(&first_path).unwrap();
         assert_eq!(first_bytes, fs::read(&second_path).unwrap());
         assert_eq!(first_bytes.last(), Some(&b'\n'));
         check_config(&first_path).unwrap();
-        let error = create_config(first.path()).unwrap_err();
+        let error = create_config(first.path(), false).unwrap_err();
         assert_eq!(error.code(), fvcore::ErrorCode::InvalidInput);
+        assert!(error.message().contains("--override"));
         assert_eq!(fs::read(&first_path).unwrap(), first_bytes);
         assert!(!first.path().join(".config.json.tmp").exists());
     }
 
     #[test]
-    fn create_config_without_argument_targets_current_directory() {
+    fn override_resets_existing_config_to_complete_defaults() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.json");
+        fs::write(&path, r#"{"instance_name":"custom"}"#).unwrap();
+
+        let result = create_config(temp.path(), true).unwrap();
+
+        assert!(result.replaced);
+        assert_eq!(result.path, path);
+        assert_ne!(
+            fs::read_to_string(&path).unwrap(),
+            r#"{"instance_name":"custom"}"#
+        );
+        check_config(&path).unwrap();
+        assert!(!temp.path().join(CONFIG_BACKUP_FILENAME).exists());
+    }
+
+    #[test]
+    fn configuration_directory_lock_rejects_a_second_manager() {
+        let temp = TempDir::new().unwrap();
+        let _lock = lock_config(temp.path()).unwrap();
+
+        let error = lock_config(temp.path()).unwrap_err();
+
+        assert_eq!(error.code(), fvcore::ErrorCode::AlreadyRunning);
+    }
+
+    #[test]
+    fn interrupted_override_restores_the_previous_config_when_destination_is_missing() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.json");
+        let backup = temp.path().join(CONFIG_BACKUP_FILENAME);
+        let original = r#"{"instance_name":"original"}"#;
+        fs::write(&backup, original).unwrap();
+
+        recover_config_override(temp.path()).unwrap();
+
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn completed_override_discards_the_recovery_copy() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.json");
+        let backup = temp.path().join(CONFIG_BACKUP_FILENAME);
+        fs::write(
+            &path,
+            serde_json::to_vec(&fvcore::CoreConfig::default()).unwrap(),
+        )
+        .unwrap();
+        fs::write(&backup, r#"{"instance_name":"original"}"#).unwrap();
+
+        recover_config_override(temp.path()).unwrap();
+
+        check_config(&path).unwrap();
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn interrupted_invalid_override_restores_the_previous_config() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.json");
+        let backup = temp.path().join(CONFIG_BACKUP_FILENAME);
+        let original = r#"{"instance_name":"original"}"#;
+        fs::write(&path, b"{").unwrap();
+        fs::write(&backup, original).unwrap();
+
+        recover_config_override(temp.path()).unwrap();
+
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+        assert!(!backup.exists());
+        assert_eq!(
+            fs::read_dir(temp.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".invalid"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn create_config_without_argument_targets_executable_directory() {
         let directory = create_config_directory(None).unwrap();
         assert!(directory.is_absolute());
-        assert_eq!(directory, std::env::current_dir().unwrap());
+        assert_eq!(directory, executable_directory().unwrap());
     }
 
     #[test]
@@ -528,13 +805,9 @@ mod tests {
     }
 
     #[test]
-    fn check_config_without_argument_targets_current_config_json() {
+    fn check_config_without_argument_targets_executable_config_json() {
         let path = check_config_path(None).unwrap();
-        assert_eq!(
-            path.file_name().and_then(|value| value.to_str()),
-            Some("config.json")
-        );
-        assert!(path.is_absolute());
+        assert_eq!(path, executable_directory().unwrap().join("config.json"));
     }
 
     #[test]

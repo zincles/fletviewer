@@ -46,9 +46,12 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - 最终范围覆盖 Python Core 的全部正式能力，包括 Provider、网络、图像、缓存、下载、ZIP/CBZ、本地画廊、历史和存储；迁移按纵向能力分批验收，不把早期批次范围视为永久裁剪。
 - 标准 `fvcore` executable 必须始终编译 HTTP 控制面；是否监听只由 args/配置决定，不通过 Cargo feature 形成缺少控制面的正式内核变体。
 - Runtime 是配置、Provider profile/session、operation、图像缓存和下载任务的唯一 owner；通常一进程一个 Runtime，外部使用可克隆 handle，不使用 Rust `static` 全局可变单例或 Core-wide 大锁。
-- 同一 Provider profile 共用连接池、认证、代理、限流和 session generation；EH 搜索/详情/图片/Archive 必须复用同一逻辑会话，配置变化创建新 generation，旧请求自然持有旧 generation 至完成。
+- 同一 Provider profile 共用连接池、认证、代理、限流和 session generation；EH 搜索/详情/图片/Archive 必须复用同一逻辑会话，配置变化创建新 generation，旧请求自然持有旧 generation 至完成。标准 E-Hentai 页面 origin 为 `e-hentai.org`，图片 JSON API 为 `api.e-hentai.org/api.php`；ExHentai 图片 API 使用其 origin 下的 `/api.php`。
 - 图片链路按 memory -> disk -> network；网络未命中优先 fetch 到有界内存、发布共享不可变 bytes，再可选异步落盘。所有内存、在途 bytes、队列和并发必须有硬上限。
 - 图像磁盘缓存使用真实内容的 128-bit MD5，即 32 位小写十六进制文件名加规范化后缀，并按前四位两级分片；Booru original 的 Provider MD5 用于 fetch 前去重及 fetch 后校验。
+- 本地画廊 Archive 导出使用不暴露服务器 `Path` 的有界异步 stream handle；句柄生命周期持有画廊共享占用，HTTP 直接流式返回附件，桌面/Android 嵌入者把同一流写入平台选择的目标，不允许 Core 接受任意外部绝对输出路径。
+- `redb` 的本地画廊登记表是“已导入”的权威状态，只保存 gallery ID 到受管根目录直接子目录名；WebUI inventory 扫描可报告已登记健康、已登记损坏、未登记可导入和格式无效，导入只接受已完整校验的 gallery ID，不接受调用方路径。
+- 当前生效配置可以通过只读脱敏 snapshot 展示；允许显示环境变量名和凭据是否已加载，不得显示 Cookie/API secret、API user 值、代理 URL/凭据或带 userinfo/query 的 Provider URL。
 - `fvcore` 可以引入支持 Windows、Linux、Android 和 server 的成熟 Rust 依赖；WASM 不在本轮目标。依赖引入前检查目标构建、feature、维护状态、许可证和安全公告。
 
 ## fvcore executable 与配置
@@ -56,10 +59,10 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - Runtime 配置固定为 `fvcore` executable 同目录的 `config.json`，暂不允许通过参数指定其他运行时配置路径；相对存储路径以该目录为基准。
 - `fvcore run` 不挂载 WebUI，HTTP listener 是否启用由配置决定；`fvcore web` 强制启用 HTTP listener 和 WebUI，监听地址仍来自配置。
 - `run` 和 `web` 必须在创建 Runtime、数据库、锁或存储目录前严格解析并完整验证 `config.json`；文件缺失、JSON 错误、未知字段或约束失败均拒绝启动。
-- `fvcore check-config` 默认检查当前工作目录的 `config.json`，也可接受一个显式文件用于离线检查；缺失时报告完整期望路径、目录和 `create-config` 命令。
-- `fvcore create-config` 默认在当前工作目录生成完整 `config.json`，也可接受一个已存在目录；固定 pretty JSON 和结尾换行，安全发布，拒绝覆盖已有配置。
+- `fvcore check-config` 默认检查 executable 同级的 `config.json`，也可接受一个显式文件用于离线检查；缺失时报告完整期望路径、目录和 `create-config` 命令。
+- `fvcore create-config` 默认在 executable 同级生成完整 `config.json`，也可接受一个已存在目录；固定 pretty JSON 和结尾换行，使用唯一临时文件安全发布，默认拒绝覆盖已有配置。只有显式 `--override` 才将已有配置安全重置为完整默认值，不做字段合并；覆盖使用目录锁、同目录恢复副本和启动时事务恢复，不得先删旧文件。
 - `fvcore help` 与 `fvcore --help` 显示同一份中文根帮助；稳定命令名和参数名保持英文。
-- 通过 Cargo 开发运行时，实际 executable 位于 `fvcore/target/debug/`，因此 `cargo run -- run` / `web` 读取 `fvcore/target/debug/config.json`；可先运行 `cargo run -- create-config target/debug`。
+- 通过 Cargo 开发运行时，实际 executable 位于 `fvcore/target/debug/`，因此无参数 `cargo run -- create-config`、`check-config`、`run` 和 `web` 均使用 `fvcore/target/debug/config.json`。
 
 ## fvcore 控制面
 

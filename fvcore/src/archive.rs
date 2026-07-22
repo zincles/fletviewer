@@ -423,9 +423,11 @@ impl ArchiveService {
     pub(crate) async fn mark_local_gallery_deleted(
         &self,
         id: Uuid,
-    ) -> Result<ArchiveTaskSnapshot, CoreError> {
+    ) -> Result<Option<ArchiveTaskSnapshot>, CoreError> {
         let mut tasks = self.tasks.lock().await;
-        let task = tasks.get_mut(&id).ok_or_else(task_not_found)?;
+        let Some(task) = tasks.get_mut(&id) else {
+            return Ok(None);
+        };
         if task.snapshot.state != ArchiveTaskState::Consumed {
             return Err(CoreError::new(
                 ErrorCode::InvalidInput,
@@ -434,7 +436,7 @@ impl ArchiveService {
             ));
         }
         if task.snapshot.final_path.is_none() {
-            return Ok(task.snapshot.clone());
+            return Ok(Some(task.snapshot.clone()));
         }
         task.snapshot.final_path = None;
         task.snapshot.revision += 1;
@@ -443,7 +445,7 @@ impl ArchiveService {
         let snapshot = task.snapshot.clone();
         drop(tasks);
         self.publish(snapshot.clone()).await;
-        Ok(snapshot)
+        Ok(Some(snapshot))
     }
 
     async fn run_submission(self: Arc<Self>, id: Uuid, cancellation: CancellationToken) {

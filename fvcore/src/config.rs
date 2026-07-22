@@ -47,7 +47,11 @@ fn default_cache_write_queue() -> usize {
 
 fn default_profiles() -> BTreeMap<String, ProviderProfileConfig> {
     [
-        ("eh", "https://e-hentai.org/", Vec::new()),
+        (
+            "eh",
+            "https://e-hentai.org/",
+            vec!["api.e-hentai.org".to_owned()],
+        ),
         (
             "pixiv",
             "https://www.pixiv.net/",
@@ -107,6 +111,137 @@ pub struct CoreConfig {
     pub images: ImageConfig,
     /// Configured Provider profiles. Defaults to EH, Pixiv, Danbooru and Gelbooru.
     pub profiles: BTreeMap<String, ProviderProfileConfig>,
+}
+
+/// Safe point-in-time view of the effective Runtime configuration.
+#[derive(Clone, Debug, Serialize)]
+pub struct EffectiveConfigSnapshot {
+    /// Configuration schema version.
+    pub schema_version: u32,
+    /// Human-readable instance name.
+    pub instance_name: String,
+    /// Runtime command queue capacity.
+    pub command_capacity: usize,
+    /// Graceful shutdown deadline in seconds.
+    pub shutdown_seconds: u64,
+    /// Integrated control-plane configuration.
+    pub control: ControlConfig,
+    /// Canonical Core-owned storage domains and database state.
+    pub storage: crate::StorageSnapshot,
+    /// Temporary operation limits.
+    pub operations: OperationConfig,
+    /// Event journal limits.
+    pub events: EventConfig,
+    /// Shared network limits without proxy credentials.
+    pub network: EffectiveNetworkConfig,
+    /// Image and cache limits.
+    pub images: ImageConfig,
+    /// Provider profile inputs without secret values.
+    pub profiles: Vec<EffectiveProviderProfileConfig>,
+}
+
+/// Safe shared network configuration without exposing the proxy URL.
+#[derive(Clone, Debug, Serialize)]
+pub struct EffectiveNetworkConfig {
+    /// TCP connect timeout in seconds.
+    pub connect_timeout_seconds: u64,
+    /// Full request deadline in seconds.
+    pub request_timeout_seconds: u64,
+    /// Maximum buffered response size in bytes.
+    pub max_response_bytes: usize,
+    /// Maximum redirect count.
+    pub max_redirects: usize,
+    /// Whether a proxy URL is configured.
+    pub proxy_configured: bool,
+}
+
+/// Safe Provider profile configuration and loaded credential state.
+#[derive(Clone, Debug, Serialize)]
+pub struct EffectiveProviderProfileConfig {
+    /// Provider implementation identifier.
+    pub provider: String,
+    /// Profile name.
+    pub profile: String,
+    /// Provider origin without URL credentials, query or fragment.
+    pub base_url: String,
+    /// Configured User-Agent.
+    pub user_agent: String,
+    /// Allowed redirect hosts.
+    pub allowed_redirect_hosts: Vec<String>,
+    /// Environment variable referenced for Cookie credentials.
+    pub cookie_env: Option<String>,
+    /// Whether the Cookie value was loaded into the active generation.
+    pub cookie_loaded: bool,
+    /// Environment variable referenced for API user credentials.
+    pub api_user_env: Option<String>,
+    /// Environment variable referenced for API key credentials.
+    pub api_key_env: Option<String>,
+    /// Whether both API credential values were loaded into the active generation.
+    pub api_credentials_loaded: bool,
+    /// Maximum concurrent requests.
+    pub max_concurrent_requests: usize,
+    /// Minimum delay between request starts in milliseconds.
+    pub min_request_interval_ms: u64,
+}
+
+impl CoreConfig {
+    pub(crate) fn effective_snapshot(
+        &self,
+        storage: crate::StorageSnapshot,
+        profiles: &[crate::ProfileSnapshot],
+    ) -> EffectiveConfigSnapshot {
+        let profiles = self
+            .profiles
+            .values()
+            .map(|profile| {
+                let loaded = profiles.iter().find(|loaded| {
+                    loaded.key.provider == profile.provider && loaded.key.profile == profile.profile
+                });
+                EffectiveProviderProfileConfig {
+                    provider: profile.provider.clone(),
+                    profile: profile.profile.clone(),
+                    base_url: safe_url(&profile.base_url),
+                    user_agent: profile.user_agent.clone(),
+                    allowed_redirect_hosts: profile.allowed_redirect_hosts.clone(),
+                    cookie_env: profile.cookie_env.clone(),
+                    cookie_loaded: loaded.is_some_and(|loaded| loaded.has_cookie),
+                    api_user_env: profile.api_user_env.clone(),
+                    api_key_env: profile.api_key_env.clone(),
+                    api_credentials_loaded: loaded.is_some_and(|loaded| loaded.has_api_credentials),
+                    max_concurrent_requests: profile.max_concurrent_requests,
+                    min_request_interval_ms: profile.min_request_interval_ms,
+                }
+            })
+            .collect();
+        EffectiveConfigSnapshot {
+            schema_version: self.schema_version,
+            instance_name: self.instance_name.clone(),
+            command_capacity: self.command_capacity,
+            shutdown_seconds: self.shutdown_seconds,
+            control: self.control.clone(),
+            storage,
+            operations: self.operations.clone(),
+            events: self.events.clone(),
+            network: EffectiveNetworkConfig {
+                connect_timeout_seconds: self.network.connect_timeout_seconds,
+                request_timeout_seconds: self.network.request_timeout_seconds,
+                max_response_bytes: self.network.max_response_bytes,
+                max_redirects: self.network.max_redirects,
+                proxy_configured: self.network.proxy_url.is_some(),
+            },
+            images: self.images.clone(),
+            profiles,
+        }
+    }
+}
+
+fn safe_url(url: &Url) -> String {
+    let mut safe = url.clone();
+    let _ = safe.set_username("");
+    let _ = safe.set_password(None);
+    safe.set_query(None);
+    safe.set_fragment(None);
+    safe.to_string()
 }
 
 impl Default for CoreConfig {
@@ -583,6 +718,10 @@ mod tests {
             "https://e-hentai.org/"
         );
         assert_eq!(
+            config.profiles["eh"].allowed_redirect_hosts,
+            ["api.e-hentai.org"]
+        );
+        assert_eq!(
             config.profiles["pixiv"].base_url.as_str(),
             "https://www.pixiv.net/"
         );
@@ -658,5 +797,36 @@ mod tests {
         assert!(config.validate().is_err());
         config.images.max_inflight_bytes = 1024;
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn effective_snapshot_redacts_proxy_and_credential_values() {
+        let mut config = CoreConfig::default();
+        config.network.proxy_url = Some(
+            url::Url::parse("https://proxy-user:proxy-secret@proxy.invalid/path?token=secret")
+                .unwrap(),
+        );
+        let profile = config.profiles.get_mut("eh").unwrap();
+        profile.base_url =
+            url::Url::parse("https://url-user:url-secret@example.invalid/?secret=value").unwrap();
+        profile.cookie_env = Some("FV_EH_COOKIE".to_owned());
+        let snapshot = config.effective_snapshot(
+            crate::StorageSnapshot {
+                schema_version: 2,
+                data: "data".to_owned(),
+                cache: "cache".to_owned(),
+                downloads: "downloads".to_owned(),
+                temp: "temp".to_owned(),
+                database_bytes: 1,
+            },
+            &[],
+        );
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(json.contains("FV_EH_COOKIE"));
+        assert!(json.contains("proxy_configured"));
+        assert!(!json.contains("proxy-secret"));
+        assert!(!json.contains("proxy.invalid"));
+        assert!(!json.contains("url-secret"));
+        assert!(!json.contains("secret=value"));
     }
 }

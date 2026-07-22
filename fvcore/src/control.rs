@@ -112,6 +112,7 @@ pub(crate) async fn start(
         .route("/health/live", get(liveness))
         .route("/health/ready", get(readiness))
         .route("/api/v1/runtime", get(runtime_snapshot))
+        .route("/api/v1/config", get(effective_config))
         .route("/api/v1/profiles", get(list_profiles))
         .route(
             "/api/v1/profiles/{provider}/{profile}/probe",
@@ -172,6 +173,14 @@ pub(crate) async fn start(
         )
         .route("/api/v1/archive-tasks", get(list_archive_tasks))
         .route("/api/v1/local-galleries", get(list_local_galleries))
+        .route(
+            "/api/v1/local-gallery-inventory",
+            get(local_gallery_inventory),
+        )
+        .route(
+            "/api/v1/local-gallery-inventory/{id}/import",
+            post(import_local_gallery),
+        )
         .route("/api/v1/local-galleries/{id}", get(get_local_gallery))
         .route(
             "/api/v1/local-galleries/{id}/delete-preview",
@@ -184,6 +193,10 @@ pub(crate) async fn start(
         .route(
             "/api/v1/local-galleries/{id}/cover",
             get(get_local_gallery_cover),
+        )
+        .route(
+            "/api/v1/local-galleries/{id}/export",
+            get(export_local_gallery),
         )
         .route(
             "/api/v1/local-galleries/{id}/pages/{page_id}",
@@ -240,6 +253,13 @@ async fn readiness(State(state): State<ControlState>) -> Response {
 async fn runtime_snapshot(State(state): State<ControlState>) -> Response {
     match state.core.snapshot().await {
         Ok(snapshot) => with_security_headers(Json(snapshot).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn effective_config(State(state): State<ControlState>) -> Response {
+    match state.core.effective_config().await {
+        Ok(config) => with_security_headers(Json(config).into_response()),
         Err(error) => error_response(&error),
     }
 }
@@ -462,7 +482,31 @@ async fn list_archive_tasks(State(state): State<ControlState>) -> Response {
 }
 
 async fn list_local_galleries(State(state): State<ControlState>) -> Response {
-    with_security_headers(Json(state.core.local_galleries().await).into_response())
+    match state.core.local_galleries().await {
+        Ok(galleries) => with_security_headers(Json(galleries).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn local_gallery_inventory(State(state): State<ControlState>) -> Response {
+    match state.core.local_gallery_inventory().await {
+        Ok(inventory) => with_security_headers(Json(inventory).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn import_local_gallery(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match id.parse() {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_local_gallery_id()),
+    };
+    match state.core.import_local_gallery(id).await {
+        Ok(gallery) => with_security_headers(Json(gallery).into_response()),
+        Err(error) => error_response(&error),
+    }
 }
 
 async fn get_local_gallery(
@@ -508,6 +552,20 @@ async fn get_local_gallery_cover(
     };
     match state.core.local_gallery_cover(id).await {
         Ok(resource) => local_gallery_resource_response(resource),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn export_local_gallery(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match id.parse() {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_local_gallery_id()),
+    };
+    match state.core.local_gallery_export(id).await {
+        Ok(export) => local_gallery_export_response(export),
         Err(error) => error_response(&error),
     }
 }
@@ -559,6 +617,58 @@ fn local_gallery_resource_response(resource: crate::LocalGalleryResource) -> Res
         HeaderValue::from_static("private, max-age=86400"),
     );
     with_resource_security_headers(response)
+}
+
+fn local_gallery_export_response(mut export: crate::LocalGalleryExport) -> Response {
+    let descriptor = export.descriptor().clone();
+    let stream = async_stream::stream! {
+        loop {
+            match export.read_chunk().await {
+                Ok(Some(chunk)) => yield Ok::<bytes::Bytes, std::io::Error>(chunk),
+                Ok(None) => break,
+                Err(error) => {
+                    yield Err(std::io::Error::other(error.to_string()));
+                    break;
+                }
+            }
+        }
+    };
+    let mut response = Response::new(Body::from_stream(stream));
+    *response.status_mut() = StatusCode::OK;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/zip"),
+    );
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&descriptor.byte_length.to_string())
+            .expect("u64 Content-Length is valid"),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        export_content_disposition(&descriptor),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    with_resource_security_headers(response)
+}
+
+fn export_content_disposition(descriptor: &crate::LocalGalleryExportDescriptor) -> HeaderValue {
+    let fallback = if descriptor
+        .filename
+        .chars()
+        .all(|character| character.is_ascii_graphic() && !matches!(character, '"' | '\\'))
+    {
+        descriptor.filename.as_str()
+    } else {
+        "gallery.zip"
+    };
+    let encoded =
+        url::form_urlencoded::byte_serialize(descriptor.filename.as_bytes()).collect::<String>();
+    HeaderValue::from_str(&format!(
+        "attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+    ))
+    .expect("validated export filename produces a valid Content-Disposition")
 }
 
 async fn generate_local_gallery_comic_info(

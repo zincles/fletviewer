@@ -22,6 +22,8 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 const REDIRECT_DENIED: &str = "fvcore_redirect_denied";
+const EH_PUBLIC_HOST: &str = "e-hentai.org";
+const EH_PUBLIC_API_HOST: &str = "api.e-hentai.org";
 
 pub(crate) enum ApiAuth {
     None,
@@ -350,6 +352,9 @@ impl SessionGeneration {
             .map(|host| host.to_ascii_lowercase())
             .collect();
         allowed_hosts.insert(base_host.to_ascii_lowercase());
+        if config.provider == "eh" && base_host.eq_ignore_ascii_case(EH_PUBLIC_HOST) {
+            allowed_hosts.insert(EH_PUBLIC_API_HOST.to_owned());
+        }
         let redirect_hosts = allowed_hosts.clone();
         let base_scheme = config.base_url.scheme().to_owned();
         let redirect_limit = network.max_redirects;
@@ -537,7 +542,8 @@ impl SessionGeneration {
                 false,
             ));
         }
-        let url = safe_join(&self.config.base_url, "api.php")?;
+        let url = eh_api_url(&self.config.base_url)?;
+        self.validate_absolute(&url, Some(&self.config.base_url))?;
         let mut request = self
             .client
             .post(url)
@@ -870,6 +876,27 @@ fn safe_join(base: &Url, relative_path: &str) -> Result<Url, CoreError> {
     Ok(url)
 }
 
+fn eh_api_url(base: &Url) -> Result<Url, CoreError> {
+    let mut url = safe_join(base, "api.php")?;
+    if base.scheme() == "https"
+        && base
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case(EH_PUBLIC_HOST))
+    {
+        url.set_host(Some(EH_PUBLIC_API_HOST)).map_err(|_| {
+            CoreError::new(
+                ErrorCode::InvalidConfig,
+                "failed to construct the E-Hentai API URL",
+                false,
+            )
+        })?;
+        url.set_path("/api.php");
+        url.set_query(None);
+        url.set_fragment(None);
+    }
+    Ok(url)
+}
+
 fn load_secret(variable: Option<&str>, label: &str) -> Result<Option<SecretString>, CoreError> {
     variable
         .map(|name| {
@@ -954,7 +981,7 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> CoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProfileKey, SessionRegistry};
+    use super::{EH_PUBLIC_API_HOST, ProfileKey, SessionRegistry, eh_api_url};
     use crate::{ErrorCode, NetworkConfig, ProviderProfileConfig};
     use axum::{Router, http::StatusCode, response::Redirect, routing::get};
     use std::{
@@ -980,6 +1007,42 @@ mod tests {
             Some("12345")
         );
         assert_eq!(super::pixiv_user_id("PHPSESSID=invalid"), None);
+    }
+
+    #[test]
+    fn selects_the_dedicated_public_eh_image_api_origin() {
+        assert_eq!(
+            eh_api_url(&Url::parse("https://e-hentai.org/").unwrap())
+                .unwrap()
+                .as_str(),
+            "https://api.e-hentai.org/api.php"
+        );
+        assert_eq!(
+            eh_api_url(&Url::parse("https://exhentai.org/").unwrap())
+                .unwrap()
+                .as_str(),
+            "https://exhentai.org/api.php"
+        );
+        assert_eq!(
+            eh_api_url(&Url::parse("http://127.0.0.1:8080/").unwrap())
+                .unwrap()
+                .as_str(),
+            "http://127.0.0.1:8080/api.php"
+        );
+    }
+
+    #[test]
+    fn public_eh_profile_allows_its_dedicated_api_host() {
+        let profile = ProviderProfileConfig {
+            provider: "eh".to_owned(),
+            base_url: Url::parse("https://e-hentai.org/").unwrap(),
+            ..ProviderProfileConfig::default()
+        };
+        let profiles = BTreeMap::from([("eh/default".to_owned(), profile)]);
+        let registry = SessionRegistry::new(&profiles, &NetworkConfig::default()).unwrap();
+        let session = registry.session(&ProfileKey::new("eh", "default")).unwrap();
+
+        assert!(session.allowed_hosts.contains(EH_PUBLIC_API_HOST));
     }
 
     async fn server(router: Router) -> std::net::SocketAddr {

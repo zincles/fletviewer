@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "instance_name": "fvcore",
+  "command_capacity": 256,
+  "shutdown_seconds": 15,
+  "control": {
+    "enabled": false,
+    "listen": "127.0.0.1:8787",
+    "webui_enabled": true
+  },
+  "storage": {
+    "data": "FletViewer/Data",
+    "cache": "FletViewer/Cache",
+    "downloads": "FletViewer/Downloads",
+    "temp": "FletViewer/Temp"
+  },
+  "operations": {
+    "max_active": 128,
+    "max_queued": 256,
+    "retained_terminal": 512,
+    "default_deadline_seconds": 30
+  },
+  "events": {
+    "capacity": 1024,
+    "retained": 2048
+  },
+  "network": {
+    "connect_timeout_seconds": 10,
+    "request_timeout_seconds": 30,
+    "max_response_bytes": 8388608,
+    "max_redirects": 5,
+    "proxy_url": null
+  },
+  "images": {
+    "max_image_bytes": 33554432,
+    "memory_cache_bytes": 134217728,
+    "max_inflight_bytes": 134217728,
+    "cache_write_queue": 64
+  },
+  "profiles": {
+    "danbooru": {
+      "provider": "danbooru",
+      "profile": "default",
+      "base_url": "https://danbooru.donmai.us/",
+      "user_agent": "fvcore/0.1.0",
+      "allowed_redirect_hosts": [
+        "cdn.donmai.us"
+      ],
+      "cookie_env": null,
+      "api_user_env": null,
+      "api_key_env": null,
+      "max_concurrent_requests": 4,
+      "min_request_interval_ms": 0
+    },
+    "eh": {
+      "provider": "eh",
+      "profile": "default",
+      "base_url": "https://e-hentai.org/",
+      "user_agent": "fvcore/0.1.0",
+      "allowed_redirect_hosts": [],
+      "cookie_env": null,
+      "api_user_env": null,
+      "api_key_env": null,
+      "max_concurrent_requests": 4,
+      "min_request_interval_ms": 0
+    },
+    "gelbooru": {
+      "provider": "gelbooru",
+      "profile": "default",
+      "base_url": "https://gelbooru.com/",
+      "user_agent": "fvcore/0.1.0",
+      "allowed_redirect_hosts": [
+        "img1.gelbooru.com",
+        "img2.gelbooru.com",
+        "img3.gelbooru.com",
+        "img4.gelbooru.com"
+      ],
+      "cookie_env": null,
+      "api_user_env": null,
+      "api_key_env": null,
+      "max_concurrent_requests": 4,
+      "min_request_interval_ms": 0
+    },
+    "pixiv": {
+      "provider": "pixiv",
+      "profile": "default",
+      "base_url": "https://www.pixiv.net/",
+      "user_agent": "fvcore/0.1.0",
+      "allowed_redirect_hosts": [
+        "i.pximg.net"
+      ],
+      "cookie_env": null,
+      "api_user_env": null,
+      "api_key_env": null,
+      "max_concurrent_requests": 4,
+      "min_request_interval_ms": 0
+    }
+  }
+}

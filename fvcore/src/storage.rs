@@ -6,16 +6,28 @@ use redb::{Database, ReadableTable, TableDefinition};
 use std::{
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
+    sync::{Arc, Weak},
 };
 
-const STORAGE_SCHEMA_VERSION: u64 = 1;
+const STORAGE_SCHEMA_VERSION: u64 = 2;
 const METADATA: TableDefinition<&str, u64> = TableDefinition::new("metadata");
+const LOCAL_GALLERIES: TableDefinition<&str, &str> = TableDefinition::new("local_galleries");
 
 pub(crate) struct StorageService {
     paths: StoragePaths,
     database_path: PathBuf,
-    _database: Database,
+    database: Arc<Database>,
     lock: File,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GalleryRegistration {
+    pub(crate) id: uuid::Uuid,
+    pub(crate) directory_name: String,
+}
+
+pub(crate) struct GalleryRegistry {
+    database: Weak<Database>,
 }
 
 struct StoragePaths {
@@ -67,7 +79,7 @@ impl StorageService {
         Ok(Self {
             paths,
             database_path,
-            _database: database,
+            database: Arc::new(database),
             lock,
         })
     }
@@ -92,6 +104,101 @@ impl StorageService {
 
     pub(crate) fn downloads_path(&self) -> PathBuf {
         self.paths.downloads.clone()
+    }
+
+    pub(crate) fn gallery_registry(&self) -> Arc<GalleryRegistry> {
+        Arc::new(GalleryRegistry {
+            database: Arc::downgrade(&self.database),
+        })
+    }
+}
+
+impl GalleryRegistry {
+    pub(crate) fn list(&self) -> Result<Vec<GalleryRegistration>, CoreError> {
+        let database = self.database()?;
+        let read = database.begin_read().map_err(database_error)?;
+        let table = read.open_table(LOCAL_GALLERIES).map_err(database_error)?;
+        let mut registrations = Vec::new();
+        for entry in table.iter().map_err(database_error)? {
+            let (id, directory_name) = entry.map_err(database_error)?;
+            let id = uuid::Uuid::parse_str(id.value()).map_err(|_| {
+                CoreError::new(
+                    ErrorCode::IntegrityMismatch,
+                    "local gallery registry contains an invalid gallery ID",
+                    false,
+                )
+            })?;
+            registrations.push(GalleryRegistration {
+                id,
+                directory_name: directory_name.value().to_owned(),
+            });
+        }
+        registrations.sort_by_key(|registration| registration.id);
+        Ok(registrations)
+    }
+
+    pub(crate) fn register(&self, id: uuid::Uuid, directory_name: &str) -> Result<(), CoreError> {
+        if !safe_directory_name(directory_name) {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "local gallery registry requires a direct directory name",
+                false,
+            ));
+        }
+        let database = self.database()?;
+        let write = database.begin_write().map_err(database_error)?;
+        {
+            let mut table = write.open_table(LOCAL_GALLERIES).map_err(database_error)?;
+            if let Some(existing) = table.get(id.to_string().as_str()).map_err(database_error)? {
+                if existing.value() == directory_name {
+                    return Ok(());
+                }
+                return Err(CoreError::new(
+                    ErrorCode::IntegrityMismatch,
+                    "local gallery ID is already registered to another directory",
+                    false,
+                ));
+            }
+            for entry in table.iter().map_err(database_error)? {
+                let (existing_id, existing_directory) = entry.map_err(database_error)?;
+                if existing_directory.value() == directory_name {
+                    return Err(CoreError::new(
+                        ErrorCode::IntegrityMismatch,
+                        format!(
+                            "local gallery directory is already registered as {}",
+                            existing_id.value()
+                        ),
+                        false,
+                    ));
+                }
+            }
+            table
+                .insert(id.to_string().as_str(), directory_name)
+                .map_err(database_error)?;
+        }
+        write.commit().map_err(database_error)
+    }
+
+    pub(crate) fn remove(&self, id: uuid::Uuid) -> Result<(), CoreError> {
+        let database = self.database()?;
+        let write = database.begin_write().map_err(database_error)?;
+        {
+            let mut table = write.open_table(LOCAL_GALLERIES).map_err(database_error)?;
+            table
+                .remove(id.to_string().as_str())
+                .map_err(database_error)?;
+        }
+        write.commit().map_err(database_error)
+    }
+
+    fn database(&self) -> Result<Arc<Database>, CoreError> {
+        self.database.upgrade().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::NotReady,
+                "local gallery registry is no longer available",
+                false,
+            )
+        })
     }
 }
 
@@ -148,12 +255,17 @@ fn initialize_schema(database: &Database) -> Result<(), CoreError> {
             .map_err(database_error)?
             .map(|version| version.value());
         match current_version {
-            Some(version) if version != STORAGE_SCHEMA_VERSION => {
+            Some(version) if version > STORAGE_SCHEMA_VERSION || version == 0 => {
                 return Err(CoreError::new(
                     ErrorCode::InvalidConfig,
                     format!("unsupported storage schema version {version}"),
                     false,
                 ));
+            }
+            Some(version) if version < STORAGE_SCHEMA_VERSION => {
+                metadata
+                    .insert("schema_version", STORAGE_SCHEMA_VERSION)
+                    .map_err(database_error)?;
             }
             Some(_) => {}
             None => {
@@ -163,7 +275,17 @@ fn initialize_schema(database: &Database) -> Result<(), CoreError> {
             }
         }
     }
+    write.open_table(LOCAL_GALLERIES).map_err(database_error)?;
     write.commit().map_err(database_error)
+}
+
+fn safe_directory_name(name: &str) -> bool {
+    let path = Path::new(name);
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !path.is_absolute()
+        && path.parent().is_some_and(|parent| parent == Path::new(""))
+        && path.file_name().and_then(|value| value.to_str()) == Some(name)
 }
 
 fn database_error(error: impl std::fmt::Display) -> CoreError {
@@ -188,7 +310,7 @@ fn display_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::StorageService;
+    use super::{METADATA, StorageService, open_database};
     use crate::{ErrorCode, StorageConfig};
     use tempfile::TempDir;
 
@@ -206,9 +328,37 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let storage = StorageService::open(&config(&temp)).unwrap();
         let snapshot = storage.snapshot().unwrap();
-        assert_eq!(snapshot.schema_version, 1);
+        assert_eq!(snapshot.schema_version, 2);
         assert!(snapshot.database_bytes > 0);
         assert!(temp.path().join("Data/fvcore.redb").is_file());
+
+        let registry = storage.gallery_registry();
+        let id = uuid::Uuid::now_v7();
+        registry.register(id, "gallery one").unwrap();
+        registry.register(id, "gallery one").unwrap();
+        assert_eq!(registry.list().unwrap()[0].directory_name, "gallery one");
+        assert!(registry.register(id, "gallery two").is_err());
+        registry.remove(id).unwrap();
+        assert!(registry.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn migrates_v1_database_and_creates_gallery_registry() {
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join("Data")).unwrap();
+        let path = temp.path().join("Data/fvcore.redb");
+        let database = open_database(&path).unwrap();
+        let write = database.begin_write().unwrap();
+        {
+            let mut metadata = write.open_table(METADATA).unwrap();
+            metadata.insert("schema_version", 1).unwrap();
+        }
+        write.commit().unwrap();
+        drop(database);
+
+        let storage = StorageService::open(&config(&temp)).unwrap();
+        assert_eq!(storage.snapshot().unwrap().schema_version, 2);
+        assert!(storage.gallery_registry().list().unwrap().is_empty());
     }
 
     #[test]

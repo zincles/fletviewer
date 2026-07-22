@@ -21,13 +21,16 @@ mod webui;
 
 pub use archive::{ArchiveTaskSnapshot, ArchiveTaskState, EhArchiveDownloadRequest};
 pub use config::{
-    ControlConfig, CoreConfig, EventConfig, ImageConfig, NetworkConfig, OperationConfig,
+    ControlConfig, CoreConfig, EffectiveConfigSnapshot, EffectiveNetworkConfig,
+    EffectiveProviderProfileConfig, EventConfig, ImageConfig, NetworkConfig, OperationConfig,
     ProviderProfileConfig, StorageConfig,
 };
 pub use error::{CoreError, ErrorCode};
 pub use gallery::{
     ComicInfoSnapshot, LocalGalleryDeleteConfirmation, LocalGalleryDeleteRequest,
-    LocalGalleryDeleteResult, LocalGalleryDetail, LocalGalleryPage, LocalGalleryResource,
+    LocalGalleryDeleteResult, LocalGalleryDetail, LocalGalleryExport, LocalGalleryExportDescriptor,
+    LocalGalleryInventory, LocalGalleryInventoryEntry, LocalGalleryInventoryIssue,
+    LocalGalleryInventoryStatus, LocalGalleryPage, LocalGalleryResource,
     LocalGalleryResourceDescriptor, LocalGalleryResourceKind, LocalGallerySummary,
 };
 pub use id::{OperationId, RuntimeId};

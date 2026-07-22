@@ -5,7 +5,7 @@
 - 当前 Python `core/` 不另行打包，仅作为重写期间的只读行为和 fixture 参考；它不是长期兼容目标，完整决策见 `FVCORE.md`。
 - 最终迁移范围覆盖 Python Core 的全部正式业务能力；实现仍按可独立验收的纵向批次推进，避免一次同时写多个未闭环子系统。
 - HTTP 控制面始终编译进标准 executable，由 args/配置决定是否启用监听；它与嵌入 API 共用同一 Runtime 和业务方法。
-- 配置、统一 Runtime、command/snapshot/event/resource、Provider session generation、有界 operation、内存优先图像链路、EH 持久 Archive、本地 ZIP 阅读资源及显式确认删除已建立；当前继续设计大文件导出和平台文件交换语义。
+- 配置、统一 Runtime、command/snapshot/event/resource、Provider session generation、有界 operation、内存优先图像链路、EH 持久 Archive、本地 ZIP 阅读/删除/导出、`redb` 画廊登记、全量健康扫描和脱敏配置展示已建立；当前继续完整图像缓存监管。
 - Python/Rust 迁移期间禁止双写同一 SQLite、Cache、Downloads 或本地画廊。
 - 已终止独立 Flutter UI 与 Flutter + Serious Python bridge 路线；Flet 是当前正式产品 UI，但未来可由其他前端通过 `fvcore` library 或 adapter 取代。
 - 已完成的 `core/`、Runtime、Facade 和 JSON-safe DTO 继续作为稳定业务边界，避免页面直接持有 Provider client、网络响应、数据库连接和任务内部对象。
@@ -31,13 +31,13 @@
 | 状态 | 工作 | 验收点 |
 |---|---|---|
 | 已完成 | 单 crate library/executable、基础依赖与检查 | format、全部 target check/test、clippy `-D warnings` 通过 |
-| 已完成 | 严格配置、稳定错误、Runtime ID、snapshot | Runtime 只读取 executable 同级必需 `config.json`，`run/web` 分配资源前完整验证；`run` 不挂载 WebUI，`web` 强制启用 listener + WebUI；无参数 `check-config` 检查当前目录并给出创建提示，`create-config` 确定性生成且拒绝覆盖 |
+| 已完成 | 严格配置、稳定错误、Runtime ID、snapshot | Runtime 只读取 executable 同级必需 `config.json`，`run/web` 分配资源前完整验证；`run` 不挂载 WebUI，`web` 强制启用 listener + WebUI；无参数 `check-config/create-config` 与运行命令统一使用 executable 同级配置，唯一 staging 安全生成，默认拒绝覆盖，显式 `--override` 通过锁和恢复副本重置默认值并恢复中断事务 |
 | 已完成 | `CoreRuntime`、`CoreHandle` 与集成 HTTP | 有界命令队列、协作关闭、health/status 路由通过真实 loopback 测试 |
-| 已完成 | 四域存储、实例锁与 `redb` schema v1 | 第二 Runtime 被拒绝，关闭后可重新取得同一 Data 域 |
+| 已完成 | 四域存储、实例锁与 `redb` schema v2 | v1 原地迁移；第二 Runtime 被拒绝，关闭后可重新取得同一 Data 域；画廊登记只保存 ID 与受管直接子目录名 |
 | 已完成 | Command/Event/Operation 模型 | 状态机、deadline、取消、overload、revision、event cursor/SSE 和 fake operation 测试 |
 | 已完成 | Provider profile/session generation 与共享网络 Foundation | Cookie 环境注入、UA、代理、连接池、受限 redirect、响应上限和旧 generation 自然释放 |
 | 已完成 | Provider 限流与两大 Booru 查询闭环 | Generation 级并发/启动间隔；Danbooru JSON 与 Gelbooru JSON DAPI 搜索、详情、fixture、稳定错误和 HTTP 路由 |
-| 已完成 | EH 浏览、指定页原图、持久 Archive 与本地画廊消费 | EH 主页/详情/缩略图、showkey/mpvkey 指定页共享 ImageService fetch；Original/Resample 显式付费提交、签名 URL 隔离、单并发流式 ZIP、Range 续传、`cost_unknown` 防重放；Archive revision 接入统一 event journal；完成 ZIP 通过 staging 幂等提交为本地画廊并提取安全封面；H@H 仅展示 |
+| 已完成 | EH 浏览、指定页原图、持久 Archive 与本地画廊消费 | EH 主页/详情/缩略图、标准 E-Hentai 专用 `api.e-hentai.org/api.php`、showkey/mpvkey 指定页共享 ImageService fetch；Original/Resample 显式付费提交、签名 URL 隔离、单并发流式 ZIP、Range 续传、`cost_unknown` 防重放；Archive revision 接入统一 event journal；完成 ZIP 通过 staging 幂等提交为本地画廊并提取安全封面；H@H 仅展示 |
 | 已完成 | 已知 MD5 的 Booru original Fetch 主链路 | Danbooru/Gelbooru metadata -> memory -> disk -> shared network -> length/magic/MD5 验证 -> immutable resource；operation 进度、独立取消和 HTTP bytes 已贯通 |
 | 已完成 | 可选内嵌调试 WebUI | 无 Node.js 的服务端渲染 Dashboard、EH 主页/详情/缩略图、Booru 搜索/详情、Pixiv 详情、operation 列表/详情、Fetch/取消和结果图片；Dashboard 和活动 operation 页面按状态自动刷新，listener 与 WebUI 可分别开关 |
 | 已完成 | 未知 MD5 alias 与 Pixiv 详情主链路 | `ResourceKey -> ContentMd5` 持久 alias、有界异步 cache writer、关闭 drain、Pixiv AJAX 详情/多页 metadata、Referer 与 original page operation |
@@ -49,8 +49,9 @@
 | 已完成 | 本地 ZIP 画廊阅读 API | 稳定 gallery/page ID、自然排序和分页 member snapshot、有界单页解压与 magic MIME；规范化重复名、隐藏/逃逸路径、member 数、单页和总声明大小均受限；`CoreHandle`、JSON metadata、二进制 resource 和本地阅读 WebUI 已贯通，公开结果不含 Archive Path/文件名 |
 | 已完成 | 本地画廊统一 resource | 封面和 ZIP 页面共用带 kind 的 resource descriptor、图像预算、并发上限、magic MIME 和二进制安全响应；封面路径限制在画廊目录内，WebUI 列表和详情直接消费 resource URL |
 | 已完成 | 本地画廊显式确认删除 | 删除必须先预检并取得五分钟一次性令牌；令牌绑定直接普通文件名与大小清单，文件集合或大小变化即拒绝；阅读/旁置写入/消费/删除共用读写占用，提交先持久化确认清单并隐藏目录，再清除 Archive task 路径；启动仅按 unchanged 清单恢复中断删除，WebUI 必须二次提交确认 |
-| 下一步 | 本地画廊导出语义 | 设计有界 stream/resource handle、任务占用以及 Windows/Linux/Android/server 的目标文件交换；Web 下载不得伪装成本地服务器 Path |
-| 后续 | 完整图像缓存监管 | 全局 chunk 级在途预算、Cache snapshot/维护、alias schema/version、staging 清理和更多格式 fixture |
+| 已完成 | 本地画廊导出语义 | `LocalGalleryExport` 固定 64 KiB 有界块、最多两个并发导出并持有共享画廊占用；嵌入 API、HTTP 附件与 WebUI 复用同一流，公开 descriptor 不含服务器 Path，平台嵌入者负责目标文件选择与写入 |
+| 已完成 | 本地数据盘点与配置 WebUI | inventory 分类已登记健康/损坏、未登记可导入、格式无效，检查全部 ZIP 页面与 sidecar；显式导入只收 gallery ID；当前生效配置 snapshot 和页面已脱敏 secret、代理值及 URL 凭据 |
+| 下一步 | 完整图像缓存监管 | 全局 chunk 级在途预算、Cache snapshot/维护、alias schema/version、staging 清理和更多格式 fixture |
 | 后续 | Provider 纵向迁移 | 补齐 EH 搜索/feed、Pixiv 搜索/推荐/关注/收藏/排行、Gelbooru-style/Moebooru 协议族及各 Provider 正式下载能力，最终覆盖 Python Core |
 
 ## Core 独立化进度

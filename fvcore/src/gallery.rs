@@ -4,6 +4,7 @@ use crate::{
     ArchiveTaskState, CoreError, ErrorCode,
     archive::{ArchiveConsumption, ArchiveService},
     image::detect_format,
+    storage::{GalleryRegistration, GalleryRegistry},
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -16,13 +17,21 @@ use std::{
     sync::Arc,
 };
 use time::OffsetDateTime;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::{
+    io::AsyncReadExt,
+    sync::{Mutex, OwnedRwLockReadGuard, OwnedSemaphorePermit, RwLock, Semaphore},
+};
 
 const MAX_COVER_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_IMAGE_MEMBERS: usize = 100_000;
 const MAX_TOTAL_IMAGE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const COMIC_INFO_FILENAME: &str = "ComicInfo.xml";
 const DELETE_CONFIRMATION_SECONDS: i64 = 300;
+const EXPORT_CHUNK_BYTES: usize = 64 * 1024;
+const MAX_CONCURRENT_EXPORTS: usize = 2;
+const MAX_GALLERY_METADATA_BYTES: u64 = 1024 * 1024;
+const MAX_COMIC_INFO_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_LOCAL_GALLERY_ENTRIES: usize = 100_000;
 
 /// Safe summary of one local gallery backed by an original EH Archive ZIP.
 #[derive(Clone, Debug, Serialize)]
@@ -79,6 +88,66 @@ pub struct LocalGalleryDetail {
     pub pages: Vec<LocalGalleryPage>,
 }
 
+/// Health category assigned by a complete scan of the managed gallery root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalGalleryInventoryStatus {
+    /// Registered in Core storage and fully readable.
+    RegisteredHealthy,
+    /// Registered in Core storage but missing, changed or unreadable.
+    RegisteredDamaged,
+    /// Structurally valid but not registered in Core storage.
+    UnregisteredImportable,
+    /// Present under the managed root but not a valid local gallery.
+    Invalid,
+}
+
+/// Stable issue found while scanning one local gallery directory.
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalGalleryInventoryIssue {
+    /// Machine-readable issue category.
+    pub code: String,
+    /// Safe explanation without an absolute server path.
+    pub message: String,
+}
+
+/// One directory or missing registration found by a local gallery scan.
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalGalleryInventoryEntry {
+    /// Gallery ID when metadata or the registry provides one.
+    pub gallery_id: Option<uuid::Uuid>,
+    /// Direct directory name under the managed gallery root.
+    pub directory_name: String,
+    /// Registration and integrity status.
+    pub status: LocalGalleryInventoryStatus,
+    /// Gallery title when valid metadata was readable.
+    pub title: Option<String>,
+    /// Declared and verified original Archive byte length.
+    pub archive_bytes: Option<u64>,
+    /// Number of safe image pages when the ZIP index was readable.
+    pub page_count: Option<u32>,
+    /// Stable problems found; structural validation can stop after a decisive failure.
+    pub issues: Vec<LocalGalleryInventoryIssue>,
+}
+
+/// Complete point-in-time inventory of the managed local gallery root.
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalGalleryInventory {
+    /// Scan completion timestamp.
+    #[serde(with = "time::serde::rfc3339")]
+    pub scanned_at: OffsetDateTime,
+    /// Number of registered healthy galleries.
+    pub registered_healthy: usize,
+    /// Number of registered damaged or missing galleries.
+    pub registered_damaged: usize,
+    /// Number of valid unregistered import candidates.
+    pub unregistered_importable: usize,
+    /// Number of invalid local gallery directories.
+    pub invalid: usize,
+    /// Entries sorted by status and direct directory name.
+    pub entries: Vec<LocalGalleryInventoryEntry>,
+}
+
 /// Kind of an immutable local gallery binary resource.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -122,6 +191,70 @@ impl LocalGalleryResource {
     #[must_use]
     pub fn bytes(&self) -> Bytes {
         self.bytes.clone()
+    }
+}
+
+/// Safe metadata for streaming one local gallery's unchanged original ZIP.
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalGalleryExportDescriptor {
+    /// Stable local gallery ID.
+    pub gallery_id: uuid::Uuid,
+    /// Suggested output filename without a server directory.
+    pub filename: String,
+    /// MIME type of the exported resource. Always `application/zip`.
+    pub mime_type: String,
+    /// Exact ZIP byte length at the time the export is opened.
+    pub byte_length: u64,
+}
+
+/// Bounded asynchronous stream for one local gallery's unchanged original ZIP.
+///
+/// Dropping the handle cancels the export and releases its gallery occupancy.
+/// The handle never exposes the managed server path.
+pub struct LocalGalleryExport {
+    descriptor: LocalGalleryExportDescriptor,
+    file: tokio::fs::File,
+    bytes_read: u64,
+    _occupancy: OwnedRwLockReadGuard<()>,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl LocalGalleryExport {
+    /// Returns the safe export descriptor.
+    #[must_use]
+    pub fn descriptor(&self) -> &LocalGalleryExportDescriptor {
+        &self.descriptor
+    }
+
+    /// Returns the number of bytes emitted by this handle.
+    #[must_use]
+    pub const fn bytes_read(&self) -> u64 {
+        self.bytes_read
+    }
+
+    /// Reads the next bounded chunk, or `None` after the exact declared length.
+    pub async fn read_chunk(&mut self) -> Result<Option<Bytes>, CoreError> {
+        let remaining = self.descriptor.byte_length.saturating_sub(self.bytes_read);
+        if remaining == 0 {
+            let mut extra = [0_u8; 1];
+            return match self.file.read(&mut extra).await {
+                Ok(0) => Ok(None),
+                Ok(_) => Err(export_changed()),
+                Err(error) => Err(export_read_error(error)),
+            };
+        }
+        let chunk_bytes = usize::try_from(remaining.min(EXPORT_CHUNK_BYTES as u64))
+            .expect("export chunk size fits usize");
+        let mut chunk = vec![0_u8; chunk_bytes];
+        match self.file.read(&mut chunk).await {
+            Ok(0) => Err(export_changed()),
+            Ok(read) => {
+                chunk.truncate(read);
+                self.bytes_read += read as u64;
+                Ok(Some(Bytes::from(chunk)))
+            }
+            Err(error) => Err(export_read_error(error)),
+        }
     }
 }
 
@@ -227,8 +360,11 @@ pub struct ComicInfoSnapshot {
 pub(crate) struct GalleryService {
     root: PathBuf,
     archives: Arc<ArchiveService>,
+    registry: Arc<GalleryRegistry>,
     max_resource_bytes: usize,
     resource_permits: Arc<Semaphore>,
+    export_permits: Arc<Semaphore>,
+    inventory_permit: Arc<Semaphore>,
     occupancy: Arc<RwLock<()>>,
     pending_deletes: Mutex<HashMap<uuid::Uuid, PendingGalleryDelete>>,
 }
@@ -237,6 +373,7 @@ impl GalleryService {
     pub(crate) async fn open(
         downloads: PathBuf,
         archives: Arc<ArchiveService>,
+        registry: Arc<GalleryRegistry>,
         max_resource_bytes: usize,
         max_inflight_bytes: usize,
     ) -> Result<Arc<Self>, CoreError> {
@@ -247,16 +384,39 @@ impl GalleryService {
         let service = Arc::new(Self {
             root,
             archives,
+            registry,
             max_resource_bytes,
             resource_permits: Arc::new(Semaphore::new(
                 max_inflight_bytes.saturating_div(max_resource_bytes).max(1),
             )),
+            export_permits: Arc::new(Semaphore::new(MAX_CONCURRENT_EXPORTS)),
+            inventory_permit: Arc::new(Semaphore::new(1)),
             occupancy: Arc::new(RwLock::new(())),
             pending_deletes: Mutex::new(HashMap::new()),
         });
         service.recover_deletions().await?;
+        service.recover_registrations().await?;
         service.consume_pending().await;
         Ok(service)
+    }
+
+    async fn recover_registrations(&self) -> Result<(), CoreError> {
+        for task in self.archives.list().await {
+            if task.state != ArchiveTaskState::Consumed {
+                continue;
+            }
+            let Some(path) = task.final_path.as_deref().map(Path::new) else {
+                continue;
+            };
+            if path.parent() != Some(self.root.as_path()) {
+                continue;
+            }
+            let Some(directory_name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            self.registry.register(task.id, directory_name)?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn consume_pending(&self) {
@@ -286,9 +446,17 @@ impl GalleryService {
                 CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false)
             })??;
         for deletion in deletions {
-            self.archives
-                .mark_local_gallery_deleted(deletion.id)
-                .await?;
+            self.registry.remove(deletion.id)?;
+            if let Err(error) = self.archives.mark_local_gallery_deleted(deletion.id).await {
+                let directory_name = deletion
+                    .plan
+                    .directory
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .expect("validated deletion plan has a UTF-8 directory name");
+                let _ = self.registry.register(deletion.id, directory_name);
+                return Err(error);
+            }
             tokio::task::spawn_blocking(move || {
                 delete_tombstone(&deletion.tombstone, &deletion.plan)?;
                 std::fs::remove_file(&deletion.ticket).map_err(|error| {
@@ -307,17 +475,19 @@ impl GalleryService {
         Ok(())
     }
 
-    pub(crate) async fn list(&self) -> Vec<LocalGallerySummary> {
+    pub(crate) async fn list(&self) -> Result<Vec<LocalGallerySummary>, CoreError> {
         let _occupancy = self.occupancy.read().await;
         let root = self.root.clone();
+        let registrations = self.registry.list()?;
         tokio::task::spawn_blocking(move || {
             scan(&root)
                 .into_iter()
+                .filter(|record| registration_matches(&registrations, record))
                 .map(|record| summary(&record))
                 .collect()
         })
         .await
-        .unwrap_or_default()
+        .map_err(|_| CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false))
     }
 
     pub(crate) async fn detail(
@@ -326,6 +496,7 @@ impl GalleryService {
         offset: u32,
         limit: u32,
     ) -> Result<LocalGalleryDetail, CoreError> {
+        self.require_registered(id)?;
         if limit == 0 || limit > 500 {
             return Err(CoreError::new(
                 ErrorCode::InvalidInput,
@@ -349,6 +520,7 @@ impl GalleryService {
         id: uuid::Uuid,
         page_id: u32,
     ) -> Result<LocalGalleryResource, CoreError> {
+        self.require_registered(id)?;
         let occupancy = self.occupancy.clone().read_owned().await;
         let root = self.root.clone();
         let max_page_bytes = self.max_resource_bytes;
@@ -370,6 +542,7 @@ impl GalleryService {
     }
 
     pub(crate) async fn cover(&self, id: uuid::Uuid) -> Result<LocalGalleryResource, CoreError> {
+        self.require_registered(id)?;
         let occupancy = self.occupancy.clone().read_owned().await;
         let root = self.root.clone();
         let max_resource_bytes = self.max_resource_bytes;
@@ -390,10 +563,41 @@ impl GalleryService {
         .map_err(|_| CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false))?
     }
 
+    pub(crate) async fn export(&self, id: uuid::Uuid) -> Result<LocalGalleryExport, CoreError> {
+        self.require_registered(id)?;
+        let permit = self
+            .export_permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                CoreError::new(
+                    ErrorCode::Overloaded,
+                    "local gallery export concurrency limit was reached",
+                    true,
+                )
+            })?;
+        let occupancy = self.occupancy.clone().read_owned().await;
+        let root = self.root.clone();
+        let (descriptor, file) =
+            tokio::task::spawn_blocking(move || open_gallery_export(&root, id))
+                .await
+                .map_err(|_| {
+                    CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false)
+                })??;
+        Ok(LocalGalleryExport {
+            descriptor,
+            file: tokio::fs::File::from_std(file),
+            bytes_read: 0,
+            _occupancy: occupancy,
+            _permit: permit,
+        })
+    }
+
     pub(crate) async fn generate_comic_info(
         &self,
         id: uuid::Uuid,
     ) -> Result<ComicInfoSnapshot, CoreError> {
+        self.require_registered(id)?;
         let occupancy = self.occupancy.clone().write_owned().await;
         let root = self.root.clone();
         tokio::task::spawn_blocking(move || {
@@ -405,6 +609,7 @@ impl GalleryService {
     }
 
     pub(crate) async fn delete_comic_info(&self, id: uuid::Uuid) -> Result<(), CoreError> {
+        self.require_registered(id)?;
         let occupancy = self.occupancy.clone().write_owned().await;
         let root = self.root.clone();
         tokio::task::spawn_blocking(move || {
@@ -419,6 +624,7 @@ impl GalleryService {
         &self,
         id: uuid::Uuid,
     ) -> Result<LocalGalleryDeleteConfirmation, CoreError> {
+        self.require_registered(id)?;
         let occupancy = self.occupancy.clone().read_owned().await;
         let root = self.root.clone();
         let plan = tokio::task::spawn_blocking(move || {
@@ -493,7 +699,18 @@ impl GalleryService {
                 error,
             )
         })?;
+        let directory_name = current
+            .directory
+            .file_name()
+            .and_then(|value| value.to_str())
+            .expect("validated gallery directory has a UTF-8 name");
+        if let Err(error) = self.registry.remove(id) {
+            let _ = std::fs::rename(&tombstone, &current.directory);
+            let _ = std::fs::remove_file(&ticket);
+            return Err(error);
+        }
         if let Err(error) = self.archives.mark_local_gallery_deleted(id).await {
+            let _ = self.registry.register(id, directory_name);
             let _ = std::fs::rename(&tombstone, &current.directory);
             let _ = std::fs::remove_file(&ticket);
             return Err(error);
@@ -515,7 +732,7 @@ impl GalleryService {
         let id = consumption.task.id;
         let occupancy = self.occupancy.clone().write_owned().await;
         let root = self.root.clone();
-        tokio::task::spawn_blocking(move || {
+        let path = tokio::task::spawn_blocking(move || {
             let _occupancy = occupancy;
             consume_blocking(&root, consumption)
         })
@@ -526,8 +743,94 @@ impl GalleryService {
                 CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false),
             )
         })?
-        .map(|path| (id, path))
-        .map_err(|error| (id, error))
+        .map_err(|error| (id, error))?;
+        let directory_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| {
+                (
+                    id,
+                    CoreError::new(
+                        ErrorCode::IntegrityMismatch,
+                        "committed local gallery directory name is invalid",
+                        false,
+                    ),
+                )
+            })?;
+        self.registry
+            .register(id, directory_name)
+            .map_err(|error| (id, error))?;
+        Ok((id, path))
+    }
+
+    pub(crate) async fn inventory(&self) -> Result<LocalGalleryInventory, CoreError> {
+        let _permit = self
+            .inventory_permit
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                CoreError::new(
+                    ErrorCode::Overloaded,
+                    "local gallery inventory scan is already running",
+                    true,
+                )
+            })?;
+        let occupancy = self.occupancy.clone().read_owned().await;
+        let root = self.root.clone();
+        let registrations = self.registry.list()?;
+        let max_resource_bytes = self.max_resource_bytes;
+        tokio::task::spawn_blocking(move || {
+            let _occupancy = occupancy;
+            scan_inventory(&root, &registrations, max_resource_bytes)
+        })
+        .await
+        .map_err(|_| CoreError::new(ErrorCode::Internal, "local gallery worker panicked", false))?
+    }
+
+    pub(crate) async fn import(&self, id: uuid::Uuid) -> Result<LocalGallerySummary, CoreError> {
+        let _occupancy = self.occupancy.write().await;
+        let inventory =
+            scan_inventory(&self.root, &self.registry.list()?, self.max_resource_bytes)?;
+        let candidate = inventory
+            .entries
+            .into_iter()
+            .find(|entry| {
+                entry.gallery_id == Some(id)
+                    && entry.status == LocalGalleryInventoryStatus::UnregisteredImportable
+            })
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::InvalidInput,
+                    "gallery is not a healthy unregistered import candidate",
+                    false,
+                )
+            })?;
+        self.registry.register(id, &candidate.directory_name)?;
+        let record = find_record(&self.root, id)?;
+        Ok(summary(&record))
+    }
+
+    fn require_registered(&self, id: uuid::Uuid) -> Result<(), CoreError> {
+        let registration = self
+            .registry
+            .list()?
+            .into_iter()
+            .find(|registration| registration.id == id)
+            .ok_or_else(local_gallery_not_found)?;
+        let matching = scan(&self.root)
+            .into_iter()
+            .filter(|record| record.download_task_id == id)
+            .collect::<Vec<_>>();
+        if matching.len() != 1
+            || !registration_matches(std::slice::from_ref(&registration), &matching[0])
+        {
+            return Err(CoreError::new(
+                ErrorCode::IntegrityMismatch,
+                "registered local gallery is missing, duplicated or mapped to another directory",
+                false,
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -835,6 +1138,56 @@ fn read_gallery_cover(
         },
         bytes: Bytes::from(bytes),
     })
+}
+
+fn open_gallery_export(
+    root: &Path,
+    id: uuid::Uuid,
+) -> Result<(LocalGalleryExportDescriptor, File), CoreError> {
+    let record = find_record(root, id)?;
+    let directory = Path::new(&record.directory);
+    if directory.parent() != Some(root)
+        || directory
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_none_or(|value| value.is_empty() || value.starts_with('.'))
+    {
+        return Err(CoreError::new(
+            ErrorCode::IntegrityMismatch,
+            "local gallery directory is outside the managed root",
+            false,
+        ));
+    }
+    let filename = safe_sidecar_name(&record.archive_filename).ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::IntegrityMismatch,
+            "local gallery Archive filename is unsafe",
+            false,
+        )
+    })?;
+    let path = directory.join(filename);
+    let metadata =
+        std::fs::symlink_metadata(&path).map_err(|error| export_open_error("inspect", error))?;
+    if !metadata.file_type().is_file() {
+        return Err(CoreError::new(
+            ErrorCode::IntegrityMismatch,
+            "local gallery Archive is not an ordinary file",
+            false,
+        ));
+    }
+    if metadata.len() != record.archive_bytes {
+        return Err(export_changed());
+    }
+    let file = File::open(&path).map_err(|error| export_open_error("open", error))?;
+    Ok((
+        LocalGalleryExportDescriptor {
+            gallery_id: id,
+            filename: filename.to_owned(),
+            mime_type: "application/zip".to_owned(),
+            byte_length: metadata.len(),
+        },
+        file,
+    ))
 }
 
 fn find_record(root: &Path, id: uuid::Uuid) -> Result<LocalGalleryRecord, CoreError> {
@@ -1221,10 +1574,22 @@ fn scan(root: &Path) -> Vec<LocalGalleryRecord> {
     let mut galleries = entries
         .filter_map(Result::ok)
         .filter(|entry| {
-            entry.path().is_dir() && !entry.file_name().to_string_lossy().starts_with('.')
+            entry
+                .file_type()
+                .ok()
+                .is_some_and(|file_type| file_type.is_dir())
+                && !entry.file_name().to_string_lossy().starts_with('.')
         })
         .filter_map(|entry| {
-            let bytes = std::fs::read(entry.path().join("gallery.json")).ok()?;
+            let metadata_path = entry.path().join("gallery.json");
+            if !std::fs::symlink_metadata(&metadata_path)
+                .ok()?
+                .file_type()
+                .is_file()
+            {
+                return None;
+            }
+            let bytes = std::fs::read(metadata_path).ok()?;
             let mut gallery: LocalGalleryRecord = serde_json::from_slice(&bytes).ok()?;
             let archive_name = Path::new(&gallery.archive_filename);
             if archive_name.is_absolute()
@@ -1237,7 +1602,11 @@ fn scan(root: &Path) -> Vec<LocalGalleryRecord> {
                 return None;
             }
             let directory = entry.path();
-            if !directory.join(&gallery.archive_filename).is_file() {
+            if !std::fs::symlink_metadata(directory.join(&gallery.archive_filename))
+                .ok()?
+                .file_type()
+                .is_file()
+            {
                 return None;
             }
             gallery.directory = directory.to_string_lossy().into_owned();
@@ -1246,6 +1615,459 @@ fn scan(root: &Path) -> Vec<LocalGalleryRecord> {
         .collect::<Vec<_>>();
     galleries.sort_by_key(|gallery| std::cmp::Reverse(gallery.updated_at));
     galleries
+}
+
+fn registration_matches(
+    registrations: &[GalleryRegistration],
+    record: &LocalGalleryRecord,
+) -> bool {
+    Path::new(&record.directory)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|directory_name| {
+            registrations.iter().any(|registration| {
+                registration.id == record.download_task_id
+                    && registration.directory_name == directory_name
+            })
+        })
+}
+
+fn scan_inventory(
+    root: &Path,
+    registrations: &[GalleryRegistration],
+    max_page_bytes: usize,
+) -> Result<LocalGalleryInventory, CoreError> {
+    let mut entries = Vec::new();
+    let mut seen_registrations = HashSet::new();
+    let mut directories = Vec::new();
+    for entry in std::fs::read_dir(root)
+        .map_err(|error| io_error("scan local gallery inventory", root, error))?
+    {
+        if directories.len() == MAX_LOCAL_GALLERY_ENTRIES {
+            return Err(CoreError::new(
+                ErrorCode::ResponseTooLarge,
+                "local gallery root exceeds 100000 direct entries",
+                false,
+            ));
+        }
+        directories
+            .push(entry.map_err(|error| io_error("scan local gallery inventory", root, error))?);
+    }
+    directories.sort_by_key(|entry| entry.file_name());
+    for directory in directories {
+        let directory_name = directory.file_name().to_string_lossy().into_owned();
+        if directory_name.starts_with('.') {
+            continue;
+        }
+        let registration = registrations
+            .iter()
+            .find(|registration| registration.directory_name == directory_name);
+        if let Some(registration) = registration {
+            seen_registrations.insert(registration.id);
+        }
+        let file_type = directory.file_type().map_err(|error| {
+            io_error(
+                "inspect local gallery inventory entry",
+                &directory.path(),
+                error,
+            )
+        })?;
+        if !file_type.is_dir() {
+            entries.push(inventory_error_entry(
+                registration,
+                directory_name,
+                "not_directory",
+                "entry is not an ordinary directory",
+            ));
+            continue;
+        }
+        entries.push(inspect_inventory_directory(
+            &directory.path(),
+            &directory_name,
+            registration,
+            registrations,
+            max_page_bytes,
+        ));
+    }
+    for registration in registrations {
+        if seen_registrations.contains(&registration.id) {
+            continue;
+        }
+        entries.push(LocalGalleryInventoryEntry {
+            gallery_id: Some(registration.id),
+            directory_name: registration.directory_name.clone(),
+            status: LocalGalleryInventoryStatus::RegisteredDamaged,
+            title: None,
+            archive_bytes: None,
+            page_count: None,
+            issues: vec![inventory_issue(
+                "directory_missing",
+                "registered gallery directory is missing",
+            )],
+        });
+    }
+    entries.sort_by(|left, right| {
+        inventory_status_order(left.status)
+            .cmp(&inventory_status_order(right.status))
+            .then_with(|| left.directory_name.cmp(&right.directory_name))
+    });
+    Ok(LocalGalleryInventory {
+        scanned_at: OffsetDateTime::now_utc(),
+        registered_healthy: entries
+            .iter()
+            .filter(|entry| entry.status == LocalGalleryInventoryStatus::RegisteredHealthy)
+            .count(),
+        registered_damaged: entries
+            .iter()
+            .filter(|entry| entry.status == LocalGalleryInventoryStatus::RegisteredDamaged)
+            .count(),
+        unregistered_importable: entries
+            .iter()
+            .filter(|entry| entry.status == LocalGalleryInventoryStatus::UnregisteredImportable)
+            .count(),
+        invalid: entries
+            .iter()
+            .filter(|entry| entry.status == LocalGalleryInventoryStatus::Invalid)
+            .count(),
+        entries,
+    })
+}
+
+fn inspect_inventory_directory(
+    directory: &Path,
+    directory_name: &str,
+    registration: Option<&GalleryRegistration>,
+    registrations: &[GalleryRegistration],
+    max_page_bytes: usize,
+) -> LocalGalleryInventoryEntry {
+    match inspect_inventory_gallery(directory, max_page_bytes) {
+        Ok((record, page_count)) => {
+            if let Some(registration) = registration {
+                if registration.id != record.download_task_id {
+                    return inventory_error_entry(
+                        Some(registration),
+                        directory_name.to_owned(),
+                        "gallery_id_mismatch",
+                        "gallery metadata ID does not match its registry entry",
+                    );
+                }
+                LocalGalleryInventoryEntry {
+                    gallery_id: Some(record.download_task_id),
+                    directory_name: directory_name.to_owned(),
+                    status: LocalGalleryInventoryStatus::RegisteredHealthy,
+                    title: Some(record.title),
+                    archive_bytes: Some(record.archive_bytes),
+                    page_count: Some(page_count),
+                    issues: Vec::new(),
+                }
+            } else if registrations
+                .iter()
+                .any(|registration| registration.id == record.download_task_id)
+            {
+                LocalGalleryInventoryEntry {
+                    gallery_id: Some(record.download_task_id),
+                    directory_name: directory_name.to_owned(),
+                    status: LocalGalleryInventoryStatus::Invalid,
+                    title: Some(record.title),
+                    archive_bytes: Some(record.archive_bytes),
+                    page_count: Some(page_count),
+                    issues: vec![inventory_issue(
+                        "gallery_id_already_registered",
+                        "gallery ID is already registered to another directory",
+                    )],
+                }
+            } else {
+                LocalGalleryInventoryEntry {
+                    gallery_id: Some(record.download_task_id),
+                    directory_name: directory_name.to_owned(),
+                    status: LocalGalleryInventoryStatus::UnregisteredImportable,
+                    title: Some(record.title),
+                    archive_bytes: Some(record.archive_bytes),
+                    page_count: Some(page_count),
+                    issues: Vec::new(),
+                }
+            }
+        }
+        Err(error) => inventory_error_entry(
+            registration,
+            directory_name.to_owned(),
+            error
+                .message()
+                .split_once(": ")
+                .map_or_else(|| error.code().as_str(), |(code, _)| code),
+            error
+                .message()
+                .split_once(": ")
+                .map_or_else(|| error.message(), |(_, message)| message),
+        ),
+    }
+}
+
+fn inspect_inventory_gallery(
+    directory: &Path,
+    max_page_bytes: usize,
+) -> Result<(LocalGalleryRecord, u32), CoreError> {
+    let metadata_path = directory.join("gallery.json");
+    let metadata = std::fs::symlink_metadata(&metadata_path)
+        .map_err(|_| invalid_inventory("metadata_missing", "gallery.json is missing"))?;
+    if !metadata.file_type().is_file() {
+        return Err(invalid_inventory(
+            "metadata_not_file",
+            "gallery.json is not an ordinary file",
+        ));
+    }
+    if metadata.len() > MAX_GALLERY_METADATA_BYTES {
+        return Err(invalid_inventory(
+            "metadata_too_large",
+            "gallery.json exceeds 1 MiB",
+        ));
+    }
+    let metadata_bytes = std::fs::read(&metadata_path)
+        .map_err(|_| invalid_inventory("metadata_unreadable", "gallery.json cannot be read"))?;
+    let record: LocalGalleryRecord = serde_json::from_slice(&metadata_bytes).map_err(|_| {
+        invalid_inventory(
+            "metadata_invalid",
+            "gallery.json is not valid gallery metadata",
+        )
+    })?;
+    if record.schema_version != 1
+        || record.gid == 0
+        || record.token.trim().is_empty()
+        || record.title.trim().is_empty()
+    {
+        return Err(invalid_inventory(
+            "metadata_invalid",
+            "gallery.json contains unsupported or incomplete metadata",
+        ));
+    }
+    verify_inventory_directory_files(directory, &record)?;
+    let archive_filename = safe_sidecar_name(&record.archive_filename).ok_or_else(|| {
+        invalid_inventory(
+            "archive_filename_unsafe",
+            "Archive filename is not a direct safe filename",
+        )
+    })?;
+    if !Path::new(archive_filename)
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+    {
+        return Err(invalid_inventory(
+            "archive_extension_invalid",
+            "original Archive does not have a ZIP extension",
+        ));
+    }
+    let archive_path = directory.join(archive_filename);
+    let archive_metadata = std::fs::symlink_metadata(&archive_path)
+        .map_err(|_| invalid_inventory("archive_missing", "original Archive ZIP is missing"))?;
+    if !archive_metadata.file_type().is_file() {
+        return Err(invalid_inventory(
+            "archive_not_file",
+            "original Archive ZIP is not an ordinary file",
+        ));
+    }
+    if archive_metadata.len() != record.archive_bytes {
+        return Err(invalid_inventory(
+            "archive_length_mismatch",
+            "original Archive ZIP length differs from gallery.json",
+        ));
+    }
+    let file = File::open(&archive_path).map_err(|_| {
+        invalid_inventory("archive_unreadable", "original Archive ZIP cannot be read")
+    })?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|_| invalid_inventory("archive_invalid", "original Archive is not a valid ZIP"))?;
+    let members = image_members(&mut archive, max_page_bytes as u64)
+        .map_err(|error| invalid_inventory(error.code().as_str(), error.message()))?;
+    if members.is_empty() {
+        return Err(invalid_inventory(
+            "archive_has_no_pages",
+            "original Archive ZIP has no safe image pages",
+        ));
+    }
+    for member in &members {
+        verify_inventory_page(&mut archive, member, max_page_bytes)?;
+    }
+    if let Some(cover_filename) = record.cover_filename.as_deref() {
+        let cover_filename = safe_sidecar_name(cover_filename).ok_or_else(|| {
+            invalid_inventory("cover_filename_unsafe", "cover filename is unsafe")
+        })?;
+        read_inventory_image(&directory.join(cover_filename), max_page_bytes, "cover")?;
+    }
+    let comic_info_path = directory.join(COMIC_INFO_FILENAME);
+    if comic_info_path.exists() {
+        let metadata = std::fs::symlink_metadata(&comic_info_path).map_err(|_| {
+            invalid_inventory("comic_info_unreadable", "ComicInfo.xml cannot be inspected")
+        })?;
+        if !metadata.file_type().is_file() || metadata.len() > MAX_COMIC_INFO_BYTES {
+            return Err(invalid_inventory(
+                "comic_info_invalid",
+                "ComicInfo.xml is not an ordinary bounded file",
+            ));
+        }
+        let actual = std::fs::read(&comic_info_path).map_err(|_| {
+            invalid_inventory("comic_info_unreadable", "ComicInfo.xml cannot be read")
+        })?;
+        if actual != comic_info_xml(&record, members.len()).as_bytes() {
+            return Err(invalid_inventory(
+                "comic_info_mismatch",
+                "ComicInfo.xml does not match the authoritative ZIP and gallery.json",
+            ));
+        }
+    }
+    Ok((
+        record,
+        u32::try_from(members.len()).expect("image member limit fits u32"),
+    ))
+}
+
+fn verify_inventory_directory_files(
+    directory: &Path,
+    record: &LocalGalleryRecord,
+) -> Result<(), CoreError> {
+    let mut allowed = HashSet::from([
+        "gallery.json".to_owned(),
+        record.archive_filename.clone(),
+        COMIC_INFO_FILENAME.to_owned(),
+    ]);
+    if let Some(cover) = &record.cover_filename {
+        allowed.insert(cover.clone());
+    }
+    for entry in std::fs::read_dir(directory).map_err(|_| {
+        invalid_inventory(
+            "directory_unreadable",
+            "local gallery directory cannot be read",
+        )
+    })? {
+        let entry = entry.map_err(|_| {
+            invalid_inventory(
+                "directory_unreadable",
+                "local gallery directory entry cannot be read",
+            )
+        })?;
+        let name = entry.file_name().into_string().map_err(|_| {
+            invalid_inventory(
+                "filename_invalid",
+                "local gallery contains a non-UTF-8 filename",
+            )
+        })?;
+        let file_type = entry.file_type().map_err(|_| {
+            invalid_inventory("file_unreadable", "local gallery file type cannot be read")
+        })?;
+        if !file_type.is_file() || !allowed.contains(&name) {
+            return Err(invalid_inventory(
+                "unexpected_content",
+                "local gallery contains an unexpected file or nested directory",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_inventory_page<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    member: &ImageMember,
+    max_page_bytes: usize,
+) -> Result<(), CoreError> {
+    let mut source = archive
+        .by_index(member.zip_index)
+        .map_err(|_| invalid_inventory("page_unreadable", "ZIP image page cannot be opened"))?;
+    let mut bytes = Vec::with_capacity(member.byte_length as usize);
+    source
+        .by_ref()
+        .take(max_page_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| {
+            invalid_inventory(
+                "page_corrupt",
+                "ZIP image page failed CRC or stream validation",
+            )
+        })?;
+    if bytes.len() as u64 != member.byte_length {
+        return Err(invalid_inventory(
+            "page_length_mismatch",
+            "ZIP image page length differs from its directory entry",
+        ));
+    }
+    detect_format(&bytes).map(|_| ()).map_err(|_| {
+        invalid_inventory(
+            "page_format_invalid",
+            "ZIP image page has invalid image bytes",
+        )
+    })?;
+    Ok(())
+}
+
+fn read_inventory_image(path: &Path, max_bytes: usize, kind: &str) -> Result<(), CoreError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| {
+        invalid_inventory(
+            &format!("{kind}_missing"),
+            &format!("{kind} image is missing"),
+        )
+    })?;
+    if !metadata.file_type().is_file() || metadata.len() > max_bytes as u64 {
+        return Err(invalid_inventory(
+            &format!("{kind}_invalid"),
+            &format!("{kind} image is not an ordinary bounded file"),
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|_| {
+        invalid_inventory(
+            &format!("{kind}_unreadable"),
+            &format!("{kind} image cannot be read"),
+        )
+    })?;
+    detect_format(&bytes).map(|_| ()).map_err(|_| {
+        invalid_inventory(
+            &format!("{kind}_format_invalid"),
+            &format!("{kind} image has invalid image bytes"),
+        )
+    })
+}
+
+fn inventory_error_entry(
+    registration: Option<&GalleryRegistration>,
+    directory_name: String,
+    code: &str,
+    message: &str,
+) -> LocalGalleryInventoryEntry {
+    LocalGalleryInventoryEntry {
+        gallery_id: registration.map(|registration| registration.id),
+        directory_name,
+        status: if registration.is_some() {
+            LocalGalleryInventoryStatus::RegisteredDamaged
+        } else {
+            LocalGalleryInventoryStatus::Invalid
+        },
+        title: None,
+        archive_bytes: None,
+        page_count: None,
+        issues: vec![inventory_issue(code, message)],
+    }
+}
+
+fn inventory_issue(code: &str, message: &str) -> LocalGalleryInventoryIssue {
+    LocalGalleryInventoryIssue {
+        code: code.to_owned(),
+        message: message.to_owned(),
+    }
+}
+
+fn invalid_inventory(code: &str, message: &str) -> CoreError {
+    CoreError::new(
+        ErrorCode::IntegrityMismatch,
+        format!("{code}: {message}"),
+        false,
+    )
+}
+
+const fn inventory_status_order(status: LocalGalleryInventoryStatus) -> u8 {
+    match status {
+        LocalGalleryInventoryStatus::RegisteredDamaged => 0,
+        LocalGalleryInventoryStatus::UnregisteredImportable => 1,
+        LocalGalleryInventoryStatus::Invalid => 2,
+        LocalGalleryInventoryStatus::RegisteredHealthy => 3,
+    }
 }
 
 fn find_by_task(root: &Path, id: uuid::Uuid) -> Option<PathBuf> {
@@ -1534,6 +2356,30 @@ fn invalid_delete_confirmation() -> CoreError {
         ErrorCode::AccessDenied,
         "local gallery deletion confirmation is invalid or expired",
         false,
+    )
+}
+
+fn export_changed() -> CoreError {
+    CoreError::new(
+        ErrorCode::IntegrityMismatch,
+        "local gallery Archive changed while it was being exported",
+        false,
+    )
+}
+
+fn export_open_error(action: &str, error: std::io::Error) -> CoreError {
+    CoreError::new(
+        ErrorCode::Io,
+        format!("failed to {action} local gallery export: {error}"),
+        false,
+    )
+}
+
+fn export_read_error(error: std::io::Error) -> CoreError {
+    CoreError::new(
+        ErrorCode::Io,
+        format!("failed to read local gallery export: {error}"),
+        true,
     )
 }
 

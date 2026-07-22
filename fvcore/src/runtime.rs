@@ -26,6 +26,9 @@ enum CoreCommand {
     Snapshot {
         reply: oneshot::Sender<CoreSnapshot>,
     },
+    EffectiveConfig {
+        reply: oneshot::Sender<crate::EffectiveConfigSnapshot>,
+    },
     SetControlListen {
         listen: std::net::SocketAddr,
         reply: oneshot::Sender<()>,
@@ -151,6 +154,7 @@ impl CoreBuilder {
         let galleries = GalleryService::open(
             downloads_path,
             archives.clone(),
+            storage.gallery_registry(),
             self.config.images.max_image_bytes,
             self.config.images.max_inflight_bytes,
         )
@@ -268,6 +272,12 @@ impl CoreHandle {
         })
     }
 
+    /// Returns the effective configuration without secret or proxy values.
+    pub async fn effective_config(&self) -> Result<crate::EffectiveConfigSnapshot, CoreError> {
+        self.request(|reply| CoreCommand::EffectiveConfig { reply })
+            .await
+    }
+
     /// Requests graceful shutdown without waiting for completion.
     pub fn request_shutdown(&self) {
         self.shutdown.cancel();
@@ -361,7 +371,7 @@ impl CoreHandle {
     }
 
     /// Returns committed local galleries after idempotently consuming completed Archive tasks.
-    pub async fn local_galleries(&self) -> Vec<crate::LocalGallerySummary> {
+    pub async fn local_galleries(&self) -> Result<Vec<crate::LocalGallerySummary>, CoreError> {
         self.galleries.consume_pending().await;
         self.galleries.list().await
     }
@@ -392,6 +402,27 @@ impl CoreHandle {
         id: uuid::Uuid,
     ) -> Result<crate::LocalGalleryResource, CoreError> {
         self.galleries.cover(id).await
+    }
+
+    /// Opens a bounded stream for one local gallery's unchanged original ZIP.
+    pub async fn local_gallery_export(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<crate::LocalGalleryExport, CoreError> {
+        self.galleries.export(id).await
+    }
+
+    /// Scans every managed local gallery and reports registration and integrity status.
+    pub async fn local_gallery_inventory(&self) -> Result<crate::LocalGalleryInventory, CoreError> {
+        self.galleries.inventory().await
+    }
+
+    /// Registers one healthy scan candidate by gallery ID without accepting a caller path.
+    pub async fn import_local_gallery(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<crate::LocalGallerySummary, CoreError> {
+        self.galleries.import(id).await
     }
 
     /// Deterministically creates or replaces a local gallery's derived `ComicInfo.xml`.
@@ -767,6 +798,10 @@ async fn run_actor(
                 Some(CoreCommand::Snapshot { reply }) => {
                     let _ = reply.send(data.snapshot(commands.len()));
                 }
+                Some(CoreCommand::EffectiveConfig { reply }) => {
+                    let profiles = data.sessions.snapshots().unwrap_or_default();
+                    let _ = reply.send(data.config.effective_snapshot(data.storage.clone(), &profiles));
+                }
                 Some(CoreCommand::SetControlListen { listen, reply }) => {
                     data.control_listen = Some(listen);
                     data.revision += 1;
@@ -813,10 +848,21 @@ async fn run_actor(
                     let _ = reply.send(result);
                 }
                 Some(CoreCommand::ReplaceProfile { config, reply }) => {
+                    let config = *config;
                     let result = data
                         .sessions
-                        .replace(*config, data.config.network.clone());
+                        .replace(config.clone(), data.config.network.clone());
                     if result.is_ok() {
+                        if let Some((_, current)) = data.config.profiles.iter_mut().find(|(_, current)| {
+                            current.provider == config.provider && current.profile == config.profile
+                        }) {
+                            *current = config;
+                        } else {
+                            data.config.profiles.insert(
+                                format!("{}/{}", config.provider, config.profile),
+                                config,
+                            );
+                        }
                         data.revision += 1;
                     }
                     let _ = reply.send(result);
@@ -1601,7 +1647,8 @@ mod tests {
     async fn serves_persistent_eh_archive_tasks_through_api_and_webui() {
         const SUBMITTED: &str = include_str!("../tests/fixtures/eh/archive_submitted.html");
         const INTERMEDIATE: &str = include_str!("../tests/fixtures/eh/archive_intermediate.html");
-        let archive = Arc::new(test_zip());
+        let archive_bytes = test_zip();
+        let archive = Arc::new(archive_bytes.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_listen = listener.local_addr().unwrap();
         let router = axum::Router::new()
@@ -1715,6 +1762,129 @@ mod tests {
         assert!(!galleries.contains("archive_filename"));
         assert!(!galleries.contains("directory"));
         assert!(!galleries.contains("archive.zip"));
+        let healthy_inventory = runtime.handle().local_gallery_inventory().await.unwrap();
+        assert_eq!(healthy_inventory.registered_healthy, 1);
+        assert_eq!(healthy_inventory.registered_damaged, 0);
+        assert_eq!(healthy_inventory.unregistered_importable, 0);
+        assert_eq!(healthy_inventory.invalid, 0);
+        let copied_directory = temp
+            .path()
+            .join("Downloads/EHArchieve/[654321][copied1234] Copied Gallery");
+        std::fs::create_dir(&copied_directory).unwrap();
+        let copied_id = uuid::Uuid::now_v7();
+        let copied_archive = copied_directory.join("copied.zip");
+        std::fs::write(&copied_archive, &archive_bytes).unwrap();
+        let copied_now = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        std::fs::write(
+            copied_directory.join("gallery.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "download_task_id": copied_id,
+                "gid": 654321,
+                "token": "copied1234",
+                "title": "Copied Gallery",
+                "directory": "/ignored/source/path",
+                "archive_filename": "copied.zip",
+                "cover_filename": null,
+                "archive_bytes": archive_bytes.len(),
+                "created_at": copied_now,
+                "updated_at": copied_now
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let invalid_directory = temp
+            .path()
+            .join("Downloads/EHArchieve/invalid local gallery");
+        std::fs::create_dir(&invalid_directory).unwrap();
+        std::fs::write(invalid_directory.join("gallery.json"), b"not json").unwrap();
+        let inventory = runtime.handle().local_gallery_inventory().await.unwrap();
+        assert_eq!(inventory.registered_healthy, 1);
+        assert_eq!(
+            inventory.unregistered_importable, 1,
+            "unexpected inventory: {:?}",
+            inventory.entries
+        );
+        assert_eq!(inventory.invalid, 1);
+        assert!(inventory.entries.iter().all(|entry| {
+            !serde_json::to_string(entry)
+                .unwrap()
+                .contains(temp.path().to_string_lossy().as_ref())
+        }));
+        assert!(
+            runtime
+                .handle()
+                .local_gallery(copied_id, 0, 100)
+                .await
+                .is_err()
+        );
+        let inventory_api = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/local-gallery-inventory HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(inventory_api.starts_with("HTTP/1.1 200 OK"));
+        assert!(inventory_api.contains("\"unregistered_importable\":1"));
+        assert!(inventory_api.contains("\"invalid\":1"));
+        let local_data = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/local-data HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(local_data.starts_with("HTTP/1.1 200 OK"));
+        assert!(local_data.contains("未登记可导入"));
+        assert!(local_data.contains("格式无效"));
+        assert!(local_data.contains("导入登记"));
+        let import = String::from_utf8(
+            http_request(
+                listen,
+                format!(
+                    "POST /api/v1/local-gallery-inventory/{copied_id}/import HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(import.starts_with("HTTP/1.1 200 OK"));
+        assert!(
+            runtime
+                .handle()
+                .local_gallery(copied_id, 0, 100)
+                .await
+                .is_ok()
+        );
+        let after_import = runtime.handle().local_gallery_inventory().await.unwrap();
+        assert_eq!(after_import.registered_healthy, 2);
+        assert_eq!(after_import.unregistered_importable, 0);
+        std::fs::write(copied_archive, b"damaged").unwrap();
+        let damaged = runtime.handle().local_gallery_inventory().await.unwrap();
+        assert_eq!(damaged.registered_healthy, 1);
+        assert_eq!(damaged.registered_damaged, 1);
+        assert!(damaged.entries.iter().any(|entry| {
+            entry.gallery_id == Some(copied_id)
+                && entry
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "archive_length_mismatch")
+        }));
+        std::fs::remove_dir_all(copied_directory).unwrap();
+        let missing = runtime.handle().local_gallery_inventory().await.unwrap();
+        assert!(missing.entries.iter().any(|entry| {
+            entry.gallery_id == Some(copied_id)
+                && entry
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "directory_missing")
+        }));
         let detail = String::from_utf8(
             http_request(
                 listen,
@@ -1761,8 +1931,93 @@ mod tests {
         assert!(local_webui.contains("Runtime Archive Fixture"));
         assert!(local_webui.contains("第 1 页"));
         assert!(local_webui.contains(&format!("/api/v1/local-galleries/{gallery_id}/cover")));
+        assert!(local_webui.contains(&format!("/api/v1/local-galleries/{gallery_id}/export")));
+        assert!(local_webui.contains("不暴露服务器存储路径"));
         assert!(local_webui.contains("预览永久删除"));
         assert!(!local_webui.contains("archive.zip"));
+        let config_api = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/config HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(config_api.starts_with("HTTP/1.1 200 OK"));
+        assert!(config_api.contains("\"proxy_configured\":false"));
+        assert!(!config_api.contains("signed/archive.zip"));
+        let config_webui = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/config HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(config_webui.starts_with("HTTP/1.1 200 OK"));
+        assert!(config_webui.contains("当前生效配置"));
+        assert!(config_webui.contains("只读且已脱敏"));
+        let mut embedded_export = runtime
+            .handle()
+            .local_gallery_export(gallery_id)
+            .await
+            .unwrap();
+        assert_eq!(embedded_export.descriptor().gallery_id, gallery_id);
+        assert_eq!(embedded_export.descriptor().mime_type, "application/zip");
+        assert_eq!(
+            embedded_export.descriptor().byte_length,
+            archive_bytes.len() as u64
+        );
+        assert!(
+            !serde_json::to_string(embedded_export.descriptor())
+                .unwrap()
+                .contains("directory")
+        );
+        let mut embedded_bytes = Vec::new();
+        while let Some(chunk) = embedded_export.read_chunk().await.unwrap() {
+            assert!(chunk.len() <= 64 * 1024);
+            embedded_bytes.extend_from_slice(&chunk);
+        }
+        assert_eq!(embedded_export.bytes_read(), archive_bytes.len() as u64);
+        assert_eq!(embedded_bytes, archive_bytes);
+        drop(embedded_export);
+        let first_export = runtime
+            .handle()
+            .local_gallery_export(gallery_id)
+            .await
+            .unwrap();
+        let second_export = runtime
+            .handle()
+            .local_gallery_export(gallery_id)
+            .await
+            .unwrap();
+        let third_export = runtime.handle().local_gallery_export(gallery_id).await;
+        assert!(matches!(
+            third_export,
+            Err(error) if error.code() == crate::ErrorCode::Overloaded
+        ));
+        drop((first_export, second_export));
+        let exported = http_request(
+            listen,
+            format!(
+                "GET /api/v1/local-galleries/{gallery_id}/export HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await;
+        let separator = exported
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap();
+        let export_headers = String::from_utf8(exported[..separator].to_vec())
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(export_headers.starts_with("http/1.1 200 ok"));
+        assert!(export_headers.contains("content-type: application/zip"));
+        assert!(export_headers.contains(&format!("content-length: {}", archive_bytes.len())));
+        assert!(export_headers.contains("content-disposition: attachment;"));
+        assert!(export_headers.contains("filename*=utf-8''archive.zip"));
+        assert_eq!(&exported[separator + 4..], archive_bytes.as_slice());
         let delete_preview_form = format!("id={gallery_id}");
         let delete_preview_page = String::from_utf8(
             http_request(
@@ -1877,7 +2132,9 @@ mod tests {
             .unwrap()
             .find_map(|entry| {
                 let path = entry.ok()?.path();
-                path.join("gallery.json").is_file().then_some(path)
+                let metadata: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(path.join("gallery.json")).ok()?).ok()?;
+                (metadata["download_task_id"] == gallery_id.to_string()).then_some(path)
             })
             .unwrap();
         let unexpected = gallery_directory.join("unexpected.txt");
@@ -1916,21 +2173,29 @@ mod tests {
             "{{\"confirmation_token\":\"{}\"}}",
             confirmation.confirmation_token
         );
-        let delete = String::from_utf8(
-            http_request(
-                listen,
-                format!(
-                    "POST /api/v1/local-galleries/{gallery_id}/delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                    payload.len()
-                )
-                .as_bytes(),
-            )
-            .await,
+        let held_export = runtime
+            .handle()
+            .local_gallery_export(gallery_id)
+            .await
+            .unwrap();
+        let delete_request_bytes = format!(
+            "POST /api/v1/local-galleries/{gallery_id}/delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+            payload.len()
         )
-        .unwrap();
+        .into_bytes();
+        let mut delete_request =
+            tokio::spawn(async move { http_request(listen, &delete_request_bytes).await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut delete_request)
+                .await
+                .is_err(),
+            "confirmed deletion must wait for an active export"
+        );
+        drop(held_export);
+        let delete = String::from_utf8(delete_request.await.unwrap()).unwrap();
         assert!(delete.starts_with("HTTP/1.1 200 OK"));
         assert!(delete.contains("\"deleted_files\":4"));
-        assert!(runtime.handle().local_galleries().await.is_empty());
+        assert!(runtime.handle().local_galleries().await.unwrap().is_empty());
         let consumed = runtime.handle().archive_task(gallery_id).await.unwrap();
         assert_eq!(consumed.state, crate::ArchiveTaskState::Consumed);
         assert!(consumed.final_path.is_none());

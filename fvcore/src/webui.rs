@@ -119,6 +119,11 @@ struct LocalGalleryDeleteForm {
 }
 
 #[derive(Deserialize)]
+struct LocalGalleryImportForm {
+    id: String,
+}
+
+#[derive(Deserialize)]
 struct OperationQuery {
     id: String,
 }
@@ -142,6 +147,9 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/eh/archive", post(start_eh_archive))
         .route("/ui/archive-tasks", get(archive_tasks))
         .route("/ui/local-galleries", get(local_galleries))
+        .route("/ui/local-data", get(local_data))
+        .route("/ui/local-data/import", post(import_local_gallery))
+        .route("/ui/config", get(configuration))
         .route("/ui/local-gallery", get(local_gallery))
         .route("/ui/local-gallery/delete", post(local_gallery_delete))
         .route("/ui/archive-task/cancel", post(cancel_archive))
@@ -585,7 +593,10 @@ async fn archive_tasks(State(state): State<ControlState>) -> Response {
 }
 
 async fn local_galleries(State(state): State<ControlState>) -> Response {
-    let galleries = state.core.local_galleries().await;
+    let galleries = match state.core.local_galleries().await {
+        Ok(galleries) => galleries,
+        Err(error) => return error_page(&error),
+    };
     let mut cards = String::new();
     for gallery in &galleries {
         let cover = if gallery.cover_available {
@@ -617,6 +628,164 @@ async fn local_galleries(State(state): State<ControlState>) -> Response {
         StatusCode::OK,
         "本地画廊",
         &format!("<h1>本地画廊</h1><div class=\"grid\">{cards}</div>"),
+        None,
+    )
+}
+
+async fn local_data(State(state): State<ControlState>) -> Response {
+    let inventory = match state.core.local_gallery_inventory().await {
+        Ok(inventory) => inventory,
+        Err(error) => return error_page(&error),
+    };
+    let mut rows = String::new();
+    for entry in &inventory.entries {
+        let status = local_inventory_status(entry.status);
+        let issues = if entry.issues.is_empty() {
+            "-".to_owned()
+        } else {
+            entry
+                .issues
+                .iter()
+                .map(|issue| {
+                    format!(
+                        "<code>{}</code>: {}",
+                        escape(&issue.code),
+                        escape(&issue.message)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("<br>")
+        };
+        let action = if entry.status == crate::LocalGalleryInventoryStatus::UnregisteredImportable {
+            entry.gallery_id.map_or_else(String::new, |id| {
+                format!(
+                    "<form method=\"post\" action=\"/ui/local-data/import\"><input type=\"hidden\" name=\"id\" value=\"{id}\"><button type=\"submit\">导入登记</button></form>"
+                )
+            })
+        } else if entry.status == crate::LocalGalleryInventoryStatus::RegisteredHealthy {
+            entry.gallery_id.map_or_else(String::new, |id| {
+                format!("<a href=\"{}\">打开</a>", escape(&local_gallery_url(id, 0)))
+            })
+        } else {
+            String::new()
+        };
+        let _ = write!(
+            rows,
+            "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{} / {}</td><td>{}</td><td>{}</td></tr>",
+            status,
+            escape(&entry.directory_name),
+            entry
+                .gallery_id
+                .map_or_else(|| "-".to_owned(), |id| format!("<code>{id}</code>")),
+            escape(entry.title.as_deref().unwrap_or("-")),
+            entry
+                .page_count
+                .map_or_else(|| "?".to_owned(), |value| value.to_string()),
+            entry
+                .archive_bytes
+                .map_or_else(|| "?".to_owned(), |value| value.to_string()),
+            issues,
+            action,
+        );
+    }
+    if rows.is_empty() {
+        rows.push_str(
+            "<tr><td colspan=\"7\" class=\"muted\">受管目录中没有本地画廊或异常条目。</td></tr>",
+        );
+    }
+    html_page(
+        StatusCode::OK,
+        "本地数据管理",
+        &format!(
+            "<h1>本地数据管理</h1><p class=\"muted\">扫描仅覆盖受管 EHArchieve 根目录。导入只登记完整通过校验的候选，不移动或改写 ZIP、gallery.json 与 ComicInfo.xml。</p><div class=\"grid\"><section class=\"card\"><h2>已登记健康</h2><strong>{}</strong></section><section class=\"card\"><h2>已登记损坏</h2><strong>{}</strong></section><section class=\"card\"><h2>可导入</h2><strong>{}</strong></section><section class=\"card\"><h2>格式无效</h2><strong>{}</strong></section></div><p>扫描时间 {}</p><table><thead><tr><th>状态</th><th>目录名</th><th>Gallery ID</th><th>标题</th><th>页数 / ZIP 字节</th><th>问题</th><th>操作</th></tr></thead><tbody>{rows}</tbody></table>",
+            inventory.registered_healthy,
+            inventory.registered_damaged,
+            inventory.unregistered_importable,
+            inventory.invalid,
+            inventory.scanned_at,
+        ),
+        None,
+    )
+}
+
+async fn import_local_gallery(
+    State(state): State<ControlState>,
+    Form(form): Form<LocalGalleryImportForm>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&form.id) {
+        Ok(id) => id,
+        Err(_) => {
+            return error_page(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "本地画廊 ID 无效",
+                false,
+            ));
+        }
+    };
+    match state.core.import_local_gallery(id).await {
+        Ok(_) => Redirect::to("/ui/local-data").into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
+async fn configuration(State(state): State<ControlState>) -> Response {
+    let config = match state.core.effective_config().await {
+        Ok(config) => config,
+        Err(error) => return error_page(&error),
+    };
+    let mut profiles = String::new();
+    for profile in &config.profiles {
+        let _ = write!(
+            profiles,
+            "<tr><td><code>{}/{}</code></td><td><code>{}</code></td><td><code>{}</code></td><td>{}</td><td>{} / {}</td><td>{} + {} / {}</td><td>{}</td><td>{} ms</td></tr>",
+            escape(&profile.provider),
+            escape(&profile.profile),
+            escape(&profile.base_url),
+            escape(&profile.user_agent),
+            escape(&profile.allowed_redirect_hosts.join(", ")),
+            escape(profile.cookie_env.as_deref().unwrap_or("未配置")),
+            yes_no(profile.cookie_loaded),
+            escape(profile.api_user_env.as_deref().unwrap_or("未配置")),
+            escape(profile.api_key_env.as_deref().unwrap_or("未配置")),
+            yes_no(profile.api_credentials_loaded),
+            profile.max_concurrent_requests,
+            profile.min_request_interval_ms,
+        );
+    }
+    html_page(
+        StatusCode::OK,
+        "当前生效配置",
+        &format!(
+            "<h1>当前生效配置</h1><p class=\"muted\">此页只读且已脱敏：不显示 Cookie、API key、API user 或代理 URL/凭据值。</p><div class=\"grid\"><section class=\"card\"><h2>Runtime</h2><dl><dt>Schema</dt><dd>{}</dd><dt>实例</dt><dd>{}</dd><dt>命令容量</dt><dd>{}</dd><dt>关闭期限</dt><dd>{} 秒</dd></dl></section><section class=\"card\"><h2>HTTP</h2><dl><dt>启用</dt><dd>{}</dd><dt>监听</dt><dd><code>{}</code></dd><dt>WebUI</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>网络</h2><dl><dt>连接 / 请求超时</dt><dd>{} / {} 秒</dd><dt>响应上限</dt><dd>{} 字节</dd><dt>重定向</dt><dd>{}</dd><dt>代理</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>图片</h2><dl><dt>单图上限</dt><dd>{}</dd><dt>内存缓存</dt><dd>{}</dd><dt>在途字节</dt><dd>{}</dd><dt>写盘队列</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>Operation</h2><dl><dt>活动上限</dt><dd>{}</dd><dt>排队上限</dt><dd>{}</dd><dt>终态保留</dt><dd>{}</dd><dt>默认期限</dt><dd>{} 秒</dd></dl></section><section class=\"card\"><h2>Event</h2><dl><dt>通道容量</dt><dd>{}</dd><dt>Journal 保留</dt><dd>{}</dd></dl></section><section class=\"card wide\"><h2>存储域</h2><table><tr><th>Schema</th><td>{}</td><th>数据库</th><td>{} 字节</td></tr><tr><th>Data</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Cache</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Downloads</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Temp</th><td colspan=\"3\"><code>{}</code></td></tr></table></section><section class=\"card wide\"><h2>Provider 配置</h2><table><thead><tr><th>Profile</th><th>Origin</th><th>User-Agent</th><th>Redirect hosts</th><th>Cookie env / 已加载</th><th>API user + key env / 已加载</th><th>并发</th><th>间隔</th></tr></thead><tbody>{profiles}</tbody></table></section></div>",
+            config.schema_version,
+            escape(&config.instance_name),
+            config.command_capacity,
+            config.shutdown_seconds,
+            yes_no(config.control.enabled),
+            config.control.listen,
+            yes_no(config.control.webui_enabled),
+            config.network.connect_timeout_seconds,
+            config.network.request_timeout_seconds,
+            config.network.max_response_bytes,
+            config.network.max_redirects,
+            yes_no(config.network.proxy_configured),
+            config.images.max_image_bytes,
+            config.images.memory_cache_bytes,
+            config.images.max_inflight_bytes,
+            config.images.cache_write_queue,
+            config.operations.max_active,
+            config.operations.max_queued,
+            config.operations.retained_terminal,
+            config.operations.default_deadline_seconds,
+            config.events.capacity,
+            config.events.retained,
+            config.storage.schema_version,
+            config.storage.database_bytes,
+            escape(&config.storage.data),
+            escape(&config.storage.cache),
+            escape(&config.storage.downloads),
+            escape(&config.storage.temp),
+        ),
         None,
     )
 }
@@ -690,13 +859,14 @@ async fn local_gallery(
         StatusCode::OK,
         &detail.gallery.title,
         &format!(
-            "<h1>{}</h1>{}<p>EH GID {} · 共 {} 页 · 当前 {} - {}</p><p>{paging}</p><div class=\"grid local-pages\">{pages}</div><p>{paging}</p><h2>画廊管理</h2><p class=\"error\">删除会永久移除原始 ZIP、封面、gallery.json 和 ComicInfo.xml。</p><form method=\"post\" action=\"/ui/local-gallery/delete\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button type=\"submit\">预览永久删除</button></form>",
+            "<h1>{}</h1>{}<p>EH GID {} · 共 {} 页 · 当前 {} - {}</p><p>{paging}</p><div class=\"grid local-pages\">{pages}</div><p>{paging}</p><h2>画廊管理</h2><p><a href=\"/api/v1/local-galleries/{}/export\">导出原始 ZIP</a></p><p class=\"muted\">Web 下载由 Core 流式发送，不暴露服务器存储路径。</p><p class=\"error\">删除会永久移除原始 ZIP、封面、gallery.json 和 ComicInfo.xml。</p><form method=\"post\" action=\"/ui/local-gallery/delete\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button type=\"submit\">预览永久删除</button></form>",
             escape(&detail.gallery.title),
             cover,
             detail.gallery.gid,
             detail.total_pages,
             detail.offset.saturating_add(1),
             next,
+            detail.gallery.id,
             detail.gallery.id,
         ),
         None,
@@ -1210,7 +1380,7 @@ fn html_page(status: StatusCode, title: &str, body: &str, refresh: Option<u64>) 
         "<a class=\"refresh-action\" href=\"\">立即刷新</a>".to_owned()
     });
     let html = format!(
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{refresh_meta}<title>{}</title><style>{STYLE}</style></head><body><nav><div class=\"nav-links\"><a href=\"/\">调试面板</a><a href=\"/ui/eh?profile=default\">EH 主页</a><a href=\"/ui/search\">搜索</a><a href=\"/ui/operations\">操作列表</a><a href=\"/ui/archive-tasks\">Archive 任务</a><a href=\"/ui/local-galleries\">本地画廊</a></div><div class=\"refresh-control\">{refresh_status}{refresh_action}</div></nav><main>{body}</main></body></html>",
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{refresh_meta}<title>{}</title><style>{STYLE}</style></head><body><nav><div class=\"nav-links\"><a href=\"/\">调试面板</a><a href=\"/ui/eh?profile=default\">EH 主页</a><a href=\"/ui/search\">搜索</a><a href=\"/ui/operations\">操作列表</a><a href=\"/ui/archive-tasks\">Archive 任务</a><a href=\"/ui/local-galleries\">本地画廊</a><a href=\"/ui/local-data\">本地数据</a><a href=\"/ui/config\">配置</a></div><div class=\"refresh-control\">{refresh_status}{refresh_action}</div></nav><main>{body}</main></body></html>",
         escape(title)
     );
     let mut response = (status, Html(html)).into_response();
@@ -1314,6 +1484,15 @@ fn optional_number(value: Option<u32>) -> String {
 
 fn yes_no(value: bool) -> &'static str {
     if value { "是" } else { "否" }
+}
+
+fn local_inventory_status(status: crate::LocalGalleryInventoryStatus) -> &'static str {
+    match status {
+        crate::LocalGalleryInventoryStatus::RegisteredHealthy => "已登记健康",
+        crate::LocalGalleryInventoryStatus::RegisteredDamaged => "已登记损坏",
+        crate::LocalGalleryInventoryStatus::UnregisteredImportable => "未登记可导入",
+        crate::LocalGalleryInventoryStatus::Invalid => "格式无效",
+    }
 }
 
 fn provider_capability(provider: &str) -> &'static str {
