@@ -13,9 +13,12 @@ use crate::{
     operation_service::{OperationCompletion, OperationMessage, OperationService},
     provider::booru::BooruService,
     provider::eh::EhService,
-    session::SessionRegistry,
+    session::{DangerousProfileCredentials, SessionRegistry},
     storage::StorageService,
 };
+use fs2::FileExt;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -72,6 +75,17 @@ enum CoreCommand {
         config: Box<ProviderProfileConfig>,
         reply: oneshot::Sender<Result<ProfileSnapshot, CoreError>>,
     },
+    UpdateProfileCredentials {
+        key: ProfileKey,
+        cookie: Option<String>,
+        api_user: Option<String>,
+        api_key: Option<String>,
+        reply: oneshot::Sender<Result<ProfileSnapshot, CoreError>>,
+    },
+    SetAllowLan {
+        allow_lan: bool,
+        reply: oneshot::Sender<Result<(), CoreError>>,
+    },
 }
 
 struct RuntimeData {
@@ -84,6 +98,7 @@ struct RuntimeData {
     storage: StorageSnapshot,
     operations: OperationService,
     sessions: Arc<SessionRegistry>,
+    config_path: Option<PathBuf>,
 }
 
 impl RuntimeData {
@@ -112,13 +127,24 @@ impl RuntimeData {
 /// Builder used by executables and embedding applications.
 pub struct CoreBuilder {
     config: CoreConfig,
+    config_path: Option<PathBuf>,
 }
 
 impl CoreBuilder {
     /// Creates a builder for an already materialized configuration.
     #[must_use]
     pub fn new(config: CoreConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            config_path: None,
+        }
+    }
+
+    /// Enables executable-only persistence for diagnostic configuration edits.
+    #[must_use]
+    pub fn config_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config_path = Some(path.into());
+        self
     }
 
     /// Validates configuration and starts the supervised Runtime actor.
@@ -176,6 +202,7 @@ impl CoreBuilder {
                 images.clone(),
             ),
             sessions: sessions.clone(),
+            config_path: self.config_path,
         };
         let mut actor = tokio::spawn(run_actor(
             data,
@@ -197,7 +224,7 @@ impl CoreBuilder {
         handle.wait_ready().await?;
         let control = if control_config.enabled {
             match control::start(
-                control_config.listen,
+                control_config.effective_listen(),
                 control_config.webui_enabled,
                 handle.clone(),
                 shutdown.clone(),
@@ -509,6 +536,38 @@ impl CoreHandle {
             reply,
         })
         .await?
+    }
+
+    /// DANGER: Returns live plaintext credentials for the unauthenticated diagnostic WebUI.
+    pub(crate) fn dangerous_profile_credentials(
+        &self,
+        key: &ProfileKey,
+    ) -> Result<DangerousProfileCredentials, CoreError> {
+        self.sessions.dangerous_credentials(key)
+    }
+
+    /// DANGER: Persists plaintext credentials to executable-owned `config.json`.
+    pub(crate) async fn update_profile_credentials(
+        &self,
+        key: ProfileKey,
+        cookie: Option<String>,
+        api_user: Option<String>,
+        api_key: Option<String>,
+    ) -> Result<ProfileSnapshot, CoreError> {
+        self.request(|reply| CoreCommand::UpdateProfileCredentials {
+            key,
+            cookie,
+            api_user,
+            api_key,
+            reply,
+        })
+        .await?
+    }
+
+    /// Persists whether the diagnostic listener may bind to LAN interfaces after restart.
+    pub(crate) async fn set_allow_lan(&self, allow_lan: bool) -> Result<(), CoreError> {
+        self.request(|reply| CoreCommand::SetAllowLan { allow_lan, reply })
+            .await?
     }
 
     /// Probes the configured root of one Provider profile with bounded response buffering.
@@ -867,6 +926,39 @@ async fn run_actor(
                     }
                     let _ = reply.send(result);
                 }
+                Some(CoreCommand::UpdateProfileCredentials {
+                    key,
+                    cookie,
+                    api_user,
+                    api_key,
+                    reply,
+                }) => {
+                    let result = update_profile_credentials(
+                        &mut data,
+                        &key,
+                        cookie,
+                        api_user,
+                        api_key,
+                    );
+                    let _ = reply.send(result);
+                }
+                Some(CoreCommand::SetAllowLan { allow_lan, reply }) => {
+                    let result = data.config_path.as_ref().map_or_else(
+                        || {
+                            Err(CoreError::new(
+                                ErrorCode::NotReady,
+                                "configuration persistence is unavailable for an embedded Runtime",
+                                false,
+                            ))
+                        },
+                        |path| persist_allow_lan(path, allow_lan),
+                    );
+                    if result.is_ok() {
+                        data.config.control.allow_lan = allow_lan;
+                        data.revision += 1;
+                    }
+                    let _ = reply.send(result);
+                }
                 None => break,
             },
             message = messages.recv() => if let Some(message) = message {
@@ -887,6 +979,185 @@ async fn run_actor(
     data.state = RuntimeState::Stopped;
     data.revision += 1;
     states.send_replace(RuntimeState::Stopped);
+}
+
+fn update_profile_credentials(
+    data: &mut RuntimeData,
+    key: &ProfileKey,
+    cookie: Option<String>,
+    api_user: Option<String>,
+    api_key: Option<String>,
+) -> Result<ProfileSnapshot, CoreError> {
+    let path = data.config_path.as_ref().ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::NotReady,
+            "credential persistence is unavailable for an embedded Runtime",
+            false,
+        )
+    })?;
+    let current = data
+        .config
+        .profiles
+        .values()
+        .find(|profile| profile.provider == key.provider && profile.profile == key.profile)
+        .cloned()
+        .ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::ProfileNotFound,
+                format!("Provider profile {key} was not found"),
+                false,
+            )
+        })?;
+    let mut replacement = current;
+    replacement.cookie = cookie;
+    replacement.cookie_env = None;
+    replacement.api_user = api_user;
+    replacement.api_user_env = None;
+    replacement.api_key = api_key;
+    replacement.api_key_env = None;
+    replacement.validate(&key.to_string())?;
+
+    persist_profile_credentials(path, key, &replacement)?;
+    let snapshot = data
+        .sessions
+        .replace(replacement.clone(), data.config.network.clone())?;
+    if let Some(profile) = data
+        .config
+        .profiles
+        .values_mut()
+        .find(|profile| profile.provider == key.provider && profile.profile == key.profile)
+    {
+        *profile = replacement;
+    }
+    data.revision += 1;
+    Ok(snapshot)
+}
+
+/// DANGER: This intentionally writes plaintext credentials for the unauthenticated debug panel.
+fn persist_profile_credentials(
+    path: &std::path::Path,
+    key: &ProfileKey,
+    replacement: &ProviderProfileConfig,
+) -> Result<(), CoreError> {
+    persist_config(path, |config| {
+        let profile = config
+            .profiles
+            .values_mut()
+            .find(|profile| profile.provider == key.provider && profile.profile == key.profile)
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::ProfileNotFound,
+                    format!("Provider profile {key} was not found in config.json"),
+                    false,
+                )
+            })?;
+        profile.cookie = replacement.cookie.clone();
+        profile.cookie_env = None;
+        profile.api_user = replacement.api_user.clone();
+        profile.api_user_env = None;
+        profile.api_key = replacement.api_key.clone();
+        profile.api_key_env = None;
+        Ok(())
+    })
+}
+
+fn persist_allow_lan(path: &std::path::Path, allow_lan: bool) -> Result<(), CoreError> {
+    persist_config(path, |config| {
+        config.control.allow_lan = allow_lan;
+        Ok(())
+    })
+}
+
+fn persist_config(
+    path: &std::path::Path,
+    update: impl FnOnce(&mut CoreConfig) -> Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    let directory = path.parent().ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::InvalidConfig,
+            "configuration path has no parent directory",
+            false,
+        )
+    })?;
+    let lock_path = directory.join(".config.json.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| config_io_error("open configuration lock", &lock_path, error))?;
+    lock.try_lock_exclusive().map_err(|error| {
+        CoreError::new(
+            ErrorCode::AlreadyRunning,
+            format!("another process is updating configuration: {error}"),
+            true,
+        )
+    })?;
+    let mut config = CoreConfig::from_json_file(path)?;
+    update(&mut config)?;
+    let mut resolved = config.clone();
+    resolved.resolve_storage_paths(directory);
+    resolved.validate()?;
+    publish_config(path, directory, &config)?;
+    let _ = FileExt::unlock(&lock);
+    Ok(())
+}
+
+fn publish_config(
+    path: &std::path::Path,
+    directory: &std::path::Path,
+    config: &CoreConfig,
+) -> Result<(), CoreError> {
+    let mut bytes = serde_json::to_vec_pretty(config).map_err(|error| {
+        CoreError::new(
+            ErrorCode::Internal,
+            format!("failed to serialize configuration: {error}"),
+            false,
+        )
+    })?;
+    bytes.push(b'\n');
+    let temporary = directory.join(format!(".config.{}.tmp", uuid::Uuid::now_v7()));
+    let backup = directory.join(".config.json.override-backup");
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| {
+                config_io_error("create temporary configuration", &temporary, error)
+            })?;
+        file.write_all(&bytes)
+            .map_err(|error| config_io_error("write temporary configuration", &temporary, error))?;
+        file.sync_all()
+            .map_err(|error| config_io_error("flush temporary configuration", &temporary, error))?;
+        std::fs::rename(path, &backup)
+            .map_err(|error| config_io_error("back up configuration", path, error))?;
+        if let Err(error) = std::fs::rename(&temporary, path) {
+            let _ = std::fs::rename(&backup, path);
+            return Err(config_io_error("publish configuration", path, error));
+        }
+        if let Err(error) = std::fs::remove_file(&backup) {
+            tracing::warn!(
+                path = %backup.display(),
+                %error,
+                "configuration was saved but the recovery copy remains"
+            );
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn config_io_error(action: &str, path: &std::path::Path, error: std::io::Error) -> CoreError {
+    CoreError::new(
+        ErrorCode::Io,
+        format!("failed to {action} {}: {error}", path.display()),
+        false,
+    )
 }
 
 #[cfg(test)]
@@ -911,7 +1182,7 @@ mod tests {
     use url::Url;
 
     fn config(temp: &TempDir) -> CoreConfig {
-        CoreConfig {
+        let mut config = CoreConfig {
             storage: StorageConfig {
                 data: temp.path().join("Data"),
                 cache: temp.path().join("Cache"),
@@ -919,7 +1190,9 @@ mod tests {
                 temp: temp.path().join("Temp"),
             },
             ..CoreConfig::default()
-        }
+        };
+        config.control.allow_lan = false;
+        config
     }
 
     async fn wait_terminal(
@@ -945,6 +1218,130 @@ mod tests {
         let mut response = Vec::new();
         stream.read_to_end(&mut response).await.unwrap();
         response
+    }
+
+    #[tokio::test]
+    async fn diagnostic_webui_echoes_and_persists_plaintext_profile_credentials() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.json");
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.webui_enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config.control.allow_lan = false;
+        let profile = config.profiles.get_mut("eh").unwrap();
+        profile.cookie = Some("initial-cookie".to_owned());
+        std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        let runtime = CoreBuilder::new(config)
+            .config_file(&path)
+            .build()
+            .await
+            .unwrap();
+        let listen = runtime.control_listen().unwrap();
+
+        let page = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/config HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(page.contains("DANGER:"));
+        assert!(page.contains("initial-cookie"));
+
+        let form =
+            "provider=eh&profile=default&cookie=saved-cookie&api_user=saved-user&api_key=saved-key";
+        let request = format!(
+            "POST /ui/config/credentials HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{form}",
+            form.len()
+        );
+        let response = String::from_utf8(http_request(listen, request.as_bytes()).await).unwrap();
+        assert!(response.starts_with("HTTP/1.1 303 See Other"));
+
+        let persisted = CoreConfig::from_json_file(&path).unwrap();
+        let persisted = &persisted.profiles["eh"];
+        assert_eq!(persisted.cookie.as_deref(), Some("saved-cookie"));
+        assert_eq!(persisted.api_user.as_deref(), Some("saved-user"));
+        assert_eq!(persisted.api_key.as_deref(), Some("saved-key"));
+        assert!(persisted.cookie_env.is_none());
+        assert!(persisted.api_user_env.is_none());
+        assert!(persisted.api_key_env.is_none());
+        let active = runtime
+            .handle()
+            .profiles()
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.key == ProfileKey::new("eh", "default"))
+            .unwrap();
+        assert_eq!(active.generation, 2);
+        assert!(active.has_cookie);
+        assert!(active.has_api_credentials);
+
+        let page = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/config HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(page.contains("saved-cookie"));
+        assert!(page.contains("saved-user"));
+        assert!(page.contains("saved-key"));
+        assert!(page.contains("允许局域网访问调试面板"));
+        assert!(!page.contains("name=\"allow_lan\" value=\"true\" checked"));
+
+        let form = "allow_lan=true";
+        let request = format!(
+            "POST /ui/config/lan HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{form}",
+            form.len()
+        );
+        let response = String::from_utf8(http_request(listen, request.as_bytes()).await).unwrap();
+        assert!(response.starts_with("HTTP/1.1 303 See Other"));
+        assert!(CoreConfig::from_json_file(&path).unwrap().control.allow_lan);
+        assert!(
+            runtime
+                .handle()
+                .effective_config()
+                .await
+                .unwrap()
+                .control
+                .allow_lan
+        );
+
+        let api = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/config HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(!api.contains("saved-cookie"));
+        assert!(!api.contains("saved-user"));
+        assert!(!api.contains("saved-key"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn embedded_runtime_rejects_plaintext_credential_persistence() {
+        let temp = TempDir::new().unwrap();
+        let runtime = CoreBuilder::new(config(&temp)).build().await.unwrap();
+
+        let error = runtime
+            .handle()
+            .update_profile_credentials(
+                ProfileKey::new("eh", "default"),
+                Some("cookie".to_owned()),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::NotReady);
+        runtime.shutdown().await.unwrap();
     }
 
     fn test_jpeg() -> Vec<u8> {
@@ -1956,7 +2353,8 @@ mod tests {
         .unwrap();
         assert!(config_webui.starts_with("HTTP/1.1 200 OK"));
         assert!(config_webui.contains("当前生效配置"));
-        assert!(config_webui.contains("只读且已脱敏"));
+        assert!(config_webui.contains("DANGER:"));
+        assert!(config_webui.contains("JSON 配置 API 仍保持脱敏"));
         let mut embedded_export = runtime
             .handle()
             .local_gallery_export(gallery_id)

@@ -22,7 +22,7 @@
 - 当前 `core/` 在过渡期继续独占尚未切换的真实存储；每项能力验收后将所有权切至 Rust，最终 Python Core 完整退役。
 - 新 `fvcore/` 是纯 Rust 单 crate Core，不依赖 Flet、Flutter、Python、Bevy 或具体前端；可执行入口和嵌入 API 共用同一 Runtime 与业务实现。
 - Web/NAS 中的配置、Cookie、缓存、下载和本地画廊均属于服务器，不代表浏览器设备本地状态；文件交换使用上传、下载或文件选择流程。
-- 当前 Web/NAS 首先面向可信网络中的单用户或共享实例。若开放到不可信网络，必须先明确用户隔离、凭据所有权和任务可见性，并由反向代理提供 TLS、认证和访问控制。
+- 当前 Web/NAS 首先面向可信网络中的单用户或共享实例。调试 WebUI 默认允许 LAN 访问且配置页按测试阶段要求明文回显/持久化 Provider secret；若开放到不可信网络，必须先明确用户隔离、凭据所有权和任务可见性，并由反向代理提供 TLS、认证和访问控制。
 - Flutter extension 仅用于 Flet API 无法可靠覆盖的原生能力，例如未来的大文件 SAF 流或特定系统集成；优先使用 Flet 内建跨平台 API，不为普通业务逻辑编写 Dart 副本。
 - 原 Flutter + Serious Python 路线中的独立 shell、Python package 和图片 bridge 均不再是项目任务；未来控制传输或前端只包装 `fvcore` 的公开 command/snapshot/event/resource，不复制业务。
 

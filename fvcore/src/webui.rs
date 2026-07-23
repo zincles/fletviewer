@@ -133,6 +133,20 @@ struct CancelForm {
     id: String,
 }
 
+#[derive(Deserialize)]
+struct ProfileCredentialsForm {
+    provider: String,
+    profile: String,
+    cookie: String,
+    api_user: String,
+    api_key: String,
+}
+
+#[derive(Deserialize)]
+struct LanAccessForm {
+    allow_lan: Option<String>,
+}
+
 pub(crate) fn routes() -> Router<ControlState> {
     Router::new()
         .route("/", get(dashboard))
@@ -150,6 +164,8 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/local-data", get(local_data))
         .route("/ui/local-data/import", post(import_local_gallery))
         .route("/ui/config", get(configuration))
+        .route("/ui/config/credentials", post(update_profile_credentials))
+        .route("/ui/config/lan", post(update_lan_access))
         .route("/ui/local-gallery", get(local_gallery))
         .route("/ui/local-gallery/delete", post(local_gallery_delete))
         .route("/ui/archive-task/cancel", post(cancel_archive))
@@ -734,6 +750,7 @@ async fn configuration(State(state): State<ControlState>) -> Response {
         Err(error) => return error_page(&error),
     };
     let mut profiles = String::new();
+    let mut credential_forms = String::new();
     for profile in &config.profiles {
         let _ = write!(
             profiles,
@@ -751,18 +768,40 @@ async fn configuration(State(state): State<ControlState>) -> Response {
             profile.max_concurrent_requests,
             profile.min_request_interval_ms,
         );
+        let key = ProfileKey::new(&profile.provider, &profile.profile);
+        let credentials = match state.core.dangerous_profile_credentials(&key) {
+            Ok(credentials) => credentials,
+            Err(error) => return error_page(&error),
+        };
+        let _ = write!(
+            credential_forms,
+            "<section class=\"card wide\"><h2><code>{}/{}</code> 明文凭据</h2><form method=\"post\" action=\"/ui/config/credentials\"><input type=\"hidden\" name=\"provider\" value=\"{}\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><label>Cookie<textarea name=\"cookie\" rows=\"4\" spellcheck=\"false\">{}</textarea></label><label>API user<input name=\"api_user\" value=\"{}\" autocomplete=\"off\" spellcheck=\"false\"></label><label>API key<input name=\"api_key\" value=\"{}\" autocomplete=\"off\" spellcheck=\"false\"></label><p class=\"muted\">空值保存会清除对应凭据；API user 与 API key 必须同时填写或同时清除。</p><button type=\"submit\">保存明文凭据并重建 Session</button></form></section>",
+            escape(&profile.provider),
+            escape(&profile.profile),
+            escape(&profile.provider),
+            escape(&profile.profile),
+            escape(credentials.cookie.as_deref().unwrap_or_default()),
+            escape(credentials.api_user.as_deref().unwrap_or_default()),
+            escape(credentials.api_key.as_deref().unwrap_or_default()),
+        );
     }
+    let allow_lan_checked = if config.control.allow_lan {
+        " checked"
+    } else {
+        ""
+    };
     html_page(
         StatusCode::OK,
         "当前生效配置",
         &format!(
-            "<h1>当前生效配置</h1><p class=\"muted\">此页只读且已脱敏：不显示 Cookie、API key、API user 或代理 URL/凭据值。</p><div class=\"grid\"><section class=\"card\"><h2>Runtime</h2><dl><dt>Schema</dt><dd>{}</dd><dt>实例</dt><dd>{}</dd><dt>命令容量</dt><dd>{}</dd><dt>关闭期限</dt><dd>{} 秒</dd></dl></section><section class=\"card\"><h2>HTTP</h2><dl><dt>启用</dt><dd>{}</dd><dt>监听</dt><dd><code>{}</code></dd><dt>WebUI</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>网络</h2><dl><dt>连接 / 请求超时</dt><dd>{} / {} 秒</dd><dt>响应上限</dt><dd>{} 字节</dd><dt>重定向</dt><dd>{}</dd><dt>代理</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>图片</h2><dl><dt>单图上限</dt><dd>{}</dd><dt>内存缓存</dt><dd>{}</dd><dt>在途字节</dt><dd>{}</dd><dt>写盘队列</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>Operation</h2><dl><dt>活动上限</dt><dd>{}</dd><dt>排队上限</dt><dd>{}</dd><dt>终态保留</dt><dd>{}</dd><dt>默认期限</dt><dd>{} 秒</dd></dl></section><section class=\"card\"><h2>Event</h2><dl><dt>通道容量</dt><dd>{}</dd><dt>Journal 保留</dt><dd>{}</dd></dl></section><section class=\"card wide\"><h2>存储域</h2><table><tr><th>Schema</th><td>{}</td><th>数据库</th><td>{} 字节</td></tr><tr><th>Data</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Cache</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Downloads</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Temp</th><td colspan=\"3\"><code>{}</code></td></tr></table></section><section class=\"card wide\"><h2>Provider 配置</h2><table><thead><tr><th>Profile</th><th>Origin</th><th>User-Agent</th><th>Redirect hosts</th><th>Cookie env / 已加载</th><th>API user + key env / 已加载</th><th>并发</th><th>间隔</th></tr></thead><tbody>{profiles}</tbody></table></section></div>",
+            "<h1>当前生效配置</h1><p class=\"error\"><strong>DANGER:</strong> 此调试面板没有认证。下方会明文显示 Cookie、API user 和 API key，并将修改明文写入 config.json。任何能访问此面板的人都能读取和修改这些凭据。</p><p class=\"muted\">JSON 配置 API 仍保持脱敏，不返回 secret 或代理 URL/凭据值。</p><div class=\"grid\"><section class=\"card\"><h2>Runtime</h2><dl><dt>Schema</dt><dd>{}</dd><dt>实例</dt><dd>{}</dd><dt>命令容量</dt><dd>{}</dd><dt>关闭期限</dt><dd>{} 秒</dd></dl></section><section class=\"card\"><h2>HTTP</h2><dl><dt>启用</dt><dd>{}</dd><dt>配置监听</dt><dd><code>{}</code></dd><dt>局域网访问</dt><dd>{}</dd><dt>WebUI</dt><dd>{}</dd></dl><form method=\"post\" action=\"/ui/config/lan\"><label><input type=\"checkbox\" name=\"allow_lan\" value=\"true\"{allow_lan_checked}> 允许局域网访问调试面板</label><button type=\"submit\">保存 LAN 设置</button><p class=\"muted\">默认开启。保存后必须重启 fvcore 才会重新绑定监听地址。</p></form></section><section class=\"card\"><h2>网络</h2><dl><dt>连接 / 请求超时</dt><dd>{} / {} 秒</dd><dt>响应上限</dt><dd>{} 字节</dd><dt>重定向</dt><dd>{}</dd><dt>代理</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>图片</h2><dl><dt>单图上限</dt><dd>{}</dd><dt>内存缓存</dt><dd>{}</dd><dt>在途字节</dt><dd>{}</dd><dt>写盘队列</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>Operation</h2><dl><dt>活动上限</dt><dd>{}</dd><dt>排队上限</dt><dd>{}</dd><dt>终态保留</dt><dd>{}</dd><dt>默认期限</dt><dd>{} 秒</dd></dl></section><section class=\"card\"><h2>Event</h2><dl><dt>通道容量</dt><dd>{}</dd><dt>Journal 保留</dt><dd>{}</dd></dl></section><section class=\"card wide\"><h2>存储域</h2><table><tr><th>Schema</th><td>{}</td><th>数据库</th><td>{} 字节</td></tr><tr><th>Data</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Cache</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Downloads</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Temp</th><td colspan=\"3\"><code>{}</code></td></tr></table></section><section class=\"card wide\"><h2>Provider 配置</h2><table><thead><tr><th>Profile</th><th>Origin</th><th>User-Agent</th><th>Redirect hosts</th><th>Cookie env / 已加载</th><th>API user + key env / 已加载</th><th>并发</th><th>间隔</th></tr></thead><tbody>{profiles}</tbody></table></section>{credential_forms}</div>",
             config.schema_version,
             escape(&config.instance_name),
             config.command_capacity,
             config.shutdown_seconds,
             yes_no(config.control.enabled),
             config.control.listen,
+            yes_no(config.control.allow_lan),
             yes_no(config.control.webui_enabled),
             config.network.connect_timeout_seconds,
             config.network.request_timeout_seconds,
@@ -788,6 +827,37 @@ async fn configuration(State(state): State<ControlState>) -> Response {
         ),
         None,
     )
+}
+
+async fn update_lan_access(
+    State(state): State<ControlState>,
+    Form(form): Form<LanAccessForm>,
+) -> Response {
+    match state.core.set_allow_lan(form.allow_lan.is_some()).await {
+        Ok(()) => Redirect::to("/ui/config").into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
+/// DANGER: Unauthenticated debug endpoint that persists and echoes plaintext credentials.
+async fn update_profile_credentials(
+    State(state): State<ControlState>,
+    Form(form): Form<ProfileCredentialsForm>,
+) -> Response {
+    let optional = |value: String| (!value.trim().is_empty()).then_some(value);
+    match state
+        .core
+        .update_profile_credentials(
+            ProfileKey::new(form.provider, form.profile),
+            optional(form.cookie),
+            optional(form.api_user),
+            optional(form.api_key),
+        )
+        .await
+    {
+        Ok(_) => Redirect::to("/ui/config").into_response(),
+        Err(error) => error_page(&error),
+    }
 }
 
 async fn local_gallery(

@@ -26,6 +26,8 @@ cargo run -- run
 cargo run -- web
 ```
 
+调试 WebUI 没有认证，`control.allow_lan` 默认开启，因此默认可从可信局域网访问。配置页会按当前测试阶段要求明文显示 Cookie、API user 和 API key，并安全写回 executable 同级 `config.json`；任何能访问面板的人都能读取和修改这些凭据。关闭“允许局域网访问”并重启后会强制仅监听 loopback；不要把该面板直接暴露到不可信网络或公网。
+
 查看中文帮助：
 
 ```bash

@@ -127,8 +127,12 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
         Some(Command::Run) | Some(Command::Web) | None => {}
     }
     let web = matches!(cli.command, Some(Command::Web));
+    let config_path = executable_directory()?.join(CONFIG_FILENAME);
     let config = load_config(web)?;
-    let runtime = CoreBuilder::new(config).build().await?;
+    let runtime = CoreBuilder::new(config)
+        .config_file(config_path)
+        .build()
+        .await?;
     let snapshot = runtime.handle().snapshot().await?;
     tracing::info!(
         runtime_id = %snapshot.runtime_id,
@@ -136,7 +140,12 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
         "fvcore is ready"
     );
     if let Some(listen) = runtime.control_listen() {
-        tracing::info!(url = %format!("http://{listen}/"), "HTTP control plane is listening");
+        tracing::info!(
+            bind = %listen,
+            local_url = %local_control_url(listen),
+            lan_port = listen.port(),
+            "HTTP control plane is listening; LAN clients should use this computer's LAN IP"
+        );
     }
 
     tokio::signal::ctrl_c().await.map_err(|error| {
@@ -148,6 +157,19 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
     })?;
     tracing::info!("shutdown requested");
     runtime.shutdown().await
+}
+
+fn local_control_url(listen: std::net::SocketAddr) -> String {
+    let local = match listen {
+        std::net::SocketAddr::V4(address) if address.ip().is_unspecified() => {
+            std::net::SocketAddr::from(([127, 0, 0, 1], address.port()))
+        }
+        std::net::SocketAddr::V6(address) if address.ip().is_unspecified() => {
+            std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], address.port()))
+        }
+        address => address,
+    };
+    format!("http://{local}/")
 }
 
 fn check_config(path: &Path) -> Result<(), CoreError> {
@@ -539,8 +561,8 @@ fn init_tracing() {
 mod tests {
     use super::{
         CONFIG_BACKUP_FILENAME, Cli, check_config, check_config_path, create_config,
-        create_config_directory, executable_directory, load_config_for_executable, lock_config,
-        recover_config_override,
+        create_config_directory, executable_directory, load_config_for_executable,
+        local_control_url, lock_config, recover_config_override,
     };
     use clap::{CommandFactory, Parser};
     use std::fs;
@@ -577,6 +599,22 @@ mod tests {
     #[test]
     fn custom_runtime_config_path_is_not_accepted() {
         assert!(Cli::try_parse_from(["fvcore", "--config", "explicit.json", "run"]).is_err());
+    }
+
+    #[test]
+    fn wildcard_listener_has_a_browsable_local_url() {
+        assert_eq!(
+            local_control_url("0.0.0.0:8787".parse().unwrap()),
+            "http://127.0.0.1:8787/"
+        );
+        assert_eq!(
+            local_control_url("[::]:8787".parse().unwrap()),
+            "http://[::1]:8787/"
+        );
+        assert_eq!(
+            local_control_url("192.168.1.20:9000".parse().unwrap()),
+            "http://192.168.1.20:9000/"
+        );
     }
 
     #[test]

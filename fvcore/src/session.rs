@@ -128,6 +128,13 @@ pub(crate) struct DownloadRequest<'a> {
     pub(crate) path: &'a std::path::Path,
 }
 
+/// DANGER: Plaintext credentials exposed only to the unauthenticated diagnostic WebUI.
+pub(crate) struct DangerousProfileCredentials {
+    pub(crate) cookie: Option<String>,
+    pub(crate) api_user: Option<String>,
+    pub(crate) api_key: Option<String>,
+}
+
 struct SessionGeneration {
     key: ProfileKey,
     number: u64,
@@ -177,9 +184,21 @@ impl SessionRegistry {
     ) -> Result<ProfileSnapshot, CoreError> {
         let key = ProfileKey::new(config.provider.clone(), config.profile.clone());
         config.validate(&key.to_string())?;
-        let cookie = load_secret(config.cookie_env.as_deref(), "Cookie")?;
-        let api_user = load_secret(config.api_user_env.as_deref(), "API user")?;
-        let api_key = load_secret(config.api_key_env.as_deref(), "API key")?;
+        let cookie = load_configured_secret(
+            config.cookie.as_deref(),
+            config.cookie_env.as_deref(),
+            "Cookie",
+        )?;
+        let api_user = load_configured_secret(
+            config.api_user.as_deref(),
+            config.api_user_env.as_deref(),
+            "API user",
+        )?;
+        let api_key = load_configured_secret(
+            config.api_key.as_deref(),
+            config.api_key_env.as_deref(),
+            "API key",
+        )?;
         let mut state = self.state.write().map_err(lock_error)?;
         let generation = state.next_generations.get(&key).copied().unwrap_or(1);
         let session = Arc::new(SessionGeneration::new(
@@ -205,6 +224,28 @@ impl SessionRegistry {
             .collect();
         snapshots.sort_by(|left, right| left.key.cmp(&right.key));
         Ok(snapshots)
+    }
+
+    /// DANGER: Exposes live plaintext credentials only to the unauthenticated diagnostic WebUI.
+    pub(crate) fn dangerous_credentials(
+        &self,
+        key: &ProfileKey,
+    ) -> Result<DangerousProfileCredentials, CoreError> {
+        let session = self.session(key)?;
+        Ok(DangerousProfileCredentials {
+            cookie: session
+                .cookie
+                .as_ref()
+                .map(|value| value.expose_secret().to_owned()),
+            api_user: session
+                .api_user
+                .as_ref()
+                .map(|value| value.expose_secret().to_owned()),
+            api_key: session
+                .api_key
+                .as_ref()
+                .map(|value| value.expose_secret().to_owned()),
+        })
     }
 
     pub(crate) async fn get(
@@ -909,6 +950,17 @@ fn load_secret(variable: Option<&str>, label: &str) -> Result<Option<SecretStrin
             })
         })
         .transpose()
+}
+
+fn load_configured_secret(
+    plaintext: Option<&str>,
+    variable: Option<&str>,
+    label: &str,
+) -> Result<Option<SecretString>, CoreError> {
+    if let Some(value) = plaintext {
+        return Ok(Some(SecretString::from(value.to_owned())));
+    }
+    load_secret(variable, label)
 }
 
 fn pixiv_user_id(cookie: &str) -> Option<&str> {

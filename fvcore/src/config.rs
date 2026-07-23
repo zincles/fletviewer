@@ -405,6 +405,8 @@ pub struct ControlConfig {
     pub enabled: bool,
     /// Address used when HTTP listening is enabled. Defaults to `127.0.0.1:8787`.
     pub listen: SocketAddr,
+    /// Whether the diagnostic listener is reachable from LAN interfaces. Defaults to `true`.
+    pub allow_lan: bool,
     /// Whether the embedded diagnostic WebUI routes are available. Defaults to `true`.
     pub webui_enabled: bool,
 }
@@ -414,7 +416,25 @@ impl Default for ControlConfig {
         Self {
             enabled: false,
             listen: default_control_listen(),
+            allow_lan: true,
             webui_enabled: true,
+        }
+    }
+}
+
+impl ControlConfig {
+    pub(crate) fn effective_listen(&self) -> SocketAddr {
+        let port = self.listen.port();
+        match (self.allow_lan, self.listen) {
+            (true, SocketAddr::V4(address)) if address.ip().is_loopback() => {
+                SocketAddr::from(([0, 0, 0, 0], port))
+            }
+            (true, SocketAddr::V6(address)) if address.ip().is_loopback() => {
+                SocketAddr::from(([0_u16; 8], port))
+            }
+            (true, address) => address,
+            (false, SocketAddr::V4(_)) => SocketAddr::from(([127, 0, 0, 1], port)),
+            (false, SocketAddr::V6(_)) => SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port)),
         }
     }
 }
@@ -606,10 +626,16 @@ pub struct ProviderProfileConfig {
     pub user_agent: String,
     /// Additional redirect hosts allowed for this profile. Defaults to an empty list.
     pub allowed_redirect_hosts: Vec<String>,
+    /// DANGER: Plaintext Cookie value persisted for the unauthenticated diagnostic WebUI.
+    pub cookie: Option<String>,
     /// Environment variable containing a Cookie header value. Defaults to `None`.
     pub cookie_env: Option<String>,
+    /// DANGER: Plaintext Provider API user/login persisted for the diagnostic WebUI.
+    pub api_user: Option<String>,
     /// Environment variable containing the Provider API user/login. Defaults to `None`.
     pub api_user_env: Option<String>,
+    /// DANGER: Plaintext Provider API key persisted for the diagnostic WebUI.
+    pub api_key: Option<String>,
     /// Environment variable containing the Provider API key. Defaults to `None`.
     pub api_key_env: Option<String>,
     /// Maximum requests concurrently using this profile generation. Defaults to `4`.
@@ -626,8 +652,11 @@ impl Default for ProviderProfileConfig {
             base_url: Url::parse("http://127.0.0.1/").expect("static URL is valid"),
             user_agent: format!("fvcore/{}", crate::VERSION),
             allowed_redirect_hosts: Vec::new(),
+            cookie: None,
             cookie_env: None,
+            api_user: None,
             api_user_env: None,
+            api_key: None,
             api_key_env: None,
             max_concurrent_requests: default_profile_concurrency(),
             min_request_interval_ms: 0,
@@ -659,21 +688,35 @@ impl ProviderProfileConfig {
                 false,
             ));
         }
-        if self
+        if self.cookie.as_ref().is_some_and(|value| {
+            value.trim().is_empty()
+                || value.len() > 64 * 1024
+                || value.bytes().any(|byte| byte.is_ascii_control())
+        }) || self
             .cookie_env
             .as_ref()
             .is_some_and(|name| name.trim().is_empty())
         {
             return Err(CoreError::new(
                 ErrorCode::InvalidConfig,
-                format!("profile {key} cookie_env must not be empty"),
+                format!(
+                    "profile {key} Cookie must be non-empty, at most 64 KiB, and contain no control characters; cookie_env must not be empty"
+                ),
                 false,
             ));
         }
         if self
-            .api_user_env
+            .api_user
             .as_ref()
-            .is_some_and(|name| name.trim().is_empty())
+            .is_some_and(|value| value.trim().is_empty() || value.len() > 4096)
+            || self
+                .api_key
+                .as_ref()
+                .is_some_and(|value| value.trim().is_empty() || value.len() > 4096)
+            || self
+                .api_user_env
+                .as_ref()
+                .is_some_and(|name| name.trim().is_empty())
             || self
                 .api_key_env
                 .as_ref()
@@ -685,10 +728,13 @@ impl ProviderProfileConfig {
                 false,
             ));
         }
-        if self.api_user_env.is_some() != self.api_key_env.is_some() {
+        if self.api_user.is_some() != self.api_key.is_some()
+            || (self.api_user.is_none()
+                && self.api_user_env.is_some() != self.api_key_env.is_some())
+        {
             return Err(CoreError::new(
                 ErrorCode::InvalidConfig,
-                format!("profile {key} api_user_env and api_key_env must be configured together"),
+                format!("profile {key} API user and key must be configured together"),
                 false,
             ));
         }
@@ -712,6 +758,11 @@ mod tests {
     fn defaults_are_valid() {
         let config = CoreConfig::default();
         config.validate().unwrap();
+        assert!(config.control.allow_lan);
+        assert_eq!(
+            config.control.effective_listen(),
+            "0.0.0.0:8787".parse().unwrap()
+        );
         assert_eq!(config.profiles.len(), 4);
         assert_eq!(
             config.profiles["eh"].base_url.as_str(),
@@ -733,6 +784,23 @@ mod tests {
             config.profiles["gelbooru"].base_url.as_str(),
             "https://gelbooru.com/"
         );
+    }
+
+    #[test]
+    fn lan_access_controls_the_effective_listener_without_changing_the_port() {
+        let mut control = super::ControlConfig {
+            listen: "127.0.0.1:9000".parse().unwrap(),
+            ..super::ControlConfig::default()
+        };
+        assert_eq!(control.effective_listen(), "0.0.0.0:9000".parse().unwrap());
+        control.allow_lan = false;
+        control.listen = "192.168.1.20:9000".parse().unwrap();
+        assert_eq!(
+            control.effective_listen(),
+            "127.0.0.1:9000".parse().unwrap()
+        );
+        control.listen = "[::]:9000".parse().unwrap();
+        assert_eq!(control.effective_listen(), "[::1]:9000".parse().unwrap());
     }
 
     #[test]
@@ -785,6 +853,13 @@ mod tests {
         assert!(missing_key.validate("danbooru").is_err());
         missing_key.api_key_env = Some("DANBOORU_KEY".to_owned());
         assert!(missing_key.validate("danbooru").is_ok());
+        missing_key.api_user = Some("plain-user".to_owned());
+        assert!(missing_key.validate("danbooru").is_err());
+        missing_key.api_key = Some("plain-key".to_owned());
+        assert!(missing_key.validate("danbooru").is_ok());
+        missing_key.cookie = Some("invalid\ncookie".to_owned());
+        assert!(missing_key.validate("danbooru").is_err());
+        missing_key.cookie = Some("plain-cookie".to_owned());
         missing_key.max_concurrent_requests = 0;
         assert!(missing_key.validate("danbooru").is_err());
     }
@@ -810,6 +885,9 @@ mod tests {
         profile.base_url =
             url::Url::parse("https://url-user:url-secret@example.invalid/?secret=value").unwrap();
         profile.cookie_env = Some("FV_EH_COOKIE".to_owned());
+        profile.cookie = Some("plain-cookie-secret".to_owned());
+        profile.api_user = Some("plain-user-secret".to_owned());
+        profile.api_key = Some("plain-key-secret".to_owned());
         let snapshot = config.effective_snapshot(
             crate::StorageSnapshot {
                 schema_version: 2,
@@ -828,5 +906,8 @@ mod tests {
         assert!(!json.contains("proxy.invalid"));
         assert!(!json.contains("url-secret"));
         assert!(!json.contains("secret=value"));
+        assert!(!json.contains("plain-cookie-secret"));
+        assert!(!json.contains("plain-user-secret"));
+        assert!(!json.contains("plain-key-secret"));
     }
 }

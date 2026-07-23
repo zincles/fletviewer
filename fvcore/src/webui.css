@@ -10,7 +10,8 @@ h1, h2 { line-height: 1.15; }
 form, .card, table { border: 1px solid #8886; border-radius: .45rem; padding: 1rem; }
 form { display: flex; flex-wrap: wrap; gap: .7rem; align-items: end; margin-bottom: 1rem; }
 label { display: grid; gap: .2rem; }
-input, select, button { font: inherit; padding: .45rem .55rem; }
+input, select, textarea, button { font: inherit; padding: .45rem .55rem; }
+textarea { min-width: min(42rem, 78vw); resize: vertical; }
 button { cursor: pointer; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: .8rem; }
 .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr)); }

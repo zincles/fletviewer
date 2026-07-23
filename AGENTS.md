@@ -51,7 +51,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - 图像磁盘缓存使用真实内容的 128-bit MD5，即 32 位小写十六进制文件名加规范化后缀，并按前四位两级分片；Booru original 的 Provider MD5 用于 fetch 前去重及 fetch 后校验。
 - 本地画廊 Archive 导出使用不暴露服务器 `Path` 的有界异步 stream handle；句柄生命周期持有画廊共享占用，HTTP 直接流式返回附件，桌面/Android 嵌入者把同一流写入平台选择的目标，不允许 Core 接受任意外部绝对输出路径。
 - `redb` 的本地画廊登记表是“已导入”的权威状态，只保存 gallery ID 到受管根目录直接子目录名；WebUI inventory 扫描可报告已登记健康、已登记损坏、未登记可导入和格式无效，导入只接受已完整校验的 gallery ID，不接受调用方路径。
-- 当前生效配置可以通过只读脱敏 snapshot 展示；允许显示环境变量名和凭据是否已加载，不得显示 Cookie/API secret、API user 值、代理 URL/凭据或带 userinfo/query 的 Provider URL。
+- 当前生效配置的公开 snapshot/API 必须保持只读脱敏；允许显示环境变量名和凭据是否已加载，不得显示 Cookie/API secret、API user 值、代理 URL/凭据或带 userinfo/query 的 Provider URL。唯一例外是当前测试阶段带醒目 DANGER 标记的无认证调试配置页，它按明确产品决策明文回显并持久化 Provider secret；不得把该例外扩散到 snapshot、JSON API 或日志。
 - `fvcore` 可以引入支持 Windows、Linux、Android 和 server 的成熟 Rust 依赖；WASM 不在本轮目标。依赖引入前检查目标构建、feature、维护状态、许可证和安全公告。
 
 ## fvcore executable 与配置
@@ -68,7 +68,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 
 - HTTP API、SSE、resource 和 WebUI 复用同一 Runtime；WebUI 由 Axum 服务端渲染，CSS 编译进 executable，不依赖 Node.js、npm、外部 CDN 或 base64 图片。
 - `control.enabled = false` 不监听 HTTP；`control.enabled = true` 且 WebUI 关闭时为 API-only；`web` 命令强制同时启用 listener 与 WebUI。
-- 当前控制面没有内置认证；默认监听 loopback。暴露到其他网络时由可信反向代理提供 TLS、认证和访问控制。
+- 当前控制面没有内置认证；`control.allow_lan` 默认开启，loopback 配置会映射为同端口 wildcard 监听，关闭后强制仅监听 loopback。调试配置页按当前测试阶段要求明文显示并持久化 Provider Cookie/API 凭据，因此只允许在可信 LAN 使用；暴露到不可信网络时必须由可信反向代理提供 TLS、认证和访问控制。
 - Provider transport 只接受配置 origin 下的请求及 allowlist redirect host，限制 redirect 和响应体大小；Cookie/API secret 只通过配置指向的环境变量注入，不进入 snapshot、缓存键、任务、配置输出或日志。
 
 ## 标准验证
