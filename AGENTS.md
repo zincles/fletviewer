@@ -13,6 +13,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 ## 协作风格
 
 - 默认 TLDR：先结论、改了什么、还差什么；除非用户要求，不写长背景。
+- 无论用户使用英文、中文或混合语言输入，默认使用中文回复；只有用户明确要求其他输出语言时才切换。
 - Markdown 单行尽量承载完整意思，避免把短句拆成很多行导致屏幕右侧空白；列表项可以稍长。
 - TODO 文档只保留“决策、约束、下一步”；长期规则写进 `AGENTS.md`，实验流水账写进 `tmp/` 或 commit message。
 - 不要随意重构。优先小改、可验证、低风险；不要为了“统一”抹掉 provider 差异。
@@ -46,7 +47,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - 最终范围覆盖 Python Core 的全部正式能力，包括 Provider、网络、图像、缓存、下载、ZIP/CBZ、本地画廊、历史和存储；迁移按纵向能力分批验收，不把早期批次范围视为永久裁剪。
 - 标准 `fvcore` executable 必须始终编译 HTTP 控制面；是否监听只由 args/配置决定，不通过 Cargo feature 形成缺少控制面的正式内核变体。
 - Runtime 是配置、Provider profile/session、operation、图像缓存和下载任务的唯一 owner；通常一进程一个 Runtime，外部使用可克隆 handle，不使用 Rust `static` 全局可变单例或 Core-wide 大锁。
-- 同一 Provider profile 共用连接池、认证、代理、限流和 session generation；EH 搜索/详情/图片/Archive 必须复用同一逻辑会话，配置变化创建新 generation，旧请求自然持有旧 generation 至完成。标准 E-Hentai 页面 origin 为 `e-hentai.org`，图片 JSON API 为 `api.e-hentai.org/api.php`；ExHentai 图片 API 使用其 origin 下的 `/api.php`。
+- 同一 Provider profile 共用连接池、认证、代理、限流和 session generation；EH 搜索/详情/图片/Archive 必须复用同一逻辑会话，配置变化创建新 generation，旧请求自然持有旧 generation 至完成。标准 E-Hentai 页面 origin 为 `e-hentai.org`，阅读器私有图片 API 为 `api.e-hentai.org/api.php`；ExHentai 使用其 origin 下的 `/api.php`。该私有 API 可能以 `text/html` 返回 JSON，必须按有界 body 解析而不能仅凭 Content-Type 拒绝。
 - 图片链路按 memory -> disk -> network；网络未命中优先 fetch 到有界内存、发布共享不可变 bytes，再可选异步落盘。所有内存、在途 bytes、队列和并发必须有硬上限。
 - 图像磁盘缓存使用真实内容的 128-bit MD5，即 32 位小写十六进制文件名加规范化后缀，并按前四位两级分片；Booru original 的 Provider MD5 用于 fetch 前去重及 fetch 后校验。
 - 本地画廊 Archive 导出使用不暴露服务器 `Path` 的有界异步 stream handle；句柄生命周期持有画廊共享占用，HTTP 直接流式返回附件，桌面/Android 嵌入者把同一流写入平台选择的目标，不允许 Core 接受任意外部绝对输出路径。
@@ -147,7 +148,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 
 ## 下载系统
 
-- EH 批量下载默认只支持 Archive Download；逐页 fetch 只可用于预览/少量图片，不作为批量下载方案。
+- EH 批量下载默认只支持 Archive Download；逐页 fetch 获取的是网页阅读器图片，可能经过重采样，只可用于预览/少量图片，不称为原图，也不作为批量下载方案。只有 Original Archive 语义明确承诺归档原始文件。
 - `DownloadManager` 负责大文件任务、状态、断点续传、进度、重试/取消、完成事件；`LocalGalleryManager` 负责消费完成任务、创建本地画廊、移动 ZIP、写 metadata、提取封面、扫描本地画廊。
 - EH Archive 保留远端 ZIP，不解压、不重命名；同目录写 `gallery.json` 和 `thumb.<ext>`；目录名为 `[<GID>][<TOKEN>] <SanitizedGalleryTitle>`，按 Windows 最严格规则清洗并限制长度。
 - 目录约定：下载中 `FletViewer/Downloads/Downloading/<task_id>/`，本地归档 `FletViewer/Downloads/EHArchieve/[gid][token] title/`，任务索引 `FletViewer/Data/Downloads/tasks.json`。

@@ -135,7 +135,7 @@ pub struct PixivPageFetchRequest {
     pub page: u32,
 }
 
-/// Request for one original page of an EH gallery.
+/// Request for one image displayed by the EH web viewer; it may be resampled.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EhPageFetchRequest {

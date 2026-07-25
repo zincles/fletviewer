@@ -747,7 +747,7 @@ async fn run_eh_page(
     messages: mpsc::Sender<OperationMessage>,
 ) -> WorkerResult {
     let resolved = match EhService::new(sessions)
-        .resolve_original(
+        .resolve_viewer_image(
             &request.profile,
             request.gallery.clone(),
             request.page,
@@ -763,7 +763,7 @@ async fn run_eh_page(
         "eh",
         format!("{}:{}", request.gallery.gid, request.gallery.token),
         request.page,
-        "original",
+        "viewer",
     ) {
         Ok(key) => key,
         Err(error) => return worker_error(error),

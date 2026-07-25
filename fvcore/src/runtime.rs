@@ -354,7 +354,7 @@ impl CoreHandle {
             .await?
     }
 
-    /// Starts a cancellable original-image fetch for one EH gallery page.
+    /// Starts a cancellable fetch of one possibly resampled EH web-viewer image.
     pub async fn start_eh_page_fetch(
         &self,
         request: EhPageFetchRequest,
@@ -657,8 +657,8 @@ impl CoreHandle {
             .await
     }
 
-    /// Resolves the remote original-image URL and reload nonce for one EH gallery page.
-    pub async fn eh_resolve_original(
+    /// Resolves the web viewer's image URL and reload nonce for one EH gallery page.
+    pub async fn eh_resolve_viewer_image(
         &self,
         key: &ProfileKey,
         gallery: crate::EhGalleryRef,
@@ -666,7 +666,7 @@ impl CoreHandle {
         nl: Option<&str>,
     ) -> Result<crate::EhImageResolution, CoreError> {
         EhService::new(self.sessions.clone())
-            .resolve_original(key, gallery, page, nl, self.shutdown.child_token())
+            .resolve_viewer_image(key, gallery, page, nl, self.shutdown.child_token())
             .await
     }
 
@@ -1902,7 +1902,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn eh_original_fetch_resolves_api_and_uses_image_service() {
+    async fn eh_viewer_image_fetch_resolves_api_and_uses_image_service() {
         const THUMBNAILS: &str = include_str!("../tests/fixtures/eh/thumbnails.html");
         const SHOWKEY: &str = include_str!("../tests/fixtures/eh/image_showkey.html");
         let image = Arc::new(test_jpeg());
@@ -1945,10 +1945,15 @@ mod tests {
                         assert_eq!(payload["gid"], 123456);
                         assert_eq!(payload["imgkey"], "aaa111");
                         assert_eq!(payload["showkey"], "fixture-showkey");
-                        axum::Json(serde_json::json!({
+                        let body = serde_json::json!({
                             "i3": format!("<img src=\"http://{provider_listen}/original.jpg\" style=\"max-width:100%\">"),
                             "i6": "<a onclick=\"return nl('next-nonce')\">reload</a>"
-                        }))
+                        })
+                        .to_string();
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "text/html; charset=UTF-8")],
+                            body,
+                        )
                     },
                 ),
             )

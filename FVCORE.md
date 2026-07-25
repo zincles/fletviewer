@@ -386,7 +386,7 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 - 标准 executable 始终包含 HTTP 控制面，关闭监听只是不启动服务，不产生缺少控制能力的另一种编译产物。
 - Windows、Linux、Android 和 server 所需 target 可编译；WASM 明确不在范围。
 - 一个 Runtime 统一拥有 Provider session、操作、内存缓存、磁盘缓存和下载任务；测试可创建多个隔离 Runtime。
-- EH 全链路共享同一 profile session generation；标准 E-Hentai profile 的页面使用 `e-hentai.org`，图片 JSON API 使用受限的 `api.e-hentai.org/api.php`，ExHentai 使用其 origin 下的 `/api.php`；配置更新不破坏正在读取的旧响应。
+- EH 全链路共享同一 profile session generation；标准 E-Hentai profile 的页面使用 `e-hentai.org`，阅读器私有图片 API 使用受限的 `api.e-hentai.org/api.php`，ExHentai 使用其 origin 下的 `/api.php`；该私有 API 允许以 `text/html` 标记 JSON body。逐页链路只承诺获取网页阅读器图片，可能经过重采样；只有 Original Archive 承诺归档原始文件。配置更新不破坏正在读取的旧响应。
 - Booru API 提供 MD5 时缓存命中不访问 CDN；网络结果 MD5 不符绝不入缓存。
 - 未知 MD5 图像只 fetch 一次，结果优先在有界内存发布，再可选异步写磁盘。
 - 同一内容在内存和磁盘各只有一份；缓存文件名为 32 位小写内容 MD5 加规范化后缀。
@@ -415,7 +415,7 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 | 已完成 | Command/Event/Operation Foundation | Operation ID、状态机、有界 active/queue/retention、deadline、取消、event journal/cursor 和 SSE |
 | 已完成 | 共享 session 与网络 Foundation | Reqwest/Rustls、profile generation、代理、同 scheme/allowlist redirect、E-Hentai 专用图片 API origin、响应上限、取消和 Cookie 脱敏 |
 | 已完成 | Provider 限流与两大 Booru 查询闭环 | Generation 级并发/启动间隔；Danbooru JSON 与 Gelbooru JSON DAPI 搜索/详情、fixture、稳定错误和 HTTP 路由 |
-| 已完成 | EH 浏览、指定页原图、持久 Archive 与本地画廊消费 | 主页/详情/缩略图、showkey/mpvkey 指定页共享 ImageService fetch；Original/Resample 显式付费提交、签名 URL 隔离、单并发流式 ZIP、Range 续传、`cost_unknown` 防重放；Archive revision 接入统一 event journal；完成 ZIP 通过 staging 幂等提交为本地画廊并提取安全封面；原 ZIP 不改名不改字节，`ComicInfo.xml` 由 ZIP 与 `gallery.json` 确定性派生并可删除/重建；H@H 仅展示 |
+| 已完成 | EH 浏览、阅读页图片、持久 Archive 与本地画廊消费 | 主页/详情/缩略图、showkey/mpvkey 指定页网页阅读器图片共享 ImageService fetch，兼容 text/html JSON 且不承诺原始分辨率；Original/Resample 显式付费提交、签名 URL 隔离、单并发流式 ZIP、Range 续传、`cost_unknown` 防重放；Archive revision 接入统一 event journal；完成 ZIP 通过 staging 幂等提交为本地画廊并提取安全封面；原 ZIP 不改名不改字节，`ComicInfo.xml` 由 ZIP 与 `gallery.json` 确定性派生并可删除/重建；H@H 仅展示 |
 | 已完成 | 已知 MD5 的 Booru original Fetch 主链路 | Danbooru/Gelbooru metadata -> memory -> disk -> shared network -> length/magic/MD5 验证 -> immutable resource；operation 进度、独立取消和 HTTP bytes 已贯通 |
 | 已完成 | 可选内嵌调试 WebUI | 无 Node.js 的服务端渲染 Dashboard、EH 主页/详情/缩略图、Booru 搜索/详情、Pixiv 详情、operation 列表/详情、Fetch/取消和结果图片；Dashboard 和活动 operation 页面按状态自动刷新，listener 与 WebUI 可分别开关 |
 | 已完成 | 未知 MD5 alias 与 Pixiv 详情主链路 | `ResourceKey -> ContentMd5` 持久 alias、有界异步 cache writer、关闭 drain、Pixiv AJAX 详情/多页 metadata、Referer 与 original page operation |

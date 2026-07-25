@@ -483,7 +483,7 @@ async fn eh_gallery(
     for item in &thumbnails.items {
         let _ = write!(
             items,
-            "<article class=\"card\"><h2>第 {} 页 · {} x {}</h2><p><a href=\"{}\" rel=\"noreferrer\">打开图片页</a></p><code>{}</code><form method=\"post\" action=\"/ui/eh/fetch\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"gid\" value=\"{}\"><input type=\"hidden\" name=\"token\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"{}\"><button type=\"submit\">获取原图</button></form></article>",
+            "<article class=\"card\"><h2>第 {} 页 · {} x {}</h2><p><a href=\"{}\" rel=\"noreferrer\">打开图片页</a></p><code>{}</code><form method=\"post\" action=\"/ui/eh/fetch\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"gid\" value=\"{}\"><input type=\"hidden\" name=\"token\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"{}\"><button type=\"submit\">获取阅读页图片</button></form><p class=\"muted\">这是 EH 网页阅读器提供的图片，可能经过重采样；不等同于 Original Archive 内的原始文件。</p></article>",
             item.page + 1,
             optional_number(item.width),
             optional_number(item.height),

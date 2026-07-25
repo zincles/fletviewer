@@ -193,10 +193,10 @@ pub struct EhThumbnailPage {
     pub next_page: Option<u32>,
 }
 
-/// Resolved original image metadata for one EH gallery page.
+/// Resolved viewer-image metadata for one EH gallery page.
 #[derive(Clone, Debug, Serialize)]
 pub struct EhImageResolution {
-    /// Resolved remote original-image URL.
+    /// Resolved remote image URL used by the EH web viewer; it may be resampled.
     pub url: Url,
     /// Referer required when fetching the image.
     pub referer: Url,
@@ -443,7 +443,7 @@ impl EhService {
         })
     }
 
-    pub(crate) async fn resolve_original(
+    pub(crate) async fn resolve_viewer_image(
         &self,
         key: &ProfileKey,
         gallery: EhGalleryRef,
@@ -547,7 +547,6 @@ impl EhService {
             .sessions
             .post_eh_api(key, &payload, cancellation)
             .await?;
-        ensure_json(&response.content_type, "EH image API")?;
         parse_image_api_response(method, &response.body, &response.final_url)
     }
 
@@ -664,11 +663,20 @@ fn parse_image_api_response(
     body: &[u8],
     api_url: &Url,
 ) -> Result<EhImageResolution, CoreError> {
-    let value: serde_json::Value = serde_json::from_slice(body)
-        .map_err(|_| unexpected("EH image API returned invalid JSON"))?;
+    let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| {
+        let message = std::str::from_utf8(body)
+            .ok()
+            .map(str::trim)
+            .filter(|message| !message.is_empty() && message.len() <= 256)
+            .map_or_else(
+                || "EH viewer API returned an invalid response".to_owned(),
+                |message| format!("EH viewer API rejected the request: {message}"),
+            );
+        unexpected(message)
+    })?;
     if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
         return Err(unexpected(format!(
-            "EH image API rejected the request: {error}"
+            "EH viewer API rejected the request: {error}"
         )));
     }
     let (image_url, next_nl) = if method == "imagedispatch" {
@@ -714,7 +722,7 @@ fn resolved_image(
                 && url.username().is_empty()
                 && url.password().is_none()
         })
-        .ok_or_else(|| unexpected("EH image API returned no valid image URL"))?;
+        .ok_or_else(|| unexpected("EH viewer API returned no valid image URL"))?;
     let mut referer = api_url.clone();
     referer.set_path("/");
     referer.set_query(None);
@@ -1377,19 +1385,6 @@ fn ensure_html(content_type: &Option<String>, endpoint: &str) -> Result<(), Core
     }
 }
 
-fn ensure_json(content_type: &Option<String>, endpoint: &str) -> Result<(), CoreError> {
-    if content_type
-        .as_deref()
-        .is_some_and(|value| !value.to_ascii_lowercase().contains("json"))
-    {
-        Err(unexpected(format!(
-            "{endpoint} returned a non-JSON response"
-        )))
-    } else {
-        Ok(())
-    }
-}
-
 fn parse_archive_options(html: &str) -> Result<Vec<EhArchiveOption>, CoreError> {
     let parser = tl::parse(html, tl::ParserOptions::default())
         .map_err(|_| unexpected("EH Archive page contains malformed HTML"))?;
@@ -1691,6 +1686,13 @@ mod tests {
             "https://images.example/fixture-mpv-original.jpg"
         );
         assert_eq!(mpv.next_nl.as_deref(), Some("fixture-mpv-nl"));
+        let error = parse_image_api_response("showpage", b"Invalid page.\n", &api).unwrap_err();
+        assert_eq!(error.code(), crate::ErrorCode::UnexpectedResponse);
+        assert!(
+            error
+                .message()
+                .contains("EH viewer API rejected the request: Invalid page.")
+        );
     }
 
     #[tokio::test]
