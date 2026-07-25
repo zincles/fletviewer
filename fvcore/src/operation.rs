@@ -61,6 +61,8 @@ pub struct OperationSnapshot {
     pub id: OperationId,
     /// Operation category.
     pub kind: OperationKind,
+    /// Stable target resource identity when known before execution.
+    pub resource_key: Option<crate::ResourceKey>,
     /// Current lifecycle state.
     pub state: OperationState,
     /// Stable phase identifier.

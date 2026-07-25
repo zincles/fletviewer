@@ -93,6 +93,24 @@ struct EhPageFetchForm {
 }
 
 #[derive(Deserialize)]
+struct EhReaderQuery {
+    profile: String,
+    gid: u64,
+    token: String,
+    #[serde(default)]
+    page: u32,
+    operation: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EhReaderJumpForm {
+    profile: String,
+    gid: u64,
+    token: String,
+    page: u32,
+}
+
+#[derive(Deserialize)]
 struct EhArchiveForm {
     profile: String,
     gid: u64,
@@ -134,12 +152,26 @@ struct CancelForm {
 }
 
 #[derive(Deserialize)]
-struct ProfileCredentialsForm {
+struct ProfileCookieForm {
     provider: String,
     profile: String,
     cookie: String,
+}
+
+#[derive(Deserialize)]
+struct ProfileApiCredentialsForm {
+    provider: String,
+    profile: String,
     api_user: String,
     api_key: String,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ConfigurationQuery {
+    edit: Option<String>,
+    provider: Option<String>,
+    profile: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -158,13 +190,20 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/eh", get(eh_home))
         .route("/ui/eh/gallery", get(eh_gallery))
         .route("/ui/eh/fetch", post(start_eh_page_fetch))
+        .route("/ui/eh/reader", get(eh_reader))
+        .route("/ui/eh/reader/fetch", post(start_eh_reader_fetch))
+        .route("/ui/eh/reader/jump", post(jump_eh_reader))
         .route("/ui/eh/archive", post(start_eh_archive))
         .route("/ui/archive-tasks", get(archive_tasks))
         .route("/ui/local-galleries", get(local_galleries))
         .route("/ui/local-data", get(local_data))
         .route("/ui/local-data/import", post(import_local_gallery))
         .route("/ui/config", get(configuration))
-        .route("/ui/config/credentials", post(update_profile_credentials))
+        .route("/ui/config/cookie", post(update_profile_cookie))
+        .route(
+            "/ui/config/api-credentials",
+            post(update_profile_api_credentials),
+        )
         .route("/ui/config/lan", post(update_lan_access))
         .route("/ui/local-gallery", get(local_gallery))
         .route("/ui/local-gallery/delete", post(local_gallery_delete))
@@ -483,16 +522,19 @@ async fn eh_gallery(
     for item in &thumbnails.items {
         let _ = write!(
             items,
-            "<article class=\"card\"><h2>第 {} 页 · {} x {}</h2><p><a href=\"{}\" rel=\"noreferrer\">打开图片页</a></p><code>{}</code><form method=\"post\" action=\"/ui/eh/fetch\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"gid\" value=\"{}\"><input type=\"hidden\" name=\"token\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"{}\"><button type=\"submit\">获取阅读页图片</button></form><p class=\"muted\">这是 EH 网页阅读器提供的图片，可能经过重采样；不等同于 Original Archive 内的原始文件。</p></article>",
+            "<article class=\"card\"><h2>第 {} 页 · {} x {}</h2><p><a href=\"{}\">进入阅读器</a> · <a href=\"{}\" rel=\"noreferrer\">打开 EH 图片页</a></p><code>{}</code><p class=\"muted\">阅读器图片可能经过重采样，不等同于 Original Archive 内的原始文件。</p></article>",
             item.page + 1,
             optional_number(item.width),
             optional_number(item.height),
+            escape(&eh_reader_url(
+                &query.profile,
+                query.gid,
+                &query.token,
+                item.page,
+                None,
+            )),
             escape(item.page_url.as_str()),
             escape(&item.image_url),
-            escape(&query.profile),
-            query.gid,
-            escape(&query.token),
-            item.page,
         );
     }
     let next = thumbnails.next_page.map_or_else(String::new, |page| {
@@ -524,6 +566,147 @@ async fn eh_gallery(
             query.gid,
             escape(&query.token),
             thumbnails.page + 1,
+        ),
+        None,
+    )
+}
+
+async fn eh_reader(
+    State(state): State<ControlState>,
+    Query(query): Query<EhReaderQuery>,
+) -> Response {
+    let operation = if let Some(id) = query.operation.as_deref() {
+        let id = match id.parse() {
+            Ok(id) => id,
+            Err(_) => {
+                return error_page(&CoreError::new(
+                    ErrorCode::InvalidInput,
+                    "阅读器 operation ID 必须是有效 UUID",
+                    false,
+                ));
+            }
+        };
+        let operation = match state.core.operation(id).await {
+            Ok(operation) => operation,
+            Err(error) => return error_page(&error),
+        };
+        let expected_media = format!("{}:{}", query.gid, query.token);
+        if !operation.resource_key.as_ref().is_some_and(|key| {
+            key.provider == "eh"
+                && key.media == expected_media
+                && key.page == query.page
+                && key.variant == "viewer"
+        }) {
+            return error_page(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "operation 不属于当前 EH Gallery 阅读页",
+                false,
+            ));
+        }
+        if !operation.state.is_terminal() {
+            let gallery_url = eh_gallery_url(&query.profile, query.gid, &query.token, 0);
+            return html_page(
+                StatusCode::OK,
+                &format!("EH 阅读器 · 第 {} 页", query.page + 1),
+                &format!(
+                    "<header class=\"reader-header\"><div><p><a href=\"{}\">返回 Gallery</a></p><h1>EH 阅读器</h1><p>第 {} 页</p></div></header><section class=\"reader-status card\"><h2>正在获取阅读页图片</h2><p>{:?} · {} · {}{}</p><p><a href=\"{}\">查看 operation</a></p></section>",
+                    escape(&gallery_url),
+                    query.page + 1,
+                    operation.state,
+                    escape(&operation.phase),
+                    operation.bytes_done,
+                    operation
+                        .bytes_total
+                        .map_or_else(String::new, |total| format!(" / {total}")),
+                    escape(&operation_url(operation.id)),
+                ),
+                Some(OPERATION_REFRESH_SECONDS),
+            );
+        }
+        Some(operation)
+    } else {
+        None
+    };
+    let key = ProfileKey::new("eh", &query.profile);
+    let gallery = crate::EhGalleryRef {
+        gid: query.gid,
+        token: query.token.clone(),
+    };
+    let detail = match state.core.eh_gallery_detail(&key, gallery).await {
+        Ok(detail) => detail,
+        Err(error) => return error_page(&error),
+    };
+    if query.page >= detail.page_count {
+        return error_page(&CoreError::new(
+            ErrorCode::InvalidInput,
+            format!("阅读页必须小于画廊总页数 {}", detail.page_count),
+            false,
+        ));
+    }
+
+    let previous = (query.page > 0).then(|| {
+        eh_reader_url(
+            &query.profile,
+            query.gid,
+            &query.token,
+            query.page - 1,
+            None,
+        )
+    });
+    let next = (query.page + 1 < detail.page_count).then(|| {
+        eh_reader_url(
+            &query.profile,
+            query.gid,
+            &query.token,
+            query.page + 1,
+            None,
+        )
+    });
+    let navigation = reader_navigation(previous.as_deref(), next.as_deref());
+    let content = if let Some(operation) = operation {
+        if let Some(resource) = operation.resource {
+            let resource_url = format!(
+                "/api/v1/resources/images/{}/{}",
+                resource.content_md5, resource.extension
+            );
+            format!(
+                "<figure class=\"reader-image\"><img src=\"{}\" alt=\"{} 第 {} 页阅读器图片\"><figcaption>{} · {} 字节 · {:?}</figcaption></figure>",
+                escape(&resource_url),
+                escape(&detail.title),
+                query.page + 1,
+                escape(&resource.mime_type),
+                resource.byte_length,
+                resource.source,
+            )
+        } else {
+            let error = operation.error.map_or_else(
+                || "操作结束但没有返回图片资源".to_owned(),
+                |error| format!("{}: {}", error.code, error.message),
+            );
+            format!(
+                "<p class=\"error\">{}</p>{}",
+                escape(&error),
+                eh_reader_fetch_form(&query),
+            )
+        }
+    } else {
+        eh_reader_fetch_form(&query)
+    };
+    let gallery_url = eh_gallery_url(&query.profile, query.gid, &query.token, 0);
+    html_page(
+        StatusCode::OK,
+        &format!("{} · 第 {} 页", detail.title, query.page + 1),
+        &format!(
+            "<header class=\"reader-header\"><div><p><a href=\"{}\">返回 Gallery</a></p><h1>{}</h1><p>第 {} / {} 页</p></div>{navigation}</header><form class=\"reader-jump\" method=\"post\" action=\"/ui/eh/reader/jump\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"gid\" value=\"{}\"><input type=\"hidden\" name=\"token\" value=\"{}\"><label>跳转到页<input name=\"page\" type=\"number\" min=\"1\" max=\"{}\" value=\"{}\" required></label><button type=\"submit\">跳转</button></form><p class=\"muted\">网页阅读器图片可能经过重采样；只有 Original Archive 明确承诺归档原始文件。上一页/下一页可使用浏览器 access key。</p>{content}<footer class=\"reader-footer\">{navigation}</footer>",
+            escape(&gallery_url),
+            escape(&detail.title),
+            query.page + 1,
+            detail.page_count,
+            escape(&query.profile),
+            query.gid,
+            escape(&query.token),
+            detail.page_count,
+            query.page + 1,
         ),
         None,
     )
@@ -744,13 +927,16 @@ async fn import_local_gallery(
     }
 }
 
-async fn configuration(State(state): State<ControlState>) -> Response {
+async fn configuration(
+    State(state): State<ControlState>,
+    Query(query): Query<ConfigurationQuery>,
+) -> Response {
     let config = match state.core.effective_config().await {
         Ok(config) => config,
         Err(error) => return error_page(&error),
     };
     let mut profiles = String::new();
-    let mut credential_forms = String::new();
+    let mut credential_settings = String::new();
     for profile in &config.profiles {
         let _ = write!(
             profiles,
@@ -773,35 +959,85 @@ async fn configuration(State(state): State<ControlState>) -> Response {
             Ok(credentials) => credentials,
             Err(error) => return error_page(&error),
         };
+        let editing_cookie = editing(&query, "cookie", &profile.provider, &profile.profile);
+        let editing_api = editing(
+            &query,
+            "api-credentials",
+            &profile.provider,
+            &profile.profile,
+        );
+        let cookie = credentials.cookie.as_deref().unwrap_or_default();
+        let api_user = credentials.api_user.as_deref().unwrap_or_default();
+        let api_key = credentials.api_key.as_deref().unwrap_or_default();
+        let cookie_control = if editing_cookie {
+            format!(
+                "<form class=\"setting-editor\" method=\"post\" action=\"/ui/config/cookie\"><input type=\"hidden\" name=\"provider\" value=\"{}\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><label>Cookie<textarea name=\"cookie\" rows=\"4\" spellcheck=\"false\">{}</textarea></label><div class=\"setting-actions\"><button type=\"submit\">保存并重建 Session</button><a href=\"/ui/config\">取消</a></div><p class=\"muted\">空值保存会清除 Cookie。</p></form>",
+                escape(&profile.provider),
+                escape(&profile.profile),
+                escape(cookie),
+            )
+        } else {
+            setting_display(
+                cookie,
+                &config_edit_url("cookie", &profile.provider, &profile.profile),
+            )
+        };
+        let api_control = if editing_api {
+            format!(
+                "<form class=\"setting-editor\" method=\"post\" action=\"/ui/config/api-credentials\"><input type=\"hidden\" name=\"provider\" value=\"{}\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><label>API user<input name=\"api_user\" value=\"{}\" autocomplete=\"off\" spellcheck=\"false\"></label><label>API key<input name=\"api_key\" value=\"{}\" autocomplete=\"off\" spellcheck=\"false\"></label><div class=\"setting-actions\"><button type=\"submit\">保存并重建 Session</button><a href=\"/ui/config\">取消</a></div><p class=\"muted\">两项必须同时填写；全部留空会清除 API credentials。</p></form>",
+                escape(&profile.provider),
+                escape(&profile.profile),
+                escape(api_user),
+                escape(api_key),
+            )
+        } else {
+            setting_display(
+                &format!("user: {api_user}\nkey: {api_key}"),
+                &config_edit_url("api-credentials", &profile.provider, &profile.profile),
+            )
+        };
         let _ = write!(
-            credential_forms,
-            "<section class=\"card wide\"><h2><code>{}/{}</code> 明文凭据</h2><form method=\"post\" action=\"/ui/config/credentials\"><input type=\"hidden\" name=\"provider\" value=\"{}\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><label>Cookie<textarea name=\"cookie\" rows=\"4\" spellcheck=\"false\">{}</textarea></label><label>API user<input name=\"api_user\" value=\"{}\" autocomplete=\"off\" spellcheck=\"false\"></label><label>API key<input name=\"api_key\" value=\"{}\" autocomplete=\"off\" spellcheck=\"false\"></label><p class=\"muted\">空值保存会清除对应凭据；API user 与 API key 必须同时填写或同时清除。</p><button type=\"submit\">保存明文凭据并重建 Session</button></form></section>",
+            credential_settings,
+            "<section class=\"card wide\"><h2><code>{}/{}</code> 明文凭据</h2><div class=\"setting-row\"><div><strong>Cookie</strong>{cookie_control}</div></div><div class=\"setting-row\"><div><strong>API credentials</strong>{api_control}</div></div></section>",
             escape(&profile.provider),
             escape(&profile.profile),
-            escape(&profile.provider),
-            escape(&profile.profile),
-            escape(credentials.cookie.as_deref().unwrap_or_default()),
-            escape(credentials.api_user.as_deref().unwrap_or_default()),
-            escape(credentials.api_key.as_deref().unwrap_or_default()),
         );
     }
-    let allow_lan_checked = if config.control.allow_lan {
-        " checked"
+    let lan_control = if query.edit.as_deref() == Some("allow-lan") {
+        format!(
+            "<form class=\"setting-editor\" method=\"post\" action=\"/ui/config/lan\"><label><select name=\"allow_lan\"><option value=\"true\"{}>开启</option><option value=\"false\"{}>关闭</option></select></label><div class=\"setting-actions\"><button type=\"submit\">保存</button><a href=\"/ui/config\">取消</a></div></form>",
+            if config.control.allow_lan {
+                " selected"
+            } else {
+                ""
+            },
+            if config.control.allow_lan {
+                ""
+            } else {
+                " selected"
+            },
+        )
     } else {
-        ""
+        setting_display(
+            if config.control.allow_lan {
+                "开启"
+            } else {
+                "关闭"
+            },
+            "/ui/config?edit=allow-lan",
+        )
     };
     html_page(
         StatusCode::OK,
         "当前生效配置",
         &format!(
-            "<h1>当前生效配置</h1><p class=\"error\"><strong>DANGER:</strong> 此调试面板没有认证。下方会明文显示 Cookie、API user 和 API key，并将修改明文写入 config.json。任何能访问此面板的人都能读取和修改这些凭据。</p><p class=\"muted\">JSON 配置 API 仍保持脱敏，不返回 secret 或代理 URL/凭据值。</p><div class=\"grid\"><section class=\"card\"><h2>Runtime</h2><dl><dt>Schema</dt><dd>{}</dd><dt>实例</dt><dd>{}</dd><dt>命令容量</dt><dd>{}</dd><dt>关闭期限</dt><dd>{} 秒</dd></dl></section><section class=\"card\"><h2>HTTP</h2><dl><dt>启用</dt><dd>{}</dd><dt>配置监听</dt><dd><code>{}</code></dd><dt>局域网访问</dt><dd>{}</dd><dt>WebUI</dt><dd>{}</dd></dl><form method=\"post\" action=\"/ui/config/lan\"><label><input type=\"checkbox\" name=\"allow_lan\" value=\"true\"{allow_lan_checked}> 允许局域网访问调试面板</label><button type=\"submit\">保存 LAN 设置</button><p class=\"muted\">默认开启。保存后必须重启 fvcore 才会重新绑定监听地址。</p></form></section><section class=\"card\"><h2>网络</h2><dl><dt>连接 / 请求超时</dt><dd>{} / {} 秒</dd><dt>响应上限</dt><dd>{} 字节</dd><dt>重定向</dt><dd>{}</dd><dt>代理</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>图片</h2><dl><dt>单图上限</dt><dd>{}</dd><dt>内存缓存</dt><dd>{}</dd><dt>在途字节</dt><dd>{}</dd><dt>写盘队列</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>Operation</h2><dl><dt>活动上限</dt><dd>{}</dd><dt>排队上限</dt><dd>{}</dd><dt>终态保留</dt><dd>{}</dd><dt>默认期限</dt><dd>{} 秒</dd></dl></section><section class=\"card\"><h2>Event</h2><dl><dt>通道容量</dt><dd>{}</dd><dt>Journal 保留</dt><dd>{}</dd></dl></section><section class=\"card wide\"><h2>存储域</h2><table><tr><th>Schema</th><td>{}</td><th>数据库</th><td>{} 字节</td></tr><tr><th>Data</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Cache</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Downloads</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Temp</th><td colspan=\"3\"><code>{}</code></td></tr></table></section><section class=\"card wide\"><h2>Provider 配置</h2><table><thead><tr><th>Profile</th><th>Origin</th><th>User-Agent</th><th>Redirect hosts</th><th>Cookie env / 已加载</th><th>API user + key env / 已加载</th><th>并发</th><th>间隔</th></tr></thead><tbody>{profiles}</tbody></table></section>{credential_forms}</div>",
+            "<h1>当前生效配置</h1><p class=\"error\"><strong>DANGER:</strong> 此调试面板没有认证。下方会明文显示 Cookie、API user 和 API key，并将修改明文写入 config.json。任何能访问此面板的人都能读取和修改这些凭据。</p><p class=\"muted\">JSON 配置 API 仍保持脱敏，不返回 secret 或代理 URL/凭据值。每次只编辑一个原子配置单元。</p><div class=\"grid\"><section class=\"card\"><h2>Runtime</h2><dl><dt>Schema</dt><dd>{}</dd><dt>实例</dt><dd>{}</dd><dt>命令容量</dt><dd>{}</dd><dt>关闭期限</dt><dd>{} 秒</dd></dl></section><section class=\"card\"><h2>HTTP</h2><dl><dt>启用</dt><dd>{}</dd><dt>配置监听</dt><dd><code>{}</code></dd><dt>局域网访问</dt><dd>{lan_control}<span class=\"muted\">保存后必须重启 fvcore 才会重新绑定监听地址。</span></dd><dt>WebUI</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>网络</h2><dl><dt>连接 / 请求超时</dt><dd>{} / {} 秒</dd><dt>响应上限</dt><dd>{} 字节</dd><dt>重定向</dt><dd>{}</dd><dt>代理</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>图片</h2><dl><dt>单图上限</dt><dd>{}</dd><dt>内存缓存</dt><dd>{}</dd><dt>在途字节</dt><dd>{}</dd><dt>写盘队列</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>Operation</h2><dl><dt>活动上限</dt><dd>{}</dd><dt>排队上限</dt><dd>{}</dd><dt>终态保留</dt><dd>{}</dd><dt>默认期限</dt><dd>{} 秒</dd></dl></section><section class=\"card\"><h2>Event</h2><dl><dt>通道容量</dt><dd>{}</dd><dt>Journal 保留</dt><dd>{}</dd></dl></section><section class=\"card wide\"><h2>存储域</h2><table><tr><th>Schema</th><td>{}</td><th>数据库</th><td>{} 字节</td></tr><tr><th>Data</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Cache</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Downloads</th><td colspan=\"3\"><code>{}</code></td></tr><tr><th>Temp</th><td colspan=\"3\"><code>{}</code></td></tr></table></section><section class=\"card wide\"><h2>Provider 配置</h2><table><thead><tr><th>Profile</th><th>Origin</th><th>User-Agent</th><th>Redirect hosts</th><th>Cookie env / 已加载</th><th>API user + key env / 已加载</th><th>并发</th><th>间隔</th></tr></thead><tbody>{profiles}</tbody></table></section>{credential_settings}</div>",
             config.schema_version,
             escape(&config.instance_name),
             config.command_capacity,
             config.shutdown_seconds,
             yes_no(config.control.enabled),
             config.control.listen,
-            yes_no(config.control.allow_lan),
             yes_no(config.control.webui_enabled),
             config.network.connect_timeout_seconds,
             config.network.request_timeout_seconds,
@@ -833,23 +1069,45 @@ async fn update_lan_access(
     State(state): State<ControlState>,
     Form(form): Form<LanAccessForm>,
 ) -> Response {
-    match state.core.set_allow_lan(form.allow_lan.is_some()).await {
+    match state
+        .core
+        .set_allow_lan(form.allow_lan.as_deref() == Some("true"))
+        .await
+    {
         Ok(()) => Redirect::to("/ui/config").into_response(),
         Err(error) => error_page(&error),
     }
 }
 
 /// DANGER: Unauthenticated debug endpoint that persists and echoes plaintext credentials.
-async fn update_profile_credentials(
+async fn update_profile_cookie(
     State(state): State<ControlState>,
-    Form(form): Form<ProfileCredentialsForm>,
+    Form(form): Form<ProfileCookieForm>,
 ) -> Response {
     let optional = |value: String| (!value.trim().is_empty()).then_some(value);
     match state
         .core
-        .update_profile_credentials(
+        .update_profile_cookie(
             ProfileKey::new(form.provider, form.profile),
             optional(form.cookie),
+        )
+        .await
+    {
+        Ok(_) => Redirect::to("/ui/config").into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
+/// DANGER: Unauthenticated debug endpoint that persists a plaintext API credential pair.
+async fn update_profile_api_credentials(
+    State(state): State<ControlState>,
+    Form(form): Form<ProfileApiCredentialsForm>,
+) -> Response {
+    let optional = |value: String| (!value.trim().is_empty()).then_some(value);
+    match state
+        .core
+        .update_profile_api_credentials(
+            ProfileKey::new(form.provider, form.profile),
             optional(form.api_user),
             optional(form.api_key),
         )
@@ -1058,6 +1316,55 @@ async fn start_eh_page_fetch(
         Ok(operation) => Redirect::to(&operation_url(operation.id)).into_response(),
         Err(error) => error_page(&error),
     }
+}
+
+async fn start_eh_reader_fetch(
+    State(state): State<ControlState>,
+    Form(form): Form<EhPageFetchForm>,
+) -> Response {
+    let profile = form.profile.clone();
+    let token = form.token.clone();
+    match state
+        .core
+        .start_eh_page_fetch(EhPageFetchRequest {
+            profile: ProfileKey::new("eh", form.profile),
+            gallery: crate::EhGalleryRef {
+                gid: form.gid,
+                token: form.token,
+            },
+            page: form.page,
+            nl: None,
+        })
+        .await
+    {
+        Ok(operation) => Redirect::to(&eh_reader_url(
+            &profile,
+            form.gid,
+            &token,
+            form.page,
+            Some(operation.id),
+        ))
+        .into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
+async fn jump_eh_reader(Form(form): Form<EhReaderJumpForm>) -> Response {
+    if form.page == 0 {
+        return error_page(&CoreError::new(
+            ErrorCode::InvalidInput,
+            "阅读器页码必须从 1 开始",
+            false,
+        ));
+    }
+    Redirect::to(&eh_reader_url(
+        &form.profile,
+        form.gid,
+        &form.token,
+        form.page - 1,
+        None,
+    ))
+    .into_response()
 }
 
 async fn search(State(state): State<ControlState>, Query(query): Query<SearchQuery>) -> Response {
@@ -1419,9 +1726,16 @@ fn render_operation(operation: &OperationSnapshot) -> String {
         )
     };
     format!(
-        "<h1>操作详情</h1><p><code>{}</code></p><table><tr><th>类型</th><td>{:?}</td></tr><tr><th>状态</th><td>{:?}</td></tr><tr><th>阶段</th><td>{}</td></tr><tr><th>修订号</th><td>{}</td></tr><tr><th>字节</th><td>{}{}</td></tr><tr><th>来源</th><td>{:?}</td></tr><tr><th>共享传输</th><td>{}</td></tr></table>{error}{cancel}{result}",
+        "<h1>操作详情</h1><p><code>{}</code></p><table><tr><th>类型</th><td>{:?}</td></tr><tr><th>资源目标</th><td><code>{}</code></td></tr><tr><th>状态</th><td>{:?}</td></tr><tr><th>阶段</th><td>{}</td></tr><tr><th>修订号</th><td>{}</td></tr><tr><th>字节</th><td>{}{}</td></tr><tr><th>来源</th><td>{:?}</td></tr><tr><th>共享传输</th><td>{}</td></tr></table>{error}{cancel}{result}",
         operation.id,
         operation.kind,
+        escape(&operation.resource_key.as_ref().map_or_else(
+            || "-".to_owned(),
+            |key| format!(
+                "{}:{}:{}:{}",
+                key.provider, key.media, key.page, key.variant
+            ),
+        )),
         operation.state,
         escape(&operation.phase),
         operation.revision,
@@ -1494,6 +1808,29 @@ fn error_status(error: &CoreError) -> StatusCode {
     }
 }
 
+fn editing(query: &ConfigurationQuery, field: &str, provider: &str, profile: &str) -> bool {
+    query.edit.as_deref() == Some(field)
+        && query.provider.as_deref() == Some(provider)
+        && query.profile.as_deref() == Some(profile)
+}
+
+fn setting_display(value: &str, edit_url: &str) -> String {
+    format!(
+        "<div class=\"setting-display\"><pre>{}</pre><a class=\"setting-edit\" href=\"{}\">编辑</a></div>",
+        escape(if value.is_empty() { "未配置" } else { value }),
+        escape(edit_url),
+    )
+}
+
+fn config_edit_url(field: &str, provider: &str, profile: &str) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("edit", field)
+        .append_pair("provider", provider)
+        .append_pair("profile", profile)
+        .finish();
+    format!("/ui/config?{query}")
+}
+
 fn search_url(provider: &str, profile: &str, tags: &str, page: u64, limit: u32) -> String {
     let query = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("provider", provider)
@@ -1512,6 +1849,58 @@ fn post_url(provider: &str, profile: &str, id: u64) -> String {
         .append_pair("id", &id.to_string())
         .finish();
     format!("/ui/post?{query}")
+}
+
+fn eh_reader_url(
+    profile: &str,
+    gid: u64,
+    token: &str,
+    page: u32,
+    operation: Option<crate::OperationId>,
+) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
+        .append_pair("profile", profile)
+        .append_pair("gid", &gid.to_string())
+        .append_pair("token", token)
+        .append_pair("page", &page.to_string());
+    if let Some(operation) = operation {
+        query.append_pair("operation", &operation.to_string());
+    }
+    format!("/ui/eh/reader?{}", query.finish())
+}
+
+fn eh_reader_fetch_form(query: &EhReaderQuery) -> String {
+    format!(
+        "<form class=\"reader-fetch\" method=\"post\" action=\"/ui/eh/reader/fetch\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"gid\" value=\"{}\"><input type=\"hidden\" name=\"token\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"{}\"><button type=\"submit\">获取第 {} 页阅读器图片</button></form>",
+        escape(&query.profile),
+        query.gid,
+        escape(&query.token),
+        query.page,
+        query.page + 1,
+    )
+}
+
+fn reader_navigation(previous: Option<&str>, next: Option<&str>) -> String {
+    let previous = previous.map_or_else(
+        || "<span class=\"disabled\">上一页</span>".to_owned(),
+        |url| {
+            format!(
+                "<a rel=\"prev\" accesskey=\"j\" href=\"{}\">上一页</a>",
+                escape(url)
+            )
+        },
+    );
+    let next = next.map_or_else(
+        || "<span class=\"disabled\">下一页</span>".to_owned(),
+        |url| {
+            format!(
+                "<a rel=\"next\" accesskey=\"k\" href=\"{}\">下一页</a>",
+                escape(url)
+            )
+        },
+    );
+    format!("<nav class=\"reader-nav\">{previous}{next}</nav>")
 }
 
 fn operation_url(id: crate::OperationId) -> String {

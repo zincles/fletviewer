@@ -285,9 +285,11 @@ impl OperationService {
             ));
         }
         let id = OperationId::new();
+        let resource_key = operation_resource_key(&request)?;
         let snapshot = OperationSnapshot {
             id,
             kind,
+            resource_key,
             state: OperationState::Queued,
             phase: "queued".to_owned(),
             revision: 1,
@@ -516,6 +518,22 @@ impl OperationService {
                 self.operations.remove(&expired);
             }
         }
+    }
+}
+
+fn operation_resource_key(request: &OperationRequest) -> Result<Option<ResourceKey>, CoreError> {
+    match request {
+        OperationRequest::PixivPage(request) => {
+            ResourceKey::new("pixiv", &request.illust_id, request.page, "original").map(Some)
+        }
+        OperationRequest::EhPage(request) => ResourceKey::new(
+            "eh",
+            format!("{}:{}", request.gallery.gid, request.gallery.token),
+            request.page,
+            "viewer",
+        )
+        .map(Some),
+        OperationRequest::Fake(_) | OperationRequest::BooruOriginal(_) => Ok(None),
     }
 }
 

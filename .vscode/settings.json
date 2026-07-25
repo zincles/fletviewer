@@ -1,0 +1,3 @@
+{
+  "lldb-dap.executable-path": "/usr/lib/llvm-19/bin/lldb-dap"
+}

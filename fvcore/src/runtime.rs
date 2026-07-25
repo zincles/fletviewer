@@ -75,9 +75,13 @@ enum CoreCommand {
         config: Box<ProviderProfileConfig>,
         reply: oneshot::Sender<Result<ProfileSnapshot, CoreError>>,
     },
-    UpdateProfileCredentials {
+    UpdateProfileCookie {
         key: ProfileKey,
         cookie: Option<String>,
+        reply: oneshot::Sender<Result<ProfileSnapshot, CoreError>>,
+    },
+    UpdateProfileApiCredentials {
+        key: ProfileKey,
         api_user: Option<String>,
         api_key: Option<String>,
         reply: oneshot::Sender<Result<ProfileSnapshot, CoreError>>,
@@ -547,16 +551,24 @@ impl CoreHandle {
     }
 
     /// DANGER: Persists plaintext credentials to executable-owned `config.json`.
-    pub(crate) async fn update_profile_credentials(
+    pub(crate) async fn update_profile_cookie(
         &self,
         key: ProfileKey,
         cookie: Option<String>,
+    ) -> Result<ProfileSnapshot, CoreError> {
+        self.request(|reply| CoreCommand::UpdateProfileCookie { key, cookie, reply })
+            .await?
+    }
+
+    /// DANGER: Atomically persists a plaintext API credential pair to `config.json`.
+    pub(crate) async fn update_profile_api_credentials(
+        &self,
+        key: ProfileKey,
         api_user: Option<String>,
         api_key: Option<String>,
     ) -> Result<ProfileSnapshot, CoreError> {
-        self.request(|reply| CoreCommand::UpdateProfileCredentials {
+        self.request(|reply| CoreCommand::UpdateProfileApiCredentials {
             key,
-            cookie,
             api_user,
             api_key,
             reply,
@@ -926,9 +938,20 @@ async fn run_actor(
                     }
                     let _ = reply.send(result);
                 }
-                Some(CoreCommand::UpdateProfileCredentials {
+                Some(CoreCommand::UpdateProfileCookie {
                     key,
                     cookie,
+                    reply,
+                }) => {
+                    let result = update_profile_credentials(
+                        &mut data,
+                        &key,
+                        CredentialUpdate::Cookie(cookie),
+                    );
+                    let _ = reply.send(result);
+                }
+                Some(CoreCommand::UpdateProfileApiCredentials {
+                    key,
                     api_user,
                     api_key,
                     reply,
@@ -936,9 +959,7 @@ async fn run_actor(
                     let result = update_profile_credentials(
                         &mut data,
                         &key,
-                        cookie,
-                        api_user,
-                        api_key,
+                        CredentialUpdate::Api { api_user, api_key },
                     );
                     let _ = reply.send(result);
                 }
@@ -984,9 +1005,7 @@ async fn run_actor(
 fn update_profile_credentials(
     data: &mut RuntimeData,
     key: &ProfileKey,
-    cookie: Option<String>,
-    api_user: Option<String>,
-    api_key: Option<String>,
+    update: CredentialUpdate,
 ) -> Result<ProfileSnapshot, CoreError> {
     let path = data.config_path.as_ref().ok_or_else(|| {
         CoreError::new(
@@ -1009,12 +1028,18 @@ fn update_profile_credentials(
             )
         })?;
     let mut replacement = current;
-    replacement.cookie = cookie;
-    replacement.cookie_env = None;
-    replacement.api_user = api_user;
-    replacement.api_user_env = None;
-    replacement.api_key = api_key;
-    replacement.api_key_env = None;
+    match update {
+        CredentialUpdate::Cookie(cookie) => {
+            replacement.cookie = cookie;
+            replacement.cookie_env = None;
+        }
+        CredentialUpdate::Api { api_user, api_key } => {
+            replacement.api_user = api_user;
+            replacement.api_user_env = None;
+            replacement.api_key = api_key;
+            replacement.api_key_env = None;
+        }
+    }
     replacement.validate(&key.to_string())?;
 
     persist_profile_credentials(path, key, &replacement)?;
@@ -1031,6 +1056,14 @@ fn update_profile_credentials(
     }
     data.revision += 1;
     Ok(snapshot)
+}
+
+enum CredentialUpdate {
+    Cookie(Option<String>),
+    Api {
+        api_user: Option<String>,
+        api_key: Option<String>,
+    },
 }
 
 /// DANGER: This intentionally writes plaintext credentials for the unauthenticated debug panel.
@@ -1249,11 +1282,35 @@ mod tests {
         .unwrap();
         assert!(page.contains("DANGER:"));
         assert!(page.contains("initial-cookie"));
+        assert!(!page.contains("name=\"cookie\""));
 
-        let form =
-            "provider=eh&profile=default&cookie=saved-cookie&api_user=saved-user&api_key=saved-key";
+        let edit = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/config?edit=cookie&provider=eh&profile=default HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(edit.contains("name=\"cookie\""));
+        assert!(!edit.contains("name=\"api_user\""));
+
+        let form = "provider=eh&profile=default&cookie=saved-cookie";
         let request = format!(
-            "POST /ui/config/credentials HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{form}",
+            "POST /ui/config/cookie HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{form}",
+            form.len()
+        );
+        let response = String::from_utf8(http_request(listen, request.as_bytes()).await).unwrap();
+        assert!(response.starts_with("HTTP/1.1 303 See Other"));
+        let persisted = CoreConfig::from_json_file(&path).unwrap();
+        let persisted = &persisted.profiles["eh"];
+        assert_eq!(persisted.cookie.as_deref(), Some("saved-cookie"));
+        assert!(persisted.api_user.is_none());
+        assert!(persisted.api_key.is_none());
+
+        let form = "provider=eh&profile=default&api_user=saved-user&api_key=saved-key";
+        let request = format!(
+            "POST /ui/config/api-credentials HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{form}",
             form.len()
         );
         let response = String::from_utf8(http_request(listen, request.as_bytes()).await).unwrap();
@@ -1274,7 +1331,7 @@ mod tests {
             .into_iter()
             .find(|profile| profile.key == ProfileKey::new("eh", "default"))
             .unwrap();
-        assert_eq!(active.generation, 2);
+        assert_eq!(active.generation, 3);
         assert!(active.has_cookie);
         assert!(active.has_api_credentials);
 
@@ -1289,8 +1346,8 @@ mod tests {
         assert!(page.contains("saved-cookie"));
         assert!(page.contains("saved-user"));
         assert!(page.contains("saved-key"));
-        assert!(page.contains("允许局域网访问调试面板"));
-        assert!(!page.contains("name=\"allow_lan\" value=\"true\" checked"));
+        assert!(page.contains("局域网访问"));
+        assert!(!page.contains("name=\"allow_lan\""));
 
         let form = "allow_lan=true";
         let request = format!(
@@ -1331,12 +1388,7 @@ mod tests {
 
         let error = runtime
             .handle()
-            .update_profile_credentials(
-                ProfileKey::new("eh", "default"),
-                Some("cookie".to_owned()),
-                None,
-                None,
-            )
+            .update_profile_cookie(ProfileKey::new("eh", "default"), Some("cookie".to_owned()))
             .await
             .unwrap_err();
 
@@ -1898,18 +1950,21 @@ mod tests {
         assert!(webui.starts_with("HTTP/1.1 200 OK"));
         assert!(webui.contains("Fixture Gallery Title"));
         assert!(webui.contains("缩略图第 2 页"));
+        assert!(webui.contains("/ui/eh/reader?"));
         runtime.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn eh_viewer_image_fetch_resolves_api_and_uses_image_service() {
+        const DETAIL: &str = include_str!("../tests/fixtures/eh/gallery_detail.html");
         const THUMBNAILS: &str = include_str!("../tests/fixtures/eh/thumbnails.html");
         const SHOWKEY: &str = include_str!("../tests/fixtures/eh/image_showkey.html");
         let image = Arc::new(test_jpeg());
         let requests = Arc::new(AtomicUsize::new(0));
+        let gallery_requests = Arc::new(AtomicUsize::new(0));
         let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_listen = provider_listener.local_addr().unwrap();
-        let fixture = THUMBNAILS
+        let fixture = format!("{DETAIL}{THUMBNAILS}")
             .replace(
                 "https://e-hentai.org/",
                 &format!("http://{provider_listen}/"),
@@ -1918,13 +1973,22 @@ mod tests {
         let provider_router = axum::Router::new()
             .route(
                 "/g/123456/abcdef1234/",
-                axum::routing::get(move || {
+                axum::routing::get({
                     let fixture = fixture.clone();
-                    async move {
-                        (
-                            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                            fixture,
-                        )
+                    let gallery_requests = gallery_requests.clone();
+                    move || {
+                        let fixture = fixture.clone();
+                        let gallery_requests = gallery_requests.clone();
+                        async move {
+                            gallery_requests.fetch_add(1, Ordering::SeqCst);
+                            (
+                                [(
+                                    axum::http::header::CONTENT_TYPE,
+                                    "text/html; charset=utf-8",
+                                )],
+                                fixture,
+                            )
+                        }
                     }
                 }),
             )
@@ -1990,6 +2054,7 @@ mod tests {
         let mut config = config(&temp);
         config.control.enabled = true;
         config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config.operations.max_active = 1;
         config.profiles.insert(
             "eh".to_owned(),
             ProviderProfileConfig {
@@ -2042,6 +2107,104 @@ mod tests {
         let webui = String::from_utf8(http_request(listen, request.as_bytes()).await).unwrap();
         assert!(webui.starts_with("HTTP/1.1 303 See Other"));
         assert!(webui.contains("location: /ui/operation?id="));
+
+        let reader = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/eh/reader?profile=default&gid=123456&token=abcdef1234&page=0 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(reader.starts_with("HTTP/1.1 200 OK"));
+        assert!(reader.contains("Fixture Gallery Title"));
+        assert!(reader.contains("第 1 / 42 页"));
+        assert!(reader.contains("<span class=\"disabled\">上一页</span>"));
+        assert!(reader.contains("accesskey=\"k\""));
+        assert!(reader.contains("获取第 1 页阅读器图片"));
+        let operations_before = runtime.handle().operations().await.unwrap().len();
+        let blocker = runtime
+            .handle()
+            .start_fake_operation(FakeOperationRequest {
+                duration_ms: 5_000,
+                ..FakeOperationRequest::default()
+            })
+            .await
+            .unwrap();
+
+        let form = "profile=default&gid=123456&token=abcdef1234&page=0";
+        let request = format!(
+            "POST /ui/eh/reader/fetch HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{form}",
+            form.len()
+        );
+        let response = String::from_utf8(http_request(listen, request.as_bytes()).await).unwrap();
+        assert!(response.starts_with("HTTP/1.1 303 See Other"));
+        let location = response
+            .lines()
+            .find_map(|line| line.strip_prefix("location: "))
+            .unwrap()
+            .trim();
+        assert!(location.starts_with("/ui/eh/reader?"));
+        assert!(location.contains("operation="));
+        assert_eq!(
+            runtime.handle().operations().await.unwrap().len(),
+            operations_before + 2
+        );
+        let gallery_requests_before_poll = gallery_requests.load(Ordering::SeqCst);
+        let reader_request =
+            format!("GET {location} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        let pending =
+            String::from_utf8(http_request(listen, reader_request.as_bytes()).await).unwrap();
+        assert!(pending.starts_with("HTTP/1.1 200 OK"));
+        assert!(pending.contains("正在获取阅读页图片"));
+        assert!(pending.contains("http-equiv=\"refresh\""));
+        assert_eq!(
+            gallery_requests.load(Ordering::SeqCst),
+            gallery_requests_before_poll
+        );
+        runtime.handle().cancel_operation(blocker.id).await.unwrap();
+        let operation = runtime
+            .handle()
+            .operations()
+            .await
+            .unwrap()
+            .last()
+            .unwrap()
+            .id;
+        let operation = wait_terminal(&runtime.handle(), operation).await;
+        assert_eq!(operation.state, OperationState::Completed);
+        let completed =
+            String::from_utf8(http_request(listen, reader_request.as_bytes()).await).unwrap();
+        assert!(completed.starts_with("HTTP/1.1 200 OK"));
+        assert!(completed.contains("class=\"reader-image\""));
+        assert!(completed.contains("/api/v1/resources/images/"));
+        let mismatched_location = location.replace("page=0", "page=1");
+        let mismatched_request = format!(
+            "GET {mismatched_location} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        );
+        let mismatched =
+            String::from_utf8(http_request(listen, mismatched_request.as_bytes()).await).unwrap();
+        assert!(mismatched.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(mismatched.contains("operation 不属于当前 EH Gallery 阅读页"));
+
+        let jump_form = "profile=default&gid=123456&token=abcdef1234&page=2";
+        let jump_request = format!(
+            "POST /ui/eh/reader/jump HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{jump_form}",
+            jump_form.len()
+        );
+        let jump = String::from_utf8(http_request(listen, jump_request.as_bytes()).await).unwrap();
+        assert!(jump.starts_with("HTTP/1.1 303 See Other"));
+        assert!(jump.contains("page=1"));
+
+        let outside = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/eh/reader?profile=default&gid=123456&token=abcdef1234&page=42 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(outside.starts_with("HTTP/1.1 400 Bad Request"));
         runtime.shutdown().await.unwrap();
     }
 
@@ -2493,7 +2656,11 @@ mod tests {
             .await,
         )
         .unwrap();
-        assert_eq!(generate, regenerate);
+        assert!(regenerate.starts_with("HTTP/1.1 200 OK"));
+        assert_eq!(
+            generate.split_once("\r\n\r\n").unwrap().1,
+            regenerate.split_once("\r\n\r\n").unwrap().1,
+        );
         let webui = String::from_utf8(
             http_request(
                 listen,

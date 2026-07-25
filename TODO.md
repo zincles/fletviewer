@@ -39,7 +39,7 @@
 | 已完成 | Provider 限流与两大 Booru 查询闭环 | Generation 级并发/启动间隔；Danbooru JSON 与 Gelbooru JSON DAPI 搜索、详情、fixture、稳定错误和 HTTP 路由 |
 | 已完成 | EH 浏览、阅读页图片、持久 Archive 与本地画廊消费 | EH 主页/详情/缩略图、标准 E-Hentai 私有 reader API、showkey/mpvkey 指定页阅读器图片共享 ImageService fetch，兼容 text/html JSON 且可能重采样；Original/Resample 显式付费提交、签名 URL 隔离、单并发流式 ZIP、Range 续传、`cost_unknown` 防重放；Archive revision 接入统一 event journal；完成 ZIP 通过 staging 幂等提交为本地画廊并提取安全封面；H@H 仅展示 |
 | 已完成 | 已知 MD5 的 Booru original Fetch 主链路 | Danbooru/Gelbooru metadata -> memory -> disk -> shared network -> length/magic/MD5 验证 -> immutable resource；operation 进度、独立取消和 HTTP bytes 已贯通 |
-| 已完成 | 可选内嵌调试 WebUI | 无 Node.js 的服务端渲染 Dashboard、EH 主页/详情/缩略图、Booru 搜索/详情、Pixiv 详情、operation 列表/详情、Fetch/取消和结果图片；Dashboard 和活动 operation 页面按状态自动刷新，listener 与 WebUI 可分别开关 |
+| 已完成 | 可选内嵌调试 WebUI | 无 Node.js 的服务端渲染 Dashboard、EH 主页/详情/缩略图/按需单页 reader、Booru 搜索/详情、Pixiv 详情、operation 列表/详情、Fetch/取消和结果图片；reader 提供上下页、页码跳转、access key、边界校验和 operation/resource 展示；Dashboard 和活动 operation 页面按状态自动刷新，listener 与 WebUI 可分别开关 |
 | 已完成 | 未知 MD5 alias 与 Pixiv 详情主链路 | `ResourceKey -> ContentMd5` 持久 alias、有界异步 cache writer、关闭 drain、Pixiv AJAX 详情/多页 metadata、Referer 与 original page operation |
 | 已完成 | EH Gallery 详情与缩略图 | 从 `/ui/eh` 条目进入详情；固定标题、标签、上传者、页数、评分、评论、版本链和缩略图 fixture；嵌入 API、JSON 和 WebUI 共用同一 EH profile generation |
 | 已完成 | EH 指定页阅读器图片链路 | 解析 showkey/mpvkey 和单页 image key，按需获取可能重采样的网页阅读器图片并接入 `ImageService`、operation、resource API 和 WebUI；只有 Original Archive 承诺原始文件，不将逐页 fetch 用作批量下载 |

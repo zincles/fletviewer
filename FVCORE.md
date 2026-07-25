@@ -417,7 +417,7 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 | 已完成 | Provider 限流与两大 Booru 查询闭环 | Generation 级并发/启动间隔；Danbooru JSON 与 Gelbooru JSON DAPI 搜索/详情、fixture、稳定错误和 HTTP 路由 |
 | 已完成 | EH 浏览、阅读页图片、持久 Archive 与本地画廊消费 | 主页/详情/缩略图、showkey/mpvkey 指定页网页阅读器图片共享 ImageService fetch，兼容 text/html JSON 且不承诺原始分辨率；Original/Resample 显式付费提交、签名 URL 隔离、单并发流式 ZIP、Range 续传、`cost_unknown` 防重放；Archive revision 接入统一 event journal；完成 ZIP 通过 staging 幂等提交为本地画廊并提取安全封面；原 ZIP 不改名不改字节，`ComicInfo.xml` 由 ZIP 与 `gallery.json` 确定性派生并可删除/重建；H@H 仅展示 |
 | 已完成 | 已知 MD5 的 Booru original Fetch 主链路 | Danbooru/Gelbooru metadata -> memory -> disk -> shared network -> length/magic/MD5 验证 -> immutable resource；operation 进度、独立取消和 HTTP bytes 已贯通 |
-| 已完成 | 可选内嵌调试 WebUI | 无 Node.js 的服务端渲染 Dashboard、EH 主页/详情/缩略图、Booru 搜索/详情、Pixiv 详情、operation 列表/详情、Fetch/取消和结果图片；Dashboard 和活动 operation 页面按状态自动刷新，listener 与 WebUI 可分别开关 |
+| 已完成 | 可选内嵌调试 WebUI | 无 Node.js 的服务端渲染 Dashboard、EH 主页/详情/缩略图/单页阅读器、Booru 搜索/详情、Pixiv 详情、operation 列表/详情、Fetch/取消和结果图片；EH reader 的 GET 无副作用，按需 POST 获取当前页并通过 operation/resource 展示，提供边界校验、页码跳转和原生 access key 翻页；Dashboard 和活动 operation 页面按状态自动刷新，listener 与 WebUI 可分别开关 |
 | 已完成 | 未知 MD5 alias 与 Pixiv 详情主链路 | `ResourceKey -> ContentMd5` 持久 alias、有界异步 cache writer、关闭 drain、Pixiv AJAX 详情/多页 metadata、Referer 与 original page operation |
 | 已完成 | 本地 ZIP 画廊阅读 API | 安全 member 过滤、无整数溢出的自然排序、分页 snapshot、稳定 gallery/page ID、有界单页解压和 magic MIME；嵌入 API、JSON metadata、二进制 resource 与本地 WebUI 已贯通，公开模型不暴露服务器目录或 Archive 文件名 |
 | 已完成 | 本地画廊统一 resource | 封面与 ZIP 页面共用 `LocalGalleryResource` 和带 kind descriptor；大小、并发、magic MIME、安全响应头及 WebUI resource URL 已贯通，封面路径被限制在画廊目录内 |
