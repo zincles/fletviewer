@@ -42,6 +42,8 @@ pub struct ImageCacheSnapshot {
     pub active_transfers: usize,
     /// Number of stable resource aliases.
     pub alias_count: usize,
+    /// Semantic resource and page accounting derived from stable aliases.
+    pub semantic: ImageCacheSemanticSnapshot,
     /// Pending cache writes.
     pub write_queue_depth: usize,
     /// Configured cache write queue capacity.
@@ -54,6 +56,21 @@ pub struct ImageCacheSnapshot {
     pub staging_file_count: usize,
     /// Blob files whose path, digest or magic format is invalid.
     pub invalid_blob_count: usize,
+}
+
+/// Provider-aware accounting for stable semantic image aliases.
+#[derive(Clone, Debug, Serialize)]
+pub struct ImageCacheSemanticSnapshot {
+    /// Number of unique ResourceKey aliases.
+    pub resource_count: usize,
+    /// Unique `(provider, media, page)` tuples excluding cover-only resources.
+    pub page_count: usize,
+    /// Unique `(provider, media)` tuples.
+    pub media_count: usize,
+    /// Semantic resources grouped by Provider identifier.
+    pub by_provider: BTreeMap<String, usize>,
+    /// Semantic resources grouped by representation variant.
+    pub by_variant: BTreeMap<String, usize>,
 }
 
 /// Result of one explicit image cache maintenance pass.
@@ -423,6 +440,10 @@ impl ImageService {
             .map_err(|_| {
                 CoreError::new(ErrorCode::Internal, "image cache scan panicked", false)
             })??;
+        let aliases = self.aliases.lock().await;
+        let semantic = semantic_snapshot(aliases.keys());
+        let alias_count = aliases.len();
+        drop(aliases);
         Ok(ImageCacheSnapshot {
             memory_bytes,
             memory_limit_bytes: self.config.memory_cache_bytes,
@@ -433,7 +454,8 @@ impl ImageService {
                 .saturating_sub(self.inflight_bytes.available_permits()),
             inflight_limit_bytes: self.config.max_inflight_bytes,
             active_transfers: self.inflight.lock().await.len(),
-            alias_count: self.aliases.lock().await.len(),
+            alias_count,
+            semantic,
             write_queue_depth: self.write_tx.max_capacity() - self.write_tx.capacity(),
             write_queue_capacity: self.write_tx.max_capacity(),
             disk_blob_count: scan.valid_blobs,
@@ -787,6 +809,32 @@ impl ImageService {
     }
 }
 
+fn semantic_snapshot<'a>(
+    keys: impl Iterator<Item = &'a ResourceKey>,
+) -> ImageCacheSemanticSnapshot {
+    let mut pages = std::collections::BTreeSet::new();
+    let mut media = std::collections::BTreeSet::new();
+    let mut by_provider = BTreeMap::new();
+    let mut by_variant = BTreeMap::new();
+    let mut resource_count = 0;
+    for key in keys {
+        resource_count += 1;
+        *by_provider.entry(key.provider.clone()).or_insert(0) += 1;
+        *by_variant.entry(key.variant.clone()).or_insert(0) += 1;
+        media.insert((key.provider.clone(), key.media.clone()));
+        if key.variant != "cover" {
+            pages.insert((key.provider.clone(), key.media.clone(), key.page));
+        }
+    }
+    ImageCacheSemanticSnapshot {
+        resource_count,
+        page_count: pages.len(),
+        media_count: media.len(),
+        by_provider,
+        by_variant,
+    }
+}
+
 async fn run_cache_writer(service: Arc<ImageService>, mut writes: mpsc::Receiver<CacheWrite>) {
     let mut persisted_aliases = load_aliases(&service.cache_root).unwrap_or_default();
     loop {
@@ -1116,7 +1164,7 @@ fn io_error(action: &str, path: &Path, error: std::io::Error) -> CoreError {
 mod tests {
     use super::{
         ContentMd5, ResourceKey, StoredAliases, cache_path, detect_format, load_aliases,
-        remove_staging_files, scan_cache,
+        remove_staging_files, scan_cache, semantic_snapshot,
     };
     use std::{path::Path, str::FromStr};
     use tempfile::TempDir;
@@ -1183,5 +1231,24 @@ mod tests {
         assert_eq!(scan.valid_blobs, 1);
         assert_eq!(scan.valid_bytes, jpeg.len() as u64);
         assert_eq!(scan.invalid.len(), 1);
+    }
+
+    #[test]
+    fn semantic_cache_counts_pages_media_providers_and_variants() {
+        let keys = [
+            ResourceKey::new("eh", "1:token", 0, "cover").unwrap(),
+            ResourceKey::new("eh", "1:token", 0, "thumbnail").unwrap(),
+            ResourceKey::new("eh", "1:token", 0, "viewer").unwrap(),
+            ResourceKey::new("eh", "1:token", 1, "viewer").unwrap(),
+            ResourceKey::new("pixiv", "9", 0, "original").unwrap(),
+        ];
+        let snapshot = semantic_snapshot(keys.iter());
+        assert_eq!(snapshot.resource_count, 5);
+        assert_eq!(snapshot.page_count, 3);
+        assert_eq!(snapshot.media_count, 2);
+        assert_eq!(snapshot.by_provider["eh"], 4);
+        assert_eq!(snapshot.by_provider["pixiv"], 1);
+        assert_eq!(snapshot.by_variant["viewer"], 2);
+        assert_eq!(snapshot.by_variant["cover"], 1);
     }
 }

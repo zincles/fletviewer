@@ -3328,6 +3328,8 @@ mod tests {
         .unwrap();
         assert!(snapshot.starts_with("HTTP/1.1 200 OK"));
         assert!(snapshot.contains("\"memory_limit_bytes\""));
+        assert!(snapshot.contains("\"semantic\":{"));
+        assert!(snapshot.contains("\"page_count\":0"));
         assert!(snapshot.contains("\"staging_file_count\":0"));
         assert!(snapshot.contains("\"invalid_blob_count\":1"));
         let maintenance = String::from_utf8(

@@ -1185,11 +1185,25 @@ async fn image_cache(State(state): State<ControlState>) -> Response {
         Ok(cache) => cache,
         Err(error) => return error_page(&error),
     };
+    let providers = cache
+        .semantic
+        .by_provider
+        .iter()
+        .map(|(provider, count)| format!("{}: {}", escape(provider), count))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let variants = cache
+        .semantic
+        .by_variant
+        .iter()
+        .map(|(variant, count)| format!("{}: {}", escape(variant), count))
+        .collect::<Vec<_>>()
+        .join(" · ");
     html_page(
         StatusCode::OK,
         "图片缓存",
         &format!(
-            "<h1>图片缓存</h1><div class=\"grid\"><section class=\"card\"><h2>内存与网络</h2><dl><dt>内存</dt><dd>{} / {} 字节</dd><dt>内存条目</dt><dd>{}</dd><dt>在途</dt><dd>{} / {} 字节</dd><dt>共享传输</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>磁盘与索引</h2><dl><dt>有效 blob</dt><dd>{}</dd><dt>有效字节</dt><dd>{}</dd><dt>无效 blob</dt><dd>{}</dd><dt>Alias</dt><dd>{}</dd><dt>Staging</dt><dd>{}</dd><dt>写盘队列</dt><dd>{} / {}</dd></dl></section></div><form method=\"post\" action=\"/ui/cache/maintain\"><button type=\"submit\">清理无效 blob、staging 与 stale alias</button></form><p class=\"muted\">维护只处理 fvcore 管理的图片缓存，不接受外部路径，也不会按年龄删除有效 blob。</p>",
+            "<h1>图片缓存</h1><div class=\"grid\"><section class=\"card\"><h2>内存与网络</h2><dl><dt>内存</dt><dd>{} / {} 字节</dd><dt>内存条目</dt><dd>{}</dd><dt>在途</dt><dd>{} / {} 字节</dd><dt>共享传输</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>磁盘与索引</h2><dl><dt>有效 blob</dt><dd>{}</dd><dt>有效字节</dt><dd>{}</dd><dt>无效 blob</dt><dd>{}</dd><dt>Alias</dt><dd>{}</dd><dt>Staging</dt><dd>{}</dd><dt>写盘队列</dt><dd>{} / {}</dd></dl></section><section class=\"card wide\"><h2>语义资源</h2><dl><dt>已缓存页</dt><dd>{}</dd><dt>媒体项</dt><dd>{}</dd><dt>语义资源</dt><dd>{}</dd><dt>Provider</dt><dd>{}</dd><dt>Variant</dt><dd>{}</dd></dl><p class=\"muted\">页数按唯一 provider/media/page 统计并排除 cover；同一页的 thumbnail、viewer 或 original 不重复计数。Blob 是唯一实际内容，语义资源可能共享同一 blob。</p></section></div><form method=\"post\" action=\"/ui/cache/maintain\"><button type=\"submit\">清理无效 blob、staging 与 stale alias</button></form><p class=\"muted\">维护只处理 fvcore 管理的图片缓存，不接受外部路径，也不会按年龄删除有效 blob。</p>",
             cache.memory_bytes,
             cache.memory_limit_bytes,
             cache.memory_entries,
@@ -1203,6 +1217,15 @@ async fn image_cache(State(state): State<ControlState>) -> Response {
             cache.staging_file_count,
             cache.write_queue_depth,
             cache.write_queue_capacity,
+            cache.semantic.page_count,
+            cache.semantic.media_count,
+            cache.semantic.resource_count,
+            if providers.is_empty() {
+                "-"
+            } else {
+                &providers
+            },
+            if variants.is_empty() { "-" } else { &variants },
         ),
         None,
     )

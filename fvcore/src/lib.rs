@@ -35,8 +35,8 @@ pub use gallery::{
 };
 pub use id::{OperationId, RuntimeId};
 pub use image::{
-    ContentMd5, ImageCacheMaintenance, ImageCacheSnapshot, ImageResource, ImageResourceDescriptor,
-    ResourceKey, ResourceSource,
+    ContentMd5, ImageCacheMaintenance, ImageCacheSemanticSnapshot, ImageCacheSnapshot,
+    ImageResource, ImageResourceDescriptor, ResourceKey, ResourceSource,
 };
 pub use operation::{
     BooruOriginalFetchRequest, CoreEvent, CoreEventSubject, EhPageFetchRequest, ErrorSnapshot,
