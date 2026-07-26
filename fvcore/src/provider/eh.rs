@@ -319,7 +319,24 @@ impl EhService {
         cursor: Option<EhPageCursor>,
         cancellation: CancellationToken,
     ) -> Result<EhHomePage, CoreError> {
+        self.search(key, "", cursor, cancellation).await
+    }
+
+    pub(crate) async fn search(
+        &self,
+        key: &ProfileKey,
+        search: &str,
+        cursor: Option<EhPageCursor>,
+        cancellation: CancellationToken,
+    ) -> Result<EhHomePage, CoreError> {
         ensure_eh(key)?;
+        if search.len() > 2_000 {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH search query is too long",
+                false,
+            ));
+        }
         if cursor.is_some_and(|value| value.gid == 0) {
             return Err(CoreError::new(
                 ErrorCode::InvalidInput,
@@ -327,7 +344,7 @@ impl EhService {
                 false,
             ));
         }
-        let query = cursor.map_or_else(Vec::new, |value| {
+        let mut query = cursor.map_or_else(Vec::new, |value| {
             vec![(
                 match value.direction {
                     EhPageDirection::Previous => "prev",
@@ -337,6 +354,9 @@ impl EhService {
                 value.gid.to_string(),
             )]
         });
+        if !search.trim().is_empty() {
+            query.push(("f_search".to_owned(), search.trim().to_owned()));
+        }
         let response = self
             .sessions
             .get_with_query(key, "", &query, crate::session::ApiAuth::None, cancellation)
@@ -474,7 +494,7 @@ impl EhService {
                 key,
                 &first_page_url,
                 None,
-                2 * 1024 * 1024,
+                crate::session::BodyLimit::bounded(2 * 1024 * 1024),
                 cancellation.child_token(),
                 |_, _| {},
             )
@@ -588,7 +608,7 @@ impl EhService {
                 key,
                 &first,
                 Some(&response.final_url),
-                2 * 1024 * 1024,
+                crate::session::BodyLimit::bounded(2 * 1024 * 1024),
                 cancellation,
                 |_, _| {},
             )

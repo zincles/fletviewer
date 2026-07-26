@@ -96,7 +96,7 @@ pub struct ProfileProbeSnapshot {
 }
 
 /// Bounded in-memory HTTP response returned by a Provider session.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct NetworkResponse {
     /// Provider profile used for this request.
     pub(crate) profile: ProfileKey,
@@ -110,6 +110,29 @@ pub(crate) struct NetworkResponse {
     pub(crate) body: Bytes,
     /// Optional response Content-Type.
     pub(crate) content_type: Option<String>,
+    pub(crate) byte_budget: Vec<tokio::sync::OwnedSemaphorePermit>,
+}
+
+#[derive(Clone)]
+pub(crate) struct BodyLimit {
+    max_bytes: usize,
+    byte_budget: Option<Arc<Semaphore>>,
+}
+
+impl BodyLimit {
+    pub(crate) fn bounded(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            byte_budget: None,
+        }
+    }
+
+    pub(crate) fn budgeted(max_bytes: usize, byte_budget: Arc<Semaphore>) -> Self {
+        Self {
+            max_bytes,
+            byte_budget: Some(byte_budget),
+        }
+    }
 }
 
 pub(crate) struct DownloadResponse {
@@ -277,7 +300,7 @@ impl SessionRegistry {
         key: &ProfileKey,
         url: &Url,
         referer: Option<&Url>,
-        max_bytes: usize,
+        limit: BodyLimit,
         cancellation: CancellationToken,
         progress: F,
     ) -> Result<NetworkResponse, CoreError>
@@ -286,7 +309,7 @@ impl SessionRegistry {
     {
         let session = self.session(key)?;
         session
-            .get_absolute(url, referer, max_bytes, cancellation, progress)
+            .get_absolute(url, referer, limit, cancellation, progress)
             .await
     }
 
@@ -509,6 +532,7 @@ impl SessionGeneration {
             request,
             self.network.max_response_bytes,
             cancellation,
+            None,
             |_, _| {},
         )
         .await
@@ -541,6 +565,7 @@ impl SessionGeneration {
             request,
             self.network.max_response_bytes,
             cancellation,
+            None,
             |_, _| {},
         )
         .await
@@ -550,7 +575,7 @@ impl SessionGeneration {
         &self,
         url: &Url,
         referer: Option<&Url>,
-        max_bytes: usize,
+        limit: BodyLimit,
         cancellation: CancellationToken,
         progress: F,
     ) -> Result<NetworkResponse, CoreError>
@@ -567,8 +592,14 @@ impl SessionGeneration {
                 request = request.header(header::COOKIE, cookie.expose_secret());
             }
         }
-        self.execute(request, max_bytes, cancellation, progress)
-            .await
+        self.execute(
+            request,
+            limit.max_bytes,
+            cancellation,
+            limit.byte_budget,
+            progress,
+        )
+        .await
     }
 
     async fn post_eh_api(
@@ -598,6 +629,7 @@ impl SessionGeneration {
             request,
             self.network.max_response_bytes,
             cancellation,
+            None,
             |_, _| {},
         )
         .await
@@ -630,6 +662,7 @@ impl SessionGeneration {
             request,
             self.network.max_response_bytes,
             cancellation,
+            None,
             |_, _| {},
         )
         .await
@@ -803,6 +836,7 @@ impl SessionGeneration {
         request: reqwest::RequestBuilder,
         max_bytes: usize,
         cancellation: CancellationToken,
+        byte_budget: Option<Arc<Semaphore>>,
         mut progress: F,
     ) -> Result<NetworkResponse, CoreError>
     where
@@ -842,6 +876,7 @@ impl SessionGeneration {
             .map(str::to_owned);
         let mut response = response;
         let mut body = BytesMut::new();
+        let mut budget_permits = Vec::new();
         let total = response.content_length();
         progress(0, total);
         loop {
@@ -856,6 +891,18 @@ impl SessionGeneration {
             if body.len().saturating_add(chunk.len()) > max_bytes {
                 return Err(response_too_large(max_bytes));
             }
+            if let Some(budget) = &byte_budget {
+                let permits =
+                    u32::try_from(chunk.len()).map_err(|_| response_too_large(max_bytes))?;
+                let permit = tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => return Err(cancelled()),
+                    permit = budget.clone().acquire_many_owned(permits) => permit.map_err(|_| {
+                        CoreError::new(ErrorCode::NotReady, "image byte budget is shutting down", true)
+                    })?,
+                };
+                budget_permits.push(permit);
+            }
             body.extend_from_slice(&chunk);
             progress(body.len(), total);
         }
@@ -866,6 +913,7 @@ impl SessionGeneration {
             final_url,
             body: body.freeze(),
             content_type,
+            byte_budget: budget_permits,
         };
         drop(permit);
         Ok(result)

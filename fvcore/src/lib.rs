@@ -34,7 +34,10 @@ pub use gallery::{
     LocalGalleryResourceDescriptor, LocalGalleryResourceKind, LocalGallerySummary,
 };
 pub use id::{OperationId, RuntimeId};
-pub use image::{ContentMd5, ImageResource, ImageResourceDescriptor, ResourceKey, ResourceSource};
+pub use image::{
+    ContentMd5, ImageCacheMaintenance, ImageCacheSnapshot, ImageResource, ImageResourceDescriptor,
+    ResourceKey, ResourceSource,
+};
 pub use operation::{
     BooruOriginalFetchRequest, CoreEvent, CoreEventSubject, EhPageFetchRequest, ErrorSnapshot,
     EventBatch, EventStreamItem, EventSubscription, FakeOperationRequest, FakeOutcome,
@@ -46,10 +49,11 @@ pub use provider::eh::{
     EhGalleryDetail, EhGalleryRef, EhGallerySummary, EhGalleryVersion, EhHomePage,
     EhImageResolution, EhPageCursor, EhPageDirection, EhThumbnail, EhThumbnailPage,
 };
-pub use provider::pixiv::{PixivIllust, PixivPage, PixivUser};
+pub use provider::pixiv::{PixivIllust, PixivPage, PixivSearchItem, PixivSearchResult, PixivUser};
 pub use runtime::{CoreBuilder, CoreHandle, CoreRuntime};
 pub use session::{ProfileKey, ProfileProbeSnapshot, ProfileSnapshot};
 pub use snapshot::{CoreSnapshot, RuntimeState, StorageSnapshot};
+pub use storage::FavoriteSearch;
 
 /// Crate version compiled into the current artifact.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -33,7 +33,7 @@
 | 已完成 | 单 crate library/executable、基础依赖与检查 | format、全部 target check/test、clippy `-D warnings` 通过 |
 | 已完成 | 严格配置、稳定错误、Runtime ID、snapshot | Runtime 只读取 executable 同级必需 `config.json`，`run/web` 分配资源前完整验证；`run` 不挂载 WebUI，`web` 强制启用 listener + WebUI；无参数 `check-config/create-config` 与运行命令统一使用 executable 同级配置，唯一 staging 安全生成，默认拒绝覆盖，显式 `--override` 通过锁和恢复副本重置默认值并恢复中断事务 |
 | 已完成 | `CoreRuntime`、`CoreHandle` 与集成 HTTP | 有界命令队列、协作关闭、health/status 路由通过真实 loopback 测试 |
-| 已完成 | 四域存储、实例锁与 `redb` schema v2 | v1 原地迁移；第二 Runtime 被拒绝，关闭后可重新取得同一 Data 域；画廊登记只保存 ID 与受管直接子目录名 |
+| 已完成 | 四域存储、实例锁与 `redb` schema v3 | 旧 schema 原地迁移；第二 Runtime 被拒绝，关闭后可重新取得同一 Data 域；画廊登记只保存 ID 与受管直接子目录名；收藏搜索保存 provider/profile/name/query/revision |
 | 已完成 | Command/Event/Operation 模型 | 状态机、deadline、取消、overload、revision、event cursor/SSE 和 fake operation 测试 |
 | 已完成 | Provider profile/session generation 与共享网络 Foundation | Cookie 环境注入、UA、代理、连接池、受限 redirect、响应上限和旧 generation 自然释放 |
 | 已完成 | Provider 限流与两大 Booru 查询闭环 | Generation 级并发/启动间隔；Danbooru JSON 与 Gelbooru JSON DAPI 搜索、详情、fixture、稳定错误和 HTTP 路由 |
@@ -51,8 +51,8 @@
 | 已完成 | 本地画廊显式确认删除 | 删除必须先预检并取得五分钟一次性令牌；令牌绑定直接普通文件名与大小清单，文件集合或大小变化即拒绝；阅读/旁置写入/消费/删除共用读写占用，提交先持久化确认清单并隐藏目录，再清除 Archive task 路径；启动仅按 unchanged 清单恢复中断删除，WebUI 必须二次提交确认 |
 | 已完成 | 本地画廊导出语义 | `LocalGalleryExport` 固定 64 KiB 有界块、最多两个并发导出并持有共享画廊占用；嵌入 API、HTTP 附件与 WebUI 复用同一流，公开 descriptor 不含服务器 Path，平台嵌入者负责目标文件选择与写入 |
 | 已完成 | 本地数据盘点与配置 WebUI | inventory 分类已登记健康/损坏、未登记可导入、格式无效，检查全部 ZIP 页面与 sidecar；显式导入只收 gallery ID；当前生效配置 snapshot 和页面已脱敏 secret、代理值及 URL 凭据 |
-| 下一步 | 完整图像缓存监管 | 全局 chunk 级在途预算、Cache snapshot/维护、alias schema/version、staging 清理和更多格式 fixture |
-| 后续 | Provider 纵向迁移 | 补齐 EH 搜索/feed、Pixiv 搜索/推荐/关注/收藏/排行、Gelbooru-style/Moebooru 协议族及各 Provider 正式下载能力，最终覆盖 Python Core |
+| 已完成 | 图像缓存监管基础 | 全局 chunk 级在途预算、Cache snapshot、非阻塞内容 MD5/shard/extension/magic 审计、显式维护无效 blob/stale alias、alias schema v1/旧格式迁移及受管 staging 启动清理已贯通 |
+| 进行中 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 的查询/翻页和 provider-scoped 收藏搜索已接入 redb schema v3、Core/API/WebUI；后续补 Pixiv 推荐/关注/收藏/排行、Gelbooru-style/Moebooru 协议族及正式下载能力 |
 
 ## Core 独立化进度
 

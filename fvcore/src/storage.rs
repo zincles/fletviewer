@@ -3,15 +3,38 @@
 use crate::{CoreError, ErrorCode, StorageConfig, StorageSnapshot};
 use fs2::FileExt;
 use redb::{Database, ReadableTable, TableDefinition};
+use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
     sync::{Arc, Weak},
 };
 
-const STORAGE_SCHEMA_VERSION: u64 = 2;
+const STORAGE_SCHEMA_VERSION: u64 = 3;
 const METADATA: TableDefinition<&str, u64> = TableDefinition::new("metadata");
 const LOCAL_GALLERIES: TableDefinition<&str, &str> = TableDefinition::new("local_galleries");
+const FAVORITE_SEARCHES: TableDefinition<&str, &str> = TableDefinition::new("favorite_searches");
+
+/// One provider-scoped saved search.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FavoriteSearch {
+    /// Stable favorite identifier.
+    pub id: uuid::Uuid,
+    /// Provider implementation identifier.
+    pub provider: String,
+    /// Provider profile used by the query.
+    pub profile: String,
+    /// User-facing label.
+    pub name: String,
+    /// Provider-native query text.
+    pub query: String,
+    /// Revision incremented when the favorite changes.
+    pub revision: u64,
+}
+
+pub(crate) struct FavoriteSearchRegistry {
+    database: Weak<Database>,
+}
 
 pub(crate) struct StorageService {
     paths: StoragePaths,
@@ -111,6 +134,120 @@ impl StorageService {
             database: Arc::downgrade(&self.database),
         })
     }
+
+    pub(crate) fn favorite_search_registry(&self) -> Arc<FavoriteSearchRegistry> {
+        Arc::new(FavoriteSearchRegistry {
+            database: Arc::downgrade(&self.database),
+        })
+    }
+}
+
+impl FavoriteSearchRegistry {
+    pub(crate) fn list(&self) -> Result<Vec<FavoriteSearch>, CoreError> {
+        let database = self.database()?;
+        let read = database.begin_read().map_err(database_error)?;
+        let table = read.open_table(FAVORITE_SEARCHES).map_err(database_error)?;
+        let mut favorites = Vec::new();
+        for entry in table.iter().map_err(database_error)? {
+            let (_, value) = entry.map_err(database_error)?;
+            favorites.push(serde_json::from_str(value.value()).map_err(|_| {
+                CoreError::new(
+                    ErrorCode::IntegrityMismatch,
+                    "favorite search is invalid",
+                    false,
+                )
+            })?);
+        }
+        favorites.sort_by(|left: &FavoriteSearch, right| {
+            left.name.cmp(&right.name).then(left.id.cmp(&right.id))
+        });
+        Ok(favorites)
+    }
+
+    pub(crate) fn create(
+        &self,
+        provider: String,
+        profile: String,
+        name: String,
+        query: String,
+    ) -> Result<FavoriteSearch, CoreError> {
+        validate_favorite(&provider, &profile, &name, &query)?;
+        let favorite = FavoriteSearch {
+            id: uuid::Uuid::now_v7(),
+            provider,
+            profile,
+            name,
+            query,
+            revision: 1,
+        };
+        let json = serde_json::to_string(&favorite).map_err(database_error)?;
+        let database = self.database()?;
+        let write = database.begin_write().map_err(database_error)?;
+        {
+            let mut table = write
+                .open_table(FAVORITE_SEARCHES)
+                .map_err(database_error)?;
+            table
+                .insert(favorite.id.to_string().as_str(), json.as_str())
+                .map_err(database_error)?;
+        }
+        write.commit().map_err(database_error)?;
+        Ok(favorite)
+    }
+
+    pub(crate) fn remove(&self, id: uuid::Uuid) -> Result<bool, CoreError> {
+        let database = self.database()?;
+        let write = database.begin_write().map_err(database_error)?;
+        let removed = {
+            let mut table = write
+                .open_table(FAVORITE_SEARCHES)
+                .map_err(database_error)?;
+            table
+                .remove(id.to_string().as_str())
+                .map_err(database_error)?
+                .is_some()
+        };
+        write.commit().map_err(database_error)?;
+        Ok(removed)
+    }
+
+    fn database(&self) -> Result<Arc<Database>, CoreError> {
+        self.database.upgrade().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::NotReady,
+                "favorite search registry is unavailable",
+                false,
+            )
+        })
+    }
+}
+
+fn validate_favorite(
+    provider: &str,
+    profile: &str,
+    name: &str,
+    query: &str,
+) -> Result<(), CoreError> {
+    if !matches!(provider, "eh" | "danbooru" | "gelbooru" | "pixiv") {
+        return Err(CoreError::new(
+            ErrorCode::InvalidInput,
+            "favorite search provider is unsupported",
+            false,
+        ));
+    }
+    if profile.trim().is_empty()
+        || name.trim().is_empty()
+        || query.trim().is_empty()
+        || name.len() > 120
+        || query.len() > 2_000
+    {
+        return Err(CoreError::new(
+            ErrorCode::InvalidInput,
+            "favorite search profile, name and query must be nonempty and bounded",
+            false,
+        ));
+    }
+    Ok(())
 }
 
 impl GalleryRegistry {
@@ -276,6 +413,9 @@ fn initialize_schema(database: &Database) -> Result<(), CoreError> {
         }
     }
     write.open_table(LOCAL_GALLERIES).map_err(database_error)?;
+    write
+        .open_table(FAVORITE_SEARCHES)
+        .map_err(database_error)?;
     write.commit().map_err(database_error)
 }
 
@@ -328,7 +468,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let storage = StorageService::open(&config(&temp)).unwrap();
         let snapshot = storage.snapshot().unwrap();
-        assert_eq!(snapshot.schema_version, 2);
+        assert_eq!(snapshot.schema_version, 3);
         assert!(snapshot.database_bytes > 0);
         assert!(temp.path().join("Data/fvcore.redb").is_file());
 
@@ -357,8 +497,60 @@ mod tests {
         drop(database);
 
         let storage = StorageService::open(&config(&temp)).unwrap();
-        assert_eq!(storage.snapshot().unwrap().schema_version, 2);
+        assert_eq!(storage.snapshot().unwrap().schema_version, 3);
         assert!(storage.gallery_registry().list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn favorite_searches_are_provider_scoped_and_persistent() {
+        let temp = TempDir::new().unwrap();
+        let config = config(&temp);
+        let storage = StorageService::open(&config).unwrap();
+        let registry = storage.favorite_search_registry();
+        let favorite = registry
+            .create(
+                "eh".to_owned(),
+                "default".to_owned(),
+                "landscapes".to_owned(),
+                "landscape language:english".to_owned(),
+            )
+            .unwrap();
+        assert_eq!(
+            registry.list().unwrap()[0].query,
+            "landscape language:english"
+        );
+        assert!(
+            registry
+                .create(
+                    "danbooru".to_owned(),
+                    "default".to_owned(),
+                    "x".to_owned(),
+                    "x".to_owned()
+                )
+                .is_ok()
+        );
+        assert!(
+            registry
+                .create(
+                    "pixiv".to_owned(),
+                    "default".to_owned(),
+                    "x".to_owned(),
+                    "x".to_owned()
+                )
+                .is_ok()
+        );
+        assert!(
+            registry
+                .create(
+                    "unsupported".to_owned(),
+                    "default".to_owned(),
+                    "x".to_owned(),
+                    "x".to_owned()
+                )
+                .is_err()
+        );
+        assert!(registry.remove(favorite.id).unwrap());
+        assert_eq!(registry.list().unwrap().len(), 2);
     }
 
     #[test]

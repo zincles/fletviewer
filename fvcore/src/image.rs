@@ -23,6 +23,58 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 const FORMATS: &[&str] = &["jpg", "png", "gif", "webp", "avif"];
+const ALIAS_SCHEMA_VERSION: u32 = 1;
+
+/// Read-only accounting for the Runtime-owned image cache.
+#[derive(Clone, Debug, Serialize)]
+pub struct ImageCacheSnapshot {
+    /// Bytes retained by the memory LRU.
+    pub memory_bytes: usize,
+    /// Configured memory LRU limit.
+    pub memory_limit_bytes: usize,
+    /// Number of memory LRU entries.
+    pub memory_entries: usize,
+    /// Bytes currently held by network image responses.
+    pub inflight_bytes: usize,
+    /// Configured global in-flight byte limit.
+    pub inflight_limit_bytes: usize,
+    /// Number of active shared transfers.
+    pub active_transfers: usize,
+    /// Number of stable resource aliases.
+    pub alias_count: usize,
+    /// Pending cache writes.
+    pub write_queue_depth: usize,
+    /// Configured cache write queue capacity.
+    pub write_queue_capacity: usize,
+    /// Valid content-addressed blobs found on disk.
+    pub disk_blob_count: usize,
+    /// Bytes occupied by valid disk blobs.
+    pub disk_bytes: u64,
+    /// Cache staging files awaiting maintenance.
+    pub staging_file_count: usize,
+    /// Blob files whose path, digest or magic format is invalid.
+    pub invalid_blob_count: usize,
+}
+
+/// Result of one explicit image cache maintenance pass.
+#[derive(Clone, Debug, Serialize)]
+pub struct ImageCacheMaintenance {
+    /// Staging files removed.
+    pub removed_staging_files: usize,
+    /// Bytes released by removed staging files.
+    pub released_bytes: u64,
+    /// Aliases removed because their content blob no longer exists.
+    pub removed_stale_aliases: usize,
+    /// Invalid blob files removed after content audit.
+    pub removed_invalid_blobs: usize,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StoredAliases {
+    schema_version: u32,
+    aliases: Vec<(ResourceKey, String)>,
+}
 
 /// A real 128-bit image-content MD5 rendered as 32 lowercase hexadecimal characters.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -228,6 +280,7 @@ pub(crate) struct ImageService {
     write_tx: mpsc::Sender<CacheWrite>,
     writer_shutdown: CancellationToken,
     writer: Mutex<Option<JoinHandle<()>>>,
+    disk_maintenance: Mutex<()>,
 }
 
 struct CacheWrite {
@@ -241,6 +294,7 @@ impl ImageService {
         cache_root: PathBuf,
         sessions: Arc<SessionRegistry>,
     ) -> Result<Arc<Self>, CoreError> {
+        remove_staging_files(&cache_root)?;
         let aliases = load_aliases(&cache_root)?;
         let (write_tx, write_rx) = mpsc::channel(config.cache_write_queue);
         let writer_shutdown = CancellationToken::new();
@@ -255,6 +309,7 @@ impl ImageService {
             write_tx,
             writer_shutdown,
             writer: Mutex::new(None),
+            disk_maintenance: Mutex::new(()),
         });
         let writer = tokio::spawn(run_cache_writer(service.clone(), write_rx));
         *service
@@ -357,6 +412,87 @@ impl ImageService {
         Ok(with_source(resource, ResourceSource::Disk))
     }
 
+    pub(crate) async fn snapshot(&self) -> Result<ImageCacheSnapshot, CoreError> {
+        let memory = self.memory.lock().await;
+        let memory_bytes = memory.bytes;
+        let memory_entries = memory.entries.len();
+        drop(memory);
+        let root = self.cache_root.clone();
+        let scan = tokio::task::spawn_blocking(move || scan_cache(&root))
+            .await
+            .map_err(|_| {
+                CoreError::new(ErrorCode::Internal, "image cache scan panicked", false)
+            })??;
+        Ok(ImageCacheSnapshot {
+            memory_bytes,
+            memory_limit_bytes: self.config.memory_cache_bytes,
+            memory_entries,
+            inflight_bytes: self
+                .config
+                .max_inflight_bytes
+                .saturating_sub(self.inflight_bytes.available_permits()),
+            inflight_limit_bytes: self.config.max_inflight_bytes,
+            active_transfers: self.inflight.lock().await.len(),
+            alias_count: self.aliases.lock().await.len(),
+            write_queue_depth: self.write_tx.max_capacity() - self.write_tx.capacity(),
+            write_queue_capacity: self.write_tx.max_capacity(),
+            disk_blob_count: scan.valid_blobs,
+            disk_bytes: scan.valid_bytes,
+            staging_file_count: scan.staging.len(),
+            invalid_blob_count: scan.invalid.len(),
+        })
+    }
+
+    pub(crate) async fn maintain(&self) -> Result<ImageCacheMaintenance, CoreError> {
+        let _maintenance = self.disk_maintenance.lock().await;
+        let root = self.cache_root.clone();
+        let scan = tokio::task::spawn_blocking(move || scan_cache(&root))
+            .await
+            .map_err(|_| {
+                CoreError::new(ErrorCode::Internal, "image cache scan panicked", false)
+            })??;
+        let removals = scan
+            .staging
+            .iter()
+            .chain(&scan.invalid)
+            .cloned()
+            .collect::<Vec<_>>();
+        let released_bytes = tokio::task::spawn_blocking(move || {
+            let mut released = 0_u64;
+            for (path, bytes) in removals {
+                std::fs::remove_file(&path)
+                    .map_err(|error| io_error("remove invalid image cache file", &path, error))?;
+                released = released.saturating_add(bytes);
+            }
+            Ok::<_, CoreError>(released)
+        })
+        .await
+        .map_err(|_| {
+            CoreError::new(
+                ErrorCode::Internal,
+                "image cache maintenance panicked",
+                false,
+            )
+        })??;
+        let mut aliases = self.aliases.lock().await;
+        let before = aliases.len();
+        aliases.retain(|_, md5| {
+            FORMATS
+                .iter()
+                .any(|extension| cache_path(&self.cache_root, *md5, extension).is_file())
+        });
+        let removed_stale_aliases = before - aliases.len();
+        if removed_stale_aliases > 0 {
+            persist_aliases(&self.cache_root, &aliases).await?;
+        }
+        Ok(ImageCacheMaintenance {
+            removed_staging_files: scan.staging.len(),
+            removed_invalid_blobs: scan.invalid.len(),
+            released_bytes,
+            removed_stale_aliases,
+        })
+    }
+
     pub(crate) async fn shutdown(&self, deadline: std::time::Duration) -> Result<(), CoreError> {
         self.writer_shutdown.cancel();
         let Some(mut writer) = self.writer.lock().await.take() else {
@@ -445,20 +581,6 @@ impl ImageService {
         transfer: &SharedTransfer,
         state: &watch::Sender<TransferState>,
     ) -> Result<ImageResource, CoreError> {
-        let permits = u32::try_from(self.config.max_image_bytes).map_err(|_| {
-            CoreError::new(
-                ErrorCode::InvalidConfig,
-                "image byte limit is too large",
-                false,
-            )
-        })?;
-        let _budget = tokio::select! {
-            biased;
-            () = transfer.cancellation.cancelled() => return Err(cancelled()),
-            permit = self.inflight_bytes.clone().acquire_many_owned(permits) => permit.map_err(|_| {
-                CoreError::new(ErrorCode::NotReady, "image service is shutting down", true)
-            })?,
-        };
         let shared = || transfer.subscribers.load(Ordering::Relaxed) > 1;
         let response = self
             .sessions
@@ -466,7 +588,10 @@ impl ImageService {
                 &spec.profile,
                 &spec.url,
                 spec.referer.as_ref(),
-                self.config.max_image_bytes,
+                crate::session::BodyLimit::budgeted(
+                    self.config.max_image_bytes,
+                    self.inflight_bytes.clone(),
+                ),
                 transfer.cancellation.clone(),
                 |done, total| {
                     state.send_replace(TransferState {
@@ -482,11 +607,14 @@ impl ImageService {
                 },
             )
             .await?;
+        let crate::session::NetworkResponse {
+            body, byte_budget, ..
+        } = response;
         state.send_replace(TransferState {
             progress: ImageProgress {
                 phase: "verifying",
-                bytes_done: response.body.len() as u64,
-                bytes_total: Some(response.body.len() as u64),
+                bytes_done: body.len() as u64,
+                bytes_total: Some(body.len() as u64),
                 source: Some(ResourceSource::Network),
                 shared: shared(),
             },
@@ -494,7 +622,7 @@ impl ImageService {
         });
         if spec
             .expected_bytes
-            .is_some_and(|expected| expected != response.body.len() as u64)
+            .is_some_and(|expected| expected != body.len() as u64)
         {
             return Err(CoreError::new(
                 ErrorCode::IntegrityMismatch,
@@ -502,7 +630,7 @@ impl ImageService {
                 false,
             ));
         }
-        let actual_md5 = ContentMd5::digest(&response.body);
+        let actual_md5 = ContentMd5::digest(&body);
         if spec
             .expected_md5
             .is_some_and(|expected| actual_md5 != expected)
@@ -513,19 +641,20 @@ impl ImageService {
                 false,
             ));
         }
-        let (extension, mime_type) = detect_format(&response.body)?;
+        let (extension, mime_type) = detect_format(&body)?;
         let resource = ImageResource {
             descriptor: ImageResourceDescriptor {
                 content_md5: actual_md5,
                 extension: extension.to_owned(),
                 mime_type: mime_type.to_owned(),
-                byte_length: response.body.len(),
+                byte_length: body.len(),
                 source: ResourceSource::Network,
                 cache_persisted: false,
             },
-            bytes: response.body,
+            bytes: body,
         };
         self.memory_insert(resource.clone()).await;
+        drop(byte_budget);
         if let Some(key) = &spec.resource_key {
             self.aliases.lock().await.insert(key.clone(), actual_md5);
         }
@@ -624,6 +753,7 @@ impl ImageService {
     }
 
     async fn persist(&self, resource: &ImageResource) -> Result<(), CoreError> {
+        let _maintenance = self.disk_maintenance.lock().await;
         let path = cache_path(
             &self.cache_root,
             resource.descriptor.content_md5,
@@ -678,6 +808,7 @@ async fn run_cache_writer(service: Arc<ImageService>, mut writes: mpsc::Receiver
         }
         if let Some(alias) = write.alias {
             persisted_aliases.insert(alias, md5);
+            let _maintenance = service.disk_maintenance.lock().await;
             if let Err(error) = persist_aliases(&service.cache_root, &persisted_aliases).await {
                 tracing::warn!(content_md5 = %md5, %error, "failed to persist image resource aliases");
             }
@@ -695,17 +826,73 @@ fn load_aliases(root: &Path) -> Result<BTreeMap<ResourceKey, ContentMd5>, CoreEr
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(error) => return Err(io_error("read image aliases", &path, error)),
     };
-    let stored: Vec<(ResourceKey, String)> = serde_json::from_slice(&input).map_err(|_| {
+    let value: serde_json::Value = serde_json::from_slice(&input).map_err(|_| {
         CoreError::new(
             ErrorCode::Parse,
             format!("failed to parse image aliases {}", path.display()),
             false,
         )
     })?;
+    let stored = if value.is_array() {
+        let aliases: Vec<(ResourceKey, String)> = serde_json::from_slice(&input).map_err(|_| {
+            CoreError::new(
+                ErrorCode::Parse,
+                format!("failed to parse image aliases {}", path.display()),
+                false,
+            )
+        })?;
+        persist_aliases_sync(root, &aliases)?;
+        StoredAliases {
+            schema_version: ALIAS_SCHEMA_VERSION,
+            aliases,
+        }
+    } else if value.is_object() {
+        serde_json::from_slice(&input).map_err(|_| {
+            CoreError::new(
+                ErrorCode::Parse,
+                format!("failed to parse image aliases {}", path.display()),
+                false,
+            )
+        })?
+    } else {
+        return Err(CoreError::new(
+            ErrorCode::Parse,
+            format!("failed to parse image aliases {}", path.display()),
+            false,
+        ));
+    };
+    if stored.schema_version != ALIAS_SCHEMA_VERSION {
+        return Err(CoreError::new(
+            ErrorCode::Parse,
+            format!("unsupported image alias schema {}", stored.schema_version),
+            false,
+        ));
+    }
     stored
+        .aliases
         .into_iter()
         .map(|(key, md5)| Ok((key, ContentMd5::from_str(&md5)?)))
         .collect()
+}
+
+fn persist_aliases_sync(root: &Path, aliases: &[(ResourceKey, String)]) -> Result<(), CoreError> {
+    let path = root.join("image_aliases.json");
+    let staging = root.join("image_aliases.json.tmp");
+    let bytes = serde_json::to_vec(&StoredAliases {
+        schema_version: ALIAS_SCHEMA_VERSION,
+        aliases: aliases.to_vec(),
+    })
+    .map_err(|error| {
+        CoreError::new(
+            ErrorCode::Internal,
+            format!("failed to serialize image aliases: {error}"),
+            false,
+        )
+    })?;
+    std::fs::write(&staging, bytes)
+        .map_err(|error| io_error("write staged image aliases", &staging, error))?;
+    std::fs::rename(&staging, &path)
+        .map_err(|error| io_error("publish image aliases", &path, error))
 }
 
 async fn persist_aliases(
@@ -714,10 +901,13 @@ async fn persist_aliases(
 ) -> Result<(), CoreError> {
     let path = root.join("image_aliases.json");
     let staging = root.join("image_aliases.json.tmp");
-    let stored: Vec<_> = aliases
-        .iter()
-        .map(|(key, md5)| (key, md5.to_string()))
-        .collect();
+    let stored = StoredAliases {
+        schema_version: ALIAS_SCHEMA_VERSION,
+        aliases: aliases
+            .iter()
+            .map(|(key, md5)| (key.clone(), md5.to_string()))
+            .collect(),
+    };
     let bytes = serde_json::to_vec(&stored).map_err(|_| {
         CoreError::new(
             ErrorCode::Internal,
@@ -738,6 +928,127 @@ async fn persist_aliases(
     tokio::fs::rename(&staging, &path)
         .await
         .map_err(|error| io_error("publish image aliases", &path, error))
+}
+
+fn remove_staging_files(root: &Path) -> Result<(), CoreError> {
+    for (path, _) in scan_staging(root)? {
+        std::fs::remove_file(&path)
+            .map_err(|error| io_error("remove staged image cache file", &path, error))?;
+    }
+    Ok(())
+}
+
+fn scan_staging(root: &Path) -> Result<Vec<(PathBuf, u64)>, CoreError> {
+    let mut staging = Vec::new();
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(io_error("scan image cache staging", &directory, error)),
+        };
+        for entry in entries {
+            let entry =
+                entry.map_err(|error| io_error("scan image cache staging", &directory, error))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| io_error("inspect image cache staging", &path, error))?;
+            if file_type.is_dir() {
+                directories.push(path);
+            } else if file_type.is_file() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if path == root.join("image_aliases.json.tmp")
+                    || (path.starts_with(root.join("files")) && name.ends_with(".tmp"))
+                {
+                    let length = entry
+                        .metadata()
+                        .map_err(|error| io_error("inspect image cache staging", &path, error))?
+                        .len();
+                    staging.push((path, length));
+                }
+            }
+        }
+    }
+    Ok(staging)
+}
+
+struct CacheScan {
+    valid_blobs: usize,
+    valid_bytes: u64,
+    staging: Vec<(PathBuf, u64)>,
+    invalid: Vec<(PathBuf, u64)>,
+}
+
+fn scan_cache(root: &Path) -> Result<CacheScan, CoreError> {
+    let mut blobs = 0;
+    let mut bytes = 0_u64;
+    let mut staging = Vec::new();
+    let mut invalid = Vec::new();
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(io_error("scan image cache", &directory, error)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| io_error("scan image cache", &directory, error))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| io_error("inspect image cache entry", &path, error))?;
+            if file_type.is_dir() {
+                directories.push(path);
+            } else if file_type.is_file() {
+                let length = entry
+                    .metadata()
+                    .map_err(|error| io_error("inspect image cache entry", &path, error))?
+                    .len();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if path == root.join("image_aliases.json.tmp")
+                    || (path.starts_with(root.join("files")) && name.ends_with(".tmp"))
+                {
+                    staging.push((path, length));
+                } else if path.starts_with(root.join("files")) {
+                    if valid_blob_path_and_content(root, &path) {
+                        blobs += 1;
+                        bytes = bytes.saturating_add(length);
+                    } else {
+                        invalid.push((path, length));
+                    }
+                }
+            }
+        }
+    }
+    Ok(CacheScan {
+        valid_blobs: blobs,
+        valid_bytes: bytes,
+        staging,
+        invalid,
+    })
+}
+
+fn valid_blob_path_and_content(root: &Path, path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some((digest, extension)) = name.rsplit_once('.') else {
+        return false;
+    };
+    let Ok(expected_md5) = ContentMd5::from_str(digest) else {
+        return false;
+    };
+    if cache_path(root, expected_md5, extension) != path {
+        return false;
+    }
+    let Ok(content) = std::fs::read(path) else {
+        return false;
+    };
+    detect_format(&content).is_ok_and(|(actual_extension, _)| actual_extension == extension)
+        && ContentMd5::digest(&content) == expected_md5
 }
 
 fn with_source(mut resource: ImageResource, source: ResourceSource) -> ImageResource {
@@ -793,10 +1104,6 @@ fn normalize_extension(extension: &str) -> Result<&str, CoreError> {
         })
 }
 
-fn cancelled() -> CoreError {
-    CoreError::new(ErrorCode::Cancelled, "image transfer was cancelled", false)
-}
-
 fn io_error(action: &str, path: &Path, error: std::io::Error) -> CoreError {
     CoreError::new(
         ErrorCode::Io,
@@ -807,8 +1114,12 @@ fn io_error(action: &str, path: &Path, error: std::io::Error) -> CoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContentMd5, cache_path, detect_format};
+    use super::{
+        ContentMd5, ResourceKey, StoredAliases, cache_path, detect_format, load_aliases,
+        remove_staging_files, scan_cache,
+    };
     use std::{path::Path, str::FromStr};
+    use tempfile::TempDir;
 
     #[test]
     fn content_md5_is_strict_and_paths_are_sharded() {
@@ -825,5 +1136,52 @@ mod tests {
     fn image_format_comes_from_magic_bytes() {
         assert_eq!(detect_format(b"\xff\xd8\xffpayload").unwrap().0, "jpg");
         assert!(detect_format(b"not an image").is_err());
+    }
+
+    #[test]
+    fn alias_schema_is_strict_and_startup_removes_staging() {
+        let temp = TempDir::new().unwrap();
+        let aliases = StoredAliases {
+            schema_version: 1,
+            aliases: vec![(
+                ResourceKey::new("eh", "1:token", 0, "viewer").unwrap(),
+                "d256310bfab43e08b6422e311cd9b2c9".to_owned(),
+            )],
+        };
+        std::fs::write(
+            temp.path().join("image_aliases.json"),
+            serde_json::to_vec(&aliases).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(load_aliases(temp.path()).unwrap().len(), 1);
+        std::fs::write(temp.path().join("image_aliases.json.tmp"), b"partial").unwrap();
+        remove_staging_files(temp.path()).unwrap();
+        assert!(!temp.path().join("image_aliases.json.tmp").exists());
+        std::fs::write(temp.path().join("image_aliases.json"), b"[]").unwrap();
+        assert!(load_aliases(temp.path()).unwrap().is_empty());
+        let migrated: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(temp.path().join("image_aliases.json")).unwrap())
+                .unwrap();
+        assert_eq!(migrated["schema_version"], 1);
+    }
+
+    #[test]
+    fn cache_scan_audits_digest_shards_extension_and_magic() {
+        let temp = TempDir::new().unwrap();
+        let jpeg = b"\xff\xd8\xfffixture";
+        let md5 = ContentMd5::digest(jpeg);
+        let valid = cache_path(temp.path(), md5, "jpg");
+        std::fs::create_dir_all(valid.parent().unwrap()).unwrap();
+        std::fs::write(&valid, jpeg).unwrap();
+        let invalid = temp
+            .path()
+            .join("files/00/00/00000000000000000000000000000000.jpg");
+        std::fs::create_dir_all(invalid.parent().unwrap()).unwrap();
+        std::fs::write(&invalid, jpeg).unwrap();
+
+        let scan = scan_cache(temp.path()).unwrap();
+        assert_eq!(scan.valid_blobs, 1);
+        assert_eq!(scan.valid_bytes, jpeg.len() as u64);
+        assert_eq!(scan.invalid.len(), 1);
     }
 }

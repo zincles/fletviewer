@@ -51,8 +51,25 @@ struct BooruSearchQuery {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EhHomeQuery {
+    search: Option<String>,
     direction: Option<crate::EhPageDirection>,
     gid: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PixivSearchQuery {
+    query: String,
+    page: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FavoriteSearchInput {
+    provider: String,
+    profile: String,
+    name: String,
+    query: String,
 }
 
 #[derive(Deserialize)]
@@ -143,6 +160,10 @@ pub(crate) async fn start(
             get(get_pixiv_illust),
         )
         .route(
+            "/api/v1/providers/pixiv/{profile}/search",
+            get(search_pixiv),
+        )
+        .route(
             "/api/v1/providers/pixiv/{profile}/illusts/{illust_id}/pages/{page}/fetch",
             post(start_pixiv_page_fetch),
         )
@@ -150,7 +171,19 @@ pub(crate) async fn start(
             "/api/v1/resources/images/{digest}/{extension}",
             get(get_image_resource),
         )
+        .route(
+            "/api/v1/cache/images",
+            get(get_image_cache).post(maintain_image_cache),
+        )
         .route("/api/v1/providers/eh/{profile}/galleries", get(get_eh_home))
+        .route(
+            "/api/v1/favorite-searches",
+            get(list_favorite_searches).post(create_favorite_search),
+        )
+        .route(
+            "/api/v1/favorite-searches/{id}",
+            axum::routing::delete(delete_favorite_search),
+        )
         .route(
             "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}",
             get(get_eh_gallery_detail),
@@ -239,6 +272,20 @@ pub(crate) async fn start(
 
 async fn liveness() -> Response {
     text_response(StatusCode::OK, "ok\n")
+}
+
+async fn get_image_cache(State(state): State<ControlState>) -> Response {
+    match state.core.image_cache_snapshot().await {
+        Ok(snapshot) => with_security_headers(Json(snapshot).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn maintain_image_cache(State(state): State<ControlState>) -> Response {
+    match state.core.maintain_image_cache().await {
+        Ok(result) => with_security_headers(Json(result).into_response()),
+        Err(error) => error_response(&error),
+    }
 }
 
 async fn readiness(State(state): State<ControlState>) -> Response {
@@ -372,6 +419,22 @@ async fn get_pixiv_illust(
         .await
     {
         Ok(illust) => with_security_headers(Json(illust).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn search_pixiv(
+    State(state): State<ControlState>,
+    Path(profile): Path<String>,
+    Query(query): Query<PixivSearchQuery>,
+) -> Response {
+    let key = crate::ProfileKey::new("pixiv", profile);
+    match state
+        .core
+        .search_pixiv(&key, &query.query, query.page)
+        .await
+    {
+        Ok(result) => with_security_headers(Json(result).into_response()),
         Err(error) => error_response(&error),
     }
 }
@@ -820,8 +883,59 @@ async fn get_eh_home(
         }
     };
     let key = crate::ProfileKey::new("eh", profile);
-    match state.core.eh_home(&key, cursor).await {
+    match state
+        .core
+        .eh_search(&key, query.search.as_deref().unwrap_or_default(), cursor)
+        .await
+    {
         Ok(page) => with_security_headers(Json(page).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn list_favorite_searches(State(state): State<ControlState>) -> Response {
+    match state.core.favorite_searches() {
+        Ok(favorites) => with_security_headers(Json(favorites).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn create_favorite_search(
+    State(state): State<ControlState>,
+    Json(input): Json<FavoriteSearchInput>,
+) -> Response {
+    match state
+        .core
+        .create_favorite_search(input.provider, input.profile, input.name, input.query)
+    {
+        Ok(favorite) => {
+            with_security_headers((StatusCode::CREATED, Json(favorite)).into_response())
+        }
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn delete_favorite_search(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return error_response(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "favorite search ID must be a valid UUID",
+                false,
+            ));
+        }
+    };
+    match state.core.delete_favorite_search(id) {
+        Ok(true) => with_security_headers(StatusCode::NO_CONTENT.into_response()),
+        Ok(false) => error_response(&CoreError::new(
+            ErrorCode::ResourceNotFound,
+            "favorite search was not found",
+            false,
+        )),
         Err(error) => error_response(&error),
     }
 }

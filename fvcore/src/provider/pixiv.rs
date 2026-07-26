@@ -65,6 +65,44 @@ pub struct PixivIllust {
     pub pages: Vec<PixivPage>,
 }
 
+/// One Pixiv artwork summary returned by Web AJAX search.
+#[derive(Clone, Debug, Serialize)]
+pub struct PixivSearchItem {
+    /// Numeric illustration ID rendered as text.
+    pub id: String,
+    /// Artwork title.
+    pub title: String,
+    /// Creator summary.
+    pub user: PixivUser,
+    /// Number of artwork pages.
+    pub page_count: u32,
+    /// R18 restriction level.
+    pub x_restrict: u32,
+    /// Search thumbnail URL supplied by Pixiv.
+    pub thumbnail_url: Option<Url>,
+    /// Tags supplied by the search response.
+    pub tags: Vec<String>,
+}
+
+/// One stable page of Pixiv artwork search results.
+#[derive(Clone, Debug, Serialize)]
+pub struct PixivSearchResult {
+    /// Profile that executed the request.
+    pub profile: String,
+    /// Immutable session generation used for the response body.
+    pub generation: u64,
+    /// Provider-native query text.
+    pub query: String,
+    /// One-based Pixiv page number.
+    pub page: u32,
+    /// Last page reported by Pixiv.
+    pub last_page: u32,
+    /// Next page when more results exist.
+    pub next_page: Option<u32>,
+    /// Artwork summaries in Provider order.
+    pub items: Vec<PixivSearchItem>,
+}
+
 pub(crate) struct PixivService {
     sessions: Arc<SessionRegistry>,
 }
@@ -107,6 +145,114 @@ impl PixivService {
         let pages: AjaxResponse<Vec<PageBody>> = parse_ajax(&page_response.body)?;
         let pages = pages.body.ok_or_else(|| unavailable(illust_id))?;
         map_illust(&response_url, illust_id, body, pages)
+    }
+
+    pub(crate) async fn search(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u32,
+        cancellation: CancellationToken,
+    ) -> Result<PixivSearchResult, CoreError> {
+        ensure_pixiv_search(key, query, page)?;
+        let query = query.trim();
+        let encoded = encode_path_segment(query)?;
+        let response = self
+            .sessions
+            .get_pixiv_ajax(
+                key,
+                &format!("ajax/search/artworks/{encoded}"),
+                &[
+                    ("word".to_owned(), query.to_owned()),
+                    ("order".to_owned(), "date_d".to_owned()),
+                    ("mode".to_owned(), "all".to_owned()),
+                    ("p".to_owned(), page.to_string()),
+                    ("s_mode".to_owned(), "s_tag_full".to_owned()),
+                    ("type".to_owned(), "all".to_owned()),
+                    ("lang".to_owned(), "zh".to_owned()),
+                ],
+                &format!("tags/{encoded}/artworks"),
+                cancellation,
+            )
+            .await?;
+        let generation = response.generation;
+        let result: AjaxResponse<SearchBody> = parse_ajax(&response.body)?;
+        let feed = result
+            .body
+            .and_then(|body| body.illust_manga)
+            .ok_or_else(|| unexpected("Pixiv search response has no illustration feed"))?;
+        let items = feed
+            .data
+            .into_iter()
+            .filter(|item| !item.id.is_empty())
+            .map(PixivSearchItem::from)
+            .collect::<Vec<_>>();
+        if !items.is_empty() && feed.last_page < page {
+            return Err(unexpected("Pixiv search pagination is inconsistent"));
+        }
+        let last_page = feed.last_page;
+        Ok(PixivSearchResult {
+            profile: key.profile.clone(),
+            generation,
+            query: query.to_owned(),
+            page,
+            last_page,
+            next_page: (!items.is_empty() && page < last_page).then_some(page + 1),
+            items,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchBody {
+    illust_manga: Option<SearchFeed>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchFeed {
+    #[serde(default)]
+    data: Vec<SearchItemBody>,
+    #[serde(default)]
+    last_page: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchItemBody {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    user_id: String,
+    #[serde(default)]
+    user_name: String,
+    #[serde(default = "one")]
+    page_count: u32,
+    #[serde(default)]
+    x_restrict: u32,
+    #[serde(default)]
+    url: Option<Url>,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+impl From<SearchItemBody> for PixivSearchItem {
+    fn from(item: SearchItemBody) -> Self {
+        Self {
+            id: item.id,
+            title: item.title,
+            user: PixivUser {
+                id: item.user_id,
+                name: item.user_name,
+            },
+            page_count: item.page_count,
+            x_restrict: item.x_restrict,
+            thumbnail_url: item.url,
+            tags: item.tags,
+        }
     }
 }
 
@@ -254,6 +400,31 @@ fn ensure_pixiv(key: &ProfileKey, illust_id: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
+fn ensure_pixiv_search(key: &ProfileKey, query: &str, page: u32) -> Result<(), CoreError> {
+    if key.provider != "pixiv"
+        || query.trim().is_empty()
+        || query.len() > 500
+        || page == 0
+        || page > 1_000
+    {
+        return Err(CoreError::new(
+            ErrorCode::InvalidInput,
+            "Pixiv search requires a bounded query and page from 1 to 1000",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn encode_path_segment(value: &str) -> Result<String, CoreError> {
+    let mut url = Url::parse("https://pixiv.invalid/")
+        .map_err(|_| unexpected("failed to create Pixiv search URL"))?;
+    url.path_segments_mut()
+        .map_err(|_| unexpected("failed to create Pixiv search URL"))?
+        .push(value);
+    Ok(url.path().trim_start_matches('/').to_owned())
+}
+
 const fn one() -> u32 {
     1
 }
@@ -272,7 +443,7 @@ fn unexpected(message: impl Into<String>) -> CoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{DetailBody, PageBody, map_illust, parse_ajax};
+    use super::{DetailBody, PageBody, SearchBody, encode_path_segment, map_illust, parse_ajax};
 
     #[test]
     fn maps_detail_and_page_fixtures() {
@@ -292,5 +463,20 @@ mod tests {
         assert_eq!(illust.tags, ["original", "風景"]);
         assert_eq!(illust.pages.len(), 2);
         assert!(illust.pages[1].original_url.as_str().ends_with("_p1.png"));
+    }
+
+    #[test]
+    fn parses_search_fixture_and_encodes_one_path_segment() {
+        let search: super::AjaxResponse<SearchBody> =
+            parse_ajax(include_bytes!("../../tests/fixtures/pixiv/search.json")).unwrap();
+        let feed = search.body.unwrap().illust_manga.unwrap();
+        assert_eq!(feed.last_page, 3);
+        let item = super::PixivSearchItem::from(feed.data.into_iter().next().unwrap());
+        assert_eq!(item.id, "12345");
+        assert_eq!(item.tags, ["landscape", "sky"]);
+        assert_eq!(
+            encode_path_segment("風景 / sky").unwrap(),
+            "%E9%A2%A8%E6%99%AF%20%2F%20sky"
+        );
     }
 }

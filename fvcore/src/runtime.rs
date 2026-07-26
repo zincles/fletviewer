@@ -14,7 +14,7 @@ use crate::{
     provider::booru::BooruService,
     provider::eh::EhService,
     session::{DangerousProfileCredentials, SessionRegistry},
-    storage::StorageService,
+    storage::{FavoriteSearchRegistry, StorageService},
 };
 use fs2::FileExt;
 use std::io::Write;
@@ -189,6 +189,7 @@ impl CoreBuilder {
             self.config.images.max_inflight_bytes,
         )
         .await?;
+        let favorite_searches = storage.favorite_search_registry();
         let data = RuntimeData {
             id: runtime_id,
             config: self.config,
@@ -224,6 +225,7 @@ impl CoreBuilder {
             images,
             archives,
             galleries,
+            favorite_searches,
         };
         handle.wait_ready().await?;
         let control = if control_config.enabled {
@@ -276,9 +278,20 @@ pub struct CoreHandle {
     images: Arc<ImageService>,
     archives: Arc<ArchiveService>,
     galleries: Arc<GalleryService>,
+    favorite_searches: Arc<FavoriteSearchRegistry>,
 }
 
 impl CoreHandle {
+    /// Returns read-only accounting for the Runtime-owned image cache.
+    pub async fn image_cache_snapshot(&self) -> Result<crate::ImageCacheSnapshot, CoreError> {
+        self.images.snapshot().await
+    }
+
+    /// Removes deterministic image-cache staging garbage and stale aliases.
+    pub async fn maintain_image_cache(&self) -> Result<crate::ImageCacheMaintenance, CoreError> {
+        self.images.maintain().await
+    }
+
     /// Returns an immutable Runtime snapshot.
     pub async fn snapshot(&self) -> Result<CoreSnapshot, CoreError> {
         let (reply, response) = oneshot::channel();
@@ -346,6 +359,18 @@ impl CoreHandle {
     ) -> Result<crate::PixivIllust, CoreError> {
         crate::provider::pixiv::PixivService::new(self.sessions.clone())
             .illust(key, illust_id, self.shutdown.child_token())
+            .await
+    }
+
+    /// Searches Pixiv artwork through the shared Web AJAX profile session.
+    pub async fn search_pixiv(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u32,
+    ) -> Result<crate::PixivSearchResult, CoreError> {
+        crate::provider::pixiv::PixivService::new(self.sessions.clone())
+            .search(key, query, page, self.shutdown.child_token())
             .await
     }
 
@@ -644,6 +669,53 @@ impl CoreHandle {
         EhService::new(self.sessions.clone())
             .home(key, cursor, self.shutdown.child_token())
             .await
+    }
+
+    /// Searches EH with provider-native query text and an optional cursor.
+    pub async fn eh_search(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        cursor: Option<crate::EhPageCursor>,
+    ) -> Result<crate::EhHomePage, CoreError> {
+        EhService::new(self.sessions.clone())
+            .search(key, query, cursor, self.shutdown.child_token())
+            .await
+    }
+
+    /// Lists provider-scoped favorite searches.
+    pub fn favorite_searches(&self) -> Result<Vec<crate::FavoriteSearch>, CoreError> {
+        self.favorite_searches.list()
+    }
+
+    /// Saves one provider-native favorite search.
+    pub fn create_favorite_search(
+        &self,
+        provider: String,
+        profile: String,
+        name: String,
+        query: String,
+    ) -> Result<crate::FavoriteSearch, CoreError> {
+        let key = ProfileKey::new(&provider, &profile);
+        if !self
+            .sessions
+            .snapshots()?
+            .iter()
+            .any(|snapshot| snapshot.key == key)
+        {
+            return Err(CoreError::new(
+                ErrorCode::ProfileNotFound,
+                format!("Provider profile {key} was not found"),
+                false,
+            ));
+        }
+        self.favorite_searches
+            .create(provider, profile, name, query)
+    }
+
+    /// Deletes one favorite search by stable ID.
+    pub fn delete_favorite_search(&self, id: uuid::Uuid) -> Result<bool, CoreError> {
+        self.favorite_searches.remove(id)
     }
 
     /// Fetches parsed metadata for one EH gallery using the shared profile session.
@@ -1541,6 +1613,42 @@ mod tests {
                 }),
             )
             .route(
+                "/ajax/search/artworks/{query}",
+                axum::routing::get(
+                    |axum::extract::Path(query): axum::extract::Path<String>,
+                     axum::extract::Query(params): axum::extract::Query<
+                        std::collections::HashMap<String, String>,
+                    >,
+                     headers: axum::http::HeaderMap| async move {
+                        assert_eq!(query, "風景 / sky");
+                        assert_eq!(params.get("word").map(String::as_str), Some("風景 / sky"));
+                        assert_eq!(params.get("order").map(String::as_str), Some("date_d"));
+                        assert_eq!(params.get("p").map(String::as_str), Some("1"));
+                        assert!(
+                            headers
+                                .get(axum::http::header::REFERER)
+                                .and_then(|value| value.to_str().ok())
+                                .is_some_and(|value| value
+                                    .contains("/tags/%E9%A2%A8%E6%99%AF%20%2F%20sky/artworks"))
+                        );
+                        axum::Json(serde_json::json!({
+                            "error": false,
+                            "message": "",
+                            "body": {"illustManga": {"data": [{
+                                "id": "12345",
+                                "title": "Search Fixture",
+                                "userId": "77",
+                                "userName": "Search Artist",
+                                "pageCount": 2,
+                                "xRestrict": 0,
+                                "url": "https://i.pximg.net/fixture.jpg",
+                                "tags": ["風景", "sky"]
+                            }], "lastPage": 3}}
+                        }))
+                    },
+                ),
+            )
+            .route(
                 "/image.jpg",
                 axum::routing::get(move |headers: axum::http::HeaderMap| {
                     let image = image.clone();
@@ -1809,6 +1917,35 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("\"provider\":\"danbooru\""));
         assert!(response.contains("\"id\":9"));
+        let favorite_payload =
+            r#"{"provider":"danbooru","profile":"default","name":"Cats","query":"cat rating:s"}"#;
+        let create = format!(
+            "POST /api/v1/favorite-searches HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{favorite_payload}",
+            favorite_payload.len()
+        );
+        let created = String::from_utf8(http_request(listen, create.as_bytes()).await).unwrap();
+        assert!(created.starts_with("HTTP/1.1 201 Created"));
+        let search = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/search?provider=danbooru&profile=default&tags=cat+rating%3As&page=1&limit=40 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(search.starts_with("HTTP/1.1 200 OK"));
+        assert!(search.contains("收藏当前搜索"));
+        assert!(search.contains(">Cats</a>"));
+        assert!(search.contains("tags=cat+rating%3As&amp;page=1&amp;limit=40"));
+        let invalid_payload =
+            r#"{"provider":"danbooru","profile":"missing","name":"Missing","query":"cat"}"#;
+        let invalid = format!(
+            "POST /api/v1/favorite-searches HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{invalid_payload}",
+            invalid_payload.len()
+        );
+        let invalid = String::from_utf8(http_request(listen, invalid.as_bytes()).await).unwrap();
+        assert!(invalid.starts_with("HTTP/1.1 404 Not Found"));
+        assert_eq!(runtime.handle().favorite_searches().unwrap().len(), 1);
         runtime.shutdown().await.unwrap();
     }
 
@@ -1825,15 +1962,20 @@ mod tests {
             .replace("Fixture &amp; Gallery One", "Fixture &lt;Gallery&gt; One");
         let provider_router = axum::Router::new().route(
             "/",
-            axum::routing::get(move || {
-                let fixture = fixture.clone();
-                async move {
-                    (
-                        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                        fixture,
-                    )
-                }
-            }),
+            axum::routing::get(
+                move |axum::extract::RawQuery(query): axum::extract::RawQuery| {
+                    let fixture = fixture.clone();
+                    async move {
+                        if let Some(query) = query {
+                            assert!(query.contains("f_search=landscape"));
+                        }
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                            fixture,
+                        )
+                    }
+                },
+            ),
         );
         tokio::spawn(async move {
             axum::serve(provider_listener, provider_router)
@@ -1864,6 +2006,15 @@ mod tests {
         assert!(api.starts_with("HTTP/1.1 200 OK"));
         assert!(api.contains("\"gid\":1234567"));
         assert!(api.contains("\"direction\":\"next\""));
+        let search = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/providers/eh/default/galleries?search=landscape HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(search.starts_with("HTTP/1.1 200 OK"));
 
         let webui = http_request(
             listen,
@@ -1872,10 +2023,39 @@ mod tests {
         .await;
         let webui = String::from_utf8(webui).unwrap();
         assert!(webui.starts_with("HTTP/1.1 200 OK"));
-        assert!(webui.contains("<h1>EH 主页</h1>"));
+        assert!(webui.contains("<h1>EH 搜索</h1>"));
         assert!(webui.contains("Fixture &lt;Gallery&gt; One"));
         assert!(!webui.contains("Fixture <Gallery> One"));
         assert!(webui.contains("direction=next&amp;gid=1234565"));
+        let favorite_payload =
+            r#"{"provider":"eh","profile":"default","name":"Landscapes","query":"landscape"}"#;
+        let create = format!(
+            "POST /api/v1/favorite-searches HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{favorite_payload}",
+            favorite_payload.len()
+        );
+        let created = String::from_utf8(http_request(listen, create.as_bytes()).await).unwrap();
+        assert!(created.starts_with("HTTP/1.1 201 Created"));
+        assert!(created.contains("\"query\":\"landscape\""));
+        let favorites = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/favorite-searches HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(favorites.contains("Landscapes"));
+        let searched_ui = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/eh?profile=default&search=landscape HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(searched_ui.contains("收藏当前搜索"));
+        assert!(searched_ui.contains("Landscapes"));
+        assert!(searched_ui.contains("search=landscape&amp;direction=next"));
         runtime.shutdown().await.unwrap();
     }
 
@@ -2984,6 +3164,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn serves_pixiv_search_and_favorites_through_api_and_webui() {
+        let image = Arc::new(test_jpeg());
+        let provider = pixiv_provider(image, Arc::new(AtomicUsize::new(0))).await;
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config
+            .profiles
+            .insert("pixiv".to_owned(), pixiv_profile(provider));
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let listen = runtime.control_listen().unwrap();
+        let api = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/providers/pixiv/default/search?query=%E9%A2%A8%E6%99%AF+%2F+sky&page=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(api.starts_with("HTTP/1.1 200 OK"));
+        assert!(api.contains("\"id\":\"12345\""));
+        assert!(api.contains("\"next_page\":2"));
+        let favorite = runtime
+            .handle()
+            .create_favorite_search(
+                "pixiv".to_owned(),
+                "default".to_owned(),
+                "Scenery".to_owned(),
+                "風景 / sky".to_owned(),
+            )
+            .unwrap();
+        assert_eq!(favorite.provider, "pixiv");
+        let webui = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/pixiv/search?profile=default&query=%E9%A2%A8%E6%99%AF+%2F+sky&page=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(webui.starts_with("HTTP/1.1 200 OK"));
+        assert!(webui.contains("Search Fixture"));
+        assert!(webui.contains(">Scenery</a>"));
+        assert!(webui.contains("/ui/pixiv?profile=default&amp;id=12345"));
+        assert!(webui.contains("page=2"));
+        assert!(!webui.contains("<img"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn cancelling_one_shared_image_subscriber_keeps_the_transfer() {
         let image = Arc::new(test_jpeg());
         let digest = md5_hex(&image);
@@ -3068,6 +3299,58 @@ mod tests {
         );
         assert!(headers.contains(&format!("etag: \"{digest}\"")));
         assert_eq!(&response[separator + 4..], image.as_ref().as_slice());
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn exposes_and_maintains_image_cache_through_http() {
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        std::fs::create_dir_all(config.storage.cache.clone()).unwrap();
+        std::fs::write(config.storage.cache.join("orphan.tmp"), b"partial").unwrap();
+        let invalid_blob = config
+            .storage
+            .cache
+            .join("files/00/00/00000000000000000000000000000000.jpg");
+        std::fs::create_dir_all(invalid_blob.parent().unwrap()).unwrap();
+        std::fs::write(&invalid_blob, b"\xff\xd8\xffinvalid-digest").unwrap();
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let listen = runtime.control_listen().unwrap();
+        let snapshot = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/cache/images HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(snapshot.starts_with("HTTP/1.1 200 OK"));
+        assert!(snapshot.contains("\"memory_limit_bytes\""));
+        assert!(snapshot.contains("\"staging_file_count\":0"));
+        assert!(snapshot.contains("\"invalid_blob_count\":1"));
+        let maintenance = String::from_utf8(
+            http_request(
+                listen,
+                b"POST /api/v1/cache/images HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(maintenance.starts_with("HTTP/1.1 200 OK"));
+        assert!(maintenance.contains("\"removed_staging_files\":0"));
+        assert!(maintenance.contains("\"removed_invalid_blobs\":1"));
+        assert!(!invalid_blob.exists());
+        let webui = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/cache HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(webui.contains("<h1>图片缓存</h1>"));
         runtime.shutdown().await.unwrap();
     }
 

@@ -29,6 +29,8 @@ h1, h2 { line-height: 1.2; }
 .local-pages { grid-template-columns: repeat(auto-fill, minmax(min(12rem, 100%), 1fr)); }
 .card { min-width: 0; padding: 1rem; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: .65rem; background: var(--panel); }
 form { display: flex; flex-wrap: wrap; align-items: end; gap: .7rem; margin: .8rem 0 1rem; padding: .8rem; border-radius: .5rem; background: var(--soft); }
+.inline-form { display: inline-flex; margin: 0 0 0 .5rem; padding: 0; background: transparent; }
+.inline-form button { padding: .2rem .4rem; font-size: .85rem; }
 label { display: grid; min-width: min(14rem, 100%); gap: .25rem; color: var(--muted); font-size: .9rem; font-weight: 600; }
 input, select, textarea, button { max-width: 100%; padding: .5rem .65rem; color: var(--text); font: inherit; border: 1px solid var(--line); border-radius: .4rem; background: var(--panel); }
 input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }

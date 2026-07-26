@@ -62,6 +62,14 @@ struct PixivQuery {
 }
 
 #[derive(Deserialize)]
+struct PixivSearchQuery {
+    profile: String,
+    query: String,
+    #[serde(default = "default_page_one")]
+    page: u32,
+}
+
+#[derive(Deserialize)]
 struct PixivFetchForm {
     profile: String,
     illust_id: String,
@@ -71,8 +79,26 @@ struct PixivFetchForm {
 #[derive(Deserialize)]
 struct EhHomeQuery {
     profile: String,
+    #[serde(default)]
+    search: String,
     direction: Option<crate::EhPageDirection>,
     gid: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct FavoriteSearchForm {
+    provider: String,
+    profile: String,
+    name: String,
+    query: String,
+}
+
+#[derive(Deserialize)]
+struct FavoriteSearchDeleteForm {
+    id: String,
+    provider: String,
+    profile: String,
+    query: String,
 }
 
 #[derive(Deserialize)]
@@ -186,8 +212,11 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/post", get(post_detail))
         .route("/ui/fetch", post(start_fetch))
         .route("/ui/pixiv", get(pixiv_detail))
+        .route("/ui/pixiv/search", get(pixiv_search))
         .route("/ui/pixiv/fetch", post(start_pixiv_fetch))
         .route("/ui/eh", get(eh_home))
+        .route("/ui/favorite-search", post(create_favorite_search))
+        .route("/ui/favorite-search/delete", post(delete_favorite_search))
         .route("/ui/eh/gallery", get(eh_gallery))
         .route("/ui/eh/fetch", post(start_eh_page_fetch))
         .route("/ui/eh/reader", get(eh_reader))
@@ -199,6 +228,8 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/local-data", get(local_data))
         .route("/ui/local-data/import", post(import_local_gallery))
         .route("/ui/config", get(configuration))
+        .route("/ui/cache", get(image_cache))
+        .route("/ui/cache/maintain", post(maintain_image_cache))
         .route("/ui/config/cookie", post(update_profile_cookie))
         .route(
             "/ui/config/api-credentials",
@@ -238,7 +269,7 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
         } else if profile.key.provider == "eh" {
             format!(
                 "<a href=\"{}\">{} ({})</a>",
-                escape(&eh_home_url(&profile.key.profile, None)),
+                escape(&eh_home_url(&profile.key.profile, "", None)),
                 provider_name(&profile.key.provider),
                 escape(&profile.key.to_string())
             )
@@ -320,7 +351,8 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
         .map(|profile| profile.key.profile.as_str())
         .unwrap_or("default");
     let pixiv_form = format!(
-        "<form method=\"get\" action=\"/ui/pixiv\"><label>会话名称<input name=\"profile\" value=\"{}\" required></label><label>作品 ID<input name=\"id\" inputmode=\"numeric\" required></label><button type=\"submit\">查看作品详情</button></form>",
+        "<form method=\"get\" action=\"/ui/pixiv\"><label>会话名称<input name=\"profile\" value=\"{}\" required></label><label>作品 ID<input name=\"id\" inputmode=\"numeric\" required></label><button type=\"submit\">查看作品详情</button></form><form method=\"get\" action=\"/ui/pixiv/search\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"1\"><label>Pixiv 标签<input name=\"query\" required maxlength=\"500\"></label><button type=\"submit\">搜索 Pixiv</button></form>",
+        escape(pixiv_profile),
         escape(pixiv_profile),
     );
     let eh_profile = snapshot
@@ -412,7 +444,11 @@ async fn eh_home(State(state): State<ControlState>, Query(query): Query<EhHomeQu
     };
     let page = match state
         .core
-        .eh_home(&ProfileKey::new("eh", &query.profile), cursor)
+        .eh_search(
+            &ProfileKey::new("eh", &query.profile),
+            &query.search,
+            cursor,
+        )
         .await
     {
         Ok(page) => page,
@@ -472,27 +508,106 @@ async fn eh_home(State(state): State<ControlState>, Query(query): Query<EhHomeQu
         let _ = write!(
             paging,
             "<a href=\"{}\">上一页</a> ",
-            escape(&eh_home_url(&query.profile, Some(previous)))
+            escape(&eh_home_url(&query.profile, &query.search, Some(previous)))
         );
     }
     if let Some(next) = page.next {
         let _ = write!(
             paging,
             "<a href=\"{}\">下一页</a>",
-            escape(&eh_home_url(&query.profile, Some(next)))
+            escape(&eh_home_url(&query.profile, &query.search, Some(next)))
         );
     }
+    let favorites = match state.core.favorite_searches() {
+        Ok(favorites) => favorites,
+        Err(error) => return error_page(&error),
+    };
+    let mut favorite_links = String::new();
+    for favorite in favorites
+        .iter()
+        .filter(|favorite| favorite.provider == "eh")
+    {
+        let _ = write!(
+            favorite_links,
+            "<li><a href=\"{}\">{}</a><form class=\"inline-form\" method=\"post\" action=\"/ui/favorite-search/delete\"><input type=\"hidden\" name=\"id\" value=\"{}\"><input type=\"hidden\" name=\"provider\" value=\"eh\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"query\" value=\"{}\"><button type=\"submit\">删除</button></form></li>",
+            escape(&eh_home_url(&favorite.profile, &favorite.query, None)),
+            escape(&favorite.name),
+            favorite.id,
+            escape(&favorite.profile),
+            escape(&favorite.query),
+        );
+    }
+    if favorite_links.is_empty() {
+        favorite_links.push_str("<li class=\"muted\">尚无 EH 收藏搜索。</li>");
+    }
+    let save = if query.search.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<form method=\"post\" action=\"/ui/favorite-search\"><input type=\"hidden\" name=\"provider\" value=\"eh\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"query\" value=\"{}\"><label>收藏名称<input name=\"name\" value=\"{}\" required maxlength=\"120\"></label><button type=\"submit\">收藏当前搜索</button></form>",
+            escape(&query.profile),
+            escape(&query.search),
+            escape(&query.search)
+        )
+    };
     html_page(
         StatusCode::OK,
         "EH 主页",
         &format!(
-            "<h1>EH 主页</h1><p>会话 <code>eh/{}</code> · 代次 {} · {} 个 Gallery</p><p>{paging}</p><div class=\"grid gallery-grid\">{galleries}</div><p>{paging}</p>",
+            "<h1>EH 搜索</h1><form method=\"get\" action=\"/ui/eh\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><label>EH 查询<input name=\"search\" value=\"{}\" maxlength=\"2000\"></label><button type=\"submit\">搜索</button></form>{save}<section class=\"card\"><h2>收藏搜索</h2><ul>{favorite_links}</ul></section><p>会话 <code>eh/{}</code> · 代次 {} · {} 个 Gallery</p><p>{paging}</p><div class=\"grid gallery-grid\">{galleries}</div><p>{paging}</p>",
+            escape(&query.profile),
+            escape(&query.search),
             escape(&query.profile),
             page.generation,
             page.galleries.len(),
         ),
         None,
     )
+}
+
+async fn create_favorite_search(
+    State(state): State<ControlState>,
+    Form(form): Form<FavoriteSearchForm>,
+) -> Response {
+    match state.core.create_favorite_search(
+        form.provider.clone(),
+        form.profile.clone(),
+        form.name,
+        form.query.clone(),
+    ) {
+        Ok(_) => Redirect::to(&favorite_search_url(
+            &form.provider,
+            &form.profile,
+            &form.query,
+        ))
+        .into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
+async fn delete_favorite_search(
+    State(state): State<ControlState>,
+    Form(form): Form<FavoriteSearchDeleteForm>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&form.id) {
+        Ok(id) => id,
+        Err(_) => {
+            return error_page(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "收藏搜索 ID 无效",
+                false,
+            ));
+        }
+    };
+    match state.core.delete_favorite_search(id) {
+        Ok(_) => Redirect::to(&favorite_search_url(
+            &form.provider,
+            &form.profile,
+            &form.query,
+        ))
+        .into_response(),
+        Err(error) => error_page(&error),
+    }
 }
 
 async fn eh_gallery(
@@ -1065,6 +1180,41 @@ async fn configuration(
     )
 }
 
+async fn image_cache(State(state): State<ControlState>) -> Response {
+    let cache = match state.core.image_cache_snapshot().await {
+        Ok(cache) => cache,
+        Err(error) => return error_page(&error),
+    };
+    html_page(
+        StatusCode::OK,
+        "图片缓存",
+        &format!(
+            "<h1>图片缓存</h1><div class=\"grid\"><section class=\"card\"><h2>内存与网络</h2><dl><dt>内存</dt><dd>{} / {} 字节</dd><dt>内存条目</dt><dd>{}</dd><dt>在途</dt><dd>{} / {} 字节</dd><dt>共享传输</dt><dd>{}</dd></dl></section><section class=\"card\"><h2>磁盘与索引</h2><dl><dt>有效 blob</dt><dd>{}</dd><dt>有效字节</dt><dd>{}</dd><dt>无效 blob</dt><dd>{}</dd><dt>Alias</dt><dd>{}</dd><dt>Staging</dt><dd>{}</dd><dt>写盘队列</dt><dd>{} / {}</dd></dl></section></div><form method=\"post\" action=\"/ui/cache/maintain\"><button type=\"submit\">清理无效 blob、staging 与 stale alias</button></form><p class=\"muted\">维护只处理 fvcore 管理的图片缓存，不接受外部路径，也不会按年龄删除有效 blob。</p>",
+            cache.memory_bytes,
+            cache.memory_limit_bytes,
+            cache.memory_entries,
+            cache.inflight_bytes,
+            cache.inflight_limit_bytes,
+            cache.active_transfers,
+            cache.disk_blob_count,
+            cache.disk_bytes,
+            cache.invalid_blob_count,
+            cache.alias_count,
+            cache.staging_file_count,
+            cache.write_queue_depth,
+            cache.write_queue_capacity,
+        ),
+        None,
+    )
+}
+
+async fn maintain_image_cache(State(state): State<ControlState>) -> Response {
+    match state.core.maintain_image_cache().await {
+        Ok(_) => Redirect::to("/ui/cache").into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
 async fn update_lan_access(
     State(state): State<ControlState>,
     Form(form): Form<LanAccessForm>,
@@ -1454,11 +1604,50 @@ async fn search(State(state): State<ControlState>, Query(query): Query<SearchQue
         );
         let _ = write!(paging, "<a href=\"{}\">下一页</a>", escape(&next));
     }
+    let favorites = match state.core.favorite_searches() {
+        Ok(favorites) => favorites,
+        Err(error) => return error_page(&error),
+    };
+    let mut favorite_links = String::new();
+    for favorite in favorites
+        .iter()
+        .filter(|favorite| favorite.provider == query.provider)
+    {
+        let _ = write!(
+            favorite_links,
+            "<li><a href=\"{}\">{}</a><form class=\"inline-form\" method=\"post\" action=\"/ui/favorite-search/delete\"><input type=\"hidden\" name=\"id\" value=\"{}\"><input type=\"hidden\" name=\"provider\" value=\"{}\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"query\" value=\"{}\"><button type=\"submit\">删除</button></form></li>",
+            escape(&favorite_search_url(
+                &favorite.provider,
+                &favorite.profile,
+                &favorite.query,
+            )),
+            escape(&favorite.name),
+            favorite.id,
+            escape(&favorite.provider),
+            escape(&favorite.profile),
+            escape(&favorite.query),
+        );
+    }
+    if favorite_links.is_empty() {
+        favorite_links.push_str("<li class=\"muted\">当前 Provider 尚无收藏搜索。</li>");
+    }
+    let save = if query.tags.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<form method=\"post\" action=\"/ui/favorite-search\"><input type=\"hidden\" name=\"provider\" value=\"{}\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"query\" value=\"{}\"><label>收藏名称<input name=\"name\" value=\"{}\" required maxlength=\"120\"></label><button type=\"submit\">收藏当前搜索</button></form>",
+            escape(&query.provider),
+            escape(&query.profile),
+            escape(&query.tags),
+            escape(&query.tags),
+        )
+    };
     html_page(
         StatusCode::OK,
         "Booru 搜索",
         &format!(
-            "<h1>Booru 搜索</h1>{form}<p>代次 {} · 第 {} 页 · {} 个帖子</p><p>{paging}</p><div class=\"grid\">{cards}</div><p>{paging}</p>",
+            "<h1>Booru 搜索</h1>{form}{save}<section class=\"card\"><h2>{} 收藏搜索</h2><ul>{favorite_links}</ul></section><p>代次 {} · 第 {} 页 · {} 个帖子</p><p>{paging}</p><div class=\"grid\">{cards}</div><p>{paging}</p>",
+            provider_name(&query.provider),
             result.generation,
             result.page,
             result.posts.len(),
@@ -1547,6 +1736,99 @@ async fn pixiv_detail(
             illust.bookmark_count,
             escape(&illust.tags.join(" ")),
             escape(&illust.caption),
+        ),
+        None,
+    )
+}
+
+async fn pixiv_search(
+    State(state): State<ControlState>,
+    Query(query): Query<PixivSearchQuery>,
+) -> Response {
+    let result = match state
+        .core
+        .search_pixiv(
+            &ProfileKey::new("pixiv", &query.profile),
+            &query.query,
+            query.page,
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => return error_page(&error),
+    };
+    let mut cards = String::new();
+    for item in &result.items {
+        let _ = write!(
+            cards,
+            "<article class=\"card\"><h2><a href=\"{}\">{}</a></h2><p>作品 {} · 作者 {} ({}) · {} 页 · R18 {}</p><p class=\"muted\">{}</p></article>",
+            escape(&pixiv_detail_url(&query.profile, &item.id)),
+            escape(&item.title),
+            escape(&item.id),
+            escape(&item.user.name),
+            escape(&item.user.id),
+            item.page_count,
+            item.x_restrict,
+            escape(&item.tags.join(" ")),
+        );
+    }
+    if cards.is_empty() {
+        cards.push_str("<p class=\"muted\">没有返回 Pixiv 作品。</p>");
+    }
+    let next = result.next_page.map_or_else(String::new, |page| {
+        format!(
+            "<a href=\"{}\">下一页</a>",
+            escape(&pixiv_search_url(&query.profile, &query.query, page))
+        )
+    });
+    let previous = if result.page > 1 {
+        format!(
+            "<a href=\"{}\">上一页</a>",
+            escape(&pixiv_search_url(
+                &query.profile,
+                &query.query,
+                result.page - 1,
+            ))
+        )
+    } else {
+        String::new()
+    };
+    let favorites = match state.core.favorite_searches() {
+        Ok(favorites) => favorites,
+        Err(error) => return error_page(&error),
+    };
+    let mut favorite_links = String::new();
+    for favorite in favorites
+        .iter()
+        .filter(|favorite| favorite.provider == "pixiv")
+    {
+        let _ = write!(
+            favorite_links,
+            "<li><a href=\"{}\">{}</a><form class=\"inline-form\" method=\"post\" action=\"/ui/favorite-search/delete\"><input type=\"hidden\" name=\"id\" value=\"{}\"><input type=\"hidden\" name=\"provider\" value=\"pixiv\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"query\" value=\"{}\"><button type=\"submit\">删除</button></form></li>",
+            escape(&pixiv_search_url(&favorite.profile, &favorite.query, 1)),
+            escape(&favorite.name),
+            favorite.id,
+            escape(&favorite.profile),
+            escape(&favorite.query),
+        );
+    }
+    if favorite_links.is_empty() {
+        favorite_links.push_str("<li class=\"muted\">尚无 Pixiv 收藏搜索。</li>");
+    }
+    html_page(
+        StatusCode::OK,
+        "Pixiv 搜索",
+        &format!(
+            "<h1>Pixiv 搜索</h1><form method=\"get\" action=\"/ui/pixiv/search\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"1\"><label>标签<input name=\"query\" value=\"{}\" required maxlength=\"500\"></label><button type=\"submit\">搜索</button></form><form method=\"post\" action=\"/ui/favorite-search\"><input type=\"hidden\" name=\"provider\" value=\"pixiv\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"query\" value=\"{}\"><label>收藏名称<input name=\"name\" value=\"{}\" required maxlength=\"120\"></label><button type=\"submit\">收藏当前搜索</button></form><section class=\"card\"><h2>Pixiv 收藏搜索</h2><ul>{favorite_links}</ul></section><p>代次 {} · 第 {} / {} 页 · {} 个作品</p><p>{previous} {next}</p><div class=\"grid\">{cards}</div><p>{previous} {next}</p>",
+            escape(&query.profile),
+            escape(&query.query),
+            escape(&query.profile),
+            escape(&query.query),
+            escape(&query.query),
+            result.generation,
+            result.page,
+            result.last_page,
+            result.items.len(),
         ),
         None,
     )
@@ -1764,7 +2046,7 @@ fn html_page(status: StatusCode, title: &str, body: &str, refresh: Option<u64>) 
         "<a class=\"refresh-action\" href=\"\">立即刷新</a>".to_owned()
     });
     let html = format!(
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{refresh_meta}<title>{}</title><style>{STYLE}</style></head><body><nav><div class=\"nav-links\"><a href=\"/\">调试面板</a><a href=\"/ui/eh?profile=default\">EH 主页</a><a href=\"/ui/search\">搜索</a><a href=\"/ui/operations\">操作列表</a><a href=\"/ui/archive-tasks\">Archive 任务</a><a href=\"/ui/local-galleries\">本地画廊</a><a href=\"/ui/local-data\">本地数据</a><a href=\"/ui/config\">配置</a></div><div class=\"refresh-control\">{refresh_status}{refresh_action}</div></nav><main>{body}</main></body></html>",
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{refresh_meta}<title>{}</title><style>{STYLE}</style></head><body><nav><div class=\"nav-links\"><a href=\"/\">调试面板</a><a href=\"/ui/eh?profile=default\">EH 主页</a><a href=\"/ui/search\">搜索</a><a href=\"/ui/operations\">操作列表</a><a href=\"/ui/archive-tasks\">Archive 任务</a><a href=\"/ui/local-galleries\">本地画廊</a><a href=\"/ui/local-data\">本地数据</a><a href=\"/ui/cache\">图片缓存</a><a href=\"/ui/config\">配置</a></div><div class=\"refresh-control\">{refresh_status}{refresh_action}</div></nav><main>{body}</main></body></html>",
         escape(title)
     );
     let mut response = (status, Html(html)).into_response();
@@ -1911,9 +2193,12 @@ fn local_gallery_url(id: uuid::Uuid, offset: u32) -> String {
     format!("/ui/local-gallery?id={id}&offset={offset}")
 }
 
-fn eh_home_url(profile: &str, cursor: Option<crate::EhPageCursor>) -> String {
+fn eh_home_url(profile: &str, search: &str, cursor: Option<crate::EhPageCursor>) -> String {
     let mut query = url::form_urlencoded::Serializer::new(String::new());
     query.append_pair("profile", profile);
+    if !search.is_empty() {
+        query.append_pair("search", search);
+    }
     if let Some(cursor) = cursor {
         query.append_pair(
             "direction",
@@ -1925,6 +2210,37 @@ fn eh_home_url(profile: &str, cursor: Option<crate::EhPageCursor>) -> String {
         query.append_pair("gid", &cursor.gid.to_string());
     }
     format!("/ui/eh?{}", query.finish())
+}
+
+fn favorite_search_url(provider: &str, profile: &str, query: &str) -> String {
+    if provider == "eh" {
+        eh_home_url(profile, query, None)
+    } else if provider == "pixiv" {
+        pixiv_search_url(profile, query, 1)
+    } else {
+        search_url(provider, profile, query, 1, 40)
+    }
+}
+
+fn pixiv_search_url(profile: &str, query: &str, page: u32) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("profile", profile)
+        .append_pair("query", query)
+        .append_pair("page", &page.to_string())
+        .finish();
+    format!("/ui/pixiv/search?{query}")
+}
+
+fn pixiv_detail_url(profile: &str, id: &str) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("profile", profile)
+        .append_pair("id", id)
+        .finish();
+    format!("/ui/pixiv?{query}")
+}
+
+const fn default_page_one() -> u32 {
+    1
 }
 
 fn eh_gallery_url(profile: &str, gid: u64, token: &str, page: u32) -> String {

@@ -395,7 +395,7 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 - 本地 EH 画廊以下载所得唯一 ZIP 和旁置 `gallery.json` 为权威输入；ZIP 文件名和字节保持不变。旁置 `ComicInfo.xml` 是可删除、可重复生成的确定性派生文件，不写回 ZIP，不读取网络、当前时间、数据库或本地绝对路径；相同 ZIP bytes 与 `gallery.json` bytes 必须产生相同 XML bytes。
 - 本地画廊封面和 ZIP 页面统一为带 kind 的不可变二进制 resource，共用图像大小与在途并发预算并按实际 bytes 检测 MIME；封面旁置文件名不得逃逸画廊目录。
 - 本地画廊导出只打开受管目录中的原始 ZIP，并返回安全 descriptor 与不含服务器 `Path` 的异步 stream handle。每块最多 64 KiB，同时最多两个导出；句柄存活期间持有共享画廊占用，消费、派生写入和删除必须等待。HTTP 将同一 handle 映射为带长度和安全附件文件名的流式响应；桌面、Android 或其他嵌入者负责把流写入平台文件选择器提供的目标，Core 不接受任意外部绝对路径。
-- `redb` schema v2 增加本地画廊登记表，使用 gallery ID 到受管根目录直接子目录名的映射区分“已导入”与“磁盘上可识别”；v1 启动时原地迁移，并从已消费 Archive task 补登记。Inventory 扫描在共享画廊占用下检查每个受管目录的 metadata、普通文件集合、Archive 长度、ZIP 索引、全部安全页面解压/CRC/长度/magic、封面和确定性 `ComicInfo.xml`，分类为已登记健康、已登记损坏、未登记可导入或格式无效。导入命令只接受 scan 后仍健康且未登记的 gallery ID，不接受路径、不移动文件、不改写 ZIP 或 metadata。
+- `redb` schema v2 增加本地画廊登记表，schema v3 增加 provider-scoped 收藏搜索；使用 gallery ID 到受管根目录直接子目录名的映射区分“已导入”与“磁盘上可识别”，旧 schema 启动时原地迁移，并从已消费 Archive task 补登记。Inventory 扫描在共享画廊占用下检查每个受管目录的 metadata、普通文件集合、Archive 长度、ZIP 索引、全部安全页面解压/CRC/长度/magic、封面和确定性 `ComicInfo.xml`，分类为已登记健康、已登记损坏、未登记可导入或格式无效。导入命令只接受 scan 后仍健康且未登记的 gallery ID，不接受路径、不移动文件、不改写 ZIP 或 metadata。
 - WebUI 和嵌入 API 可读取当前生效配置的脱敏 snapshot；Provider origin 移除 userinfo/query/fragment，代理仅报告是否配置，凭据仅报告环境变量名和当前 generation 是否成功加载，任何 secret value 均不得序列化。当前测试阶段唯一例外是无认证调试配置 HTML 页按明确决策明文回显和编辑 Provider secret；该例外不得进入 snapshot、JSON API、event 或日志。
 - 删除本地画廊必须先预检并由调用方显式提交短期一次性确认令牌；令牌绑定 managed root 直接子目录中的普通文件名和大小清单，文件集合或大小变化即拒绝。读取持有共享占用，消费、派生文件写入和删除持有独占占用；删除先持久化确认清单并隐藏目录，再清除 Archive task 的本地路径关联并移除确认过的文件；启动恢复只允许继续删除清单内 unchanged 或已删除的文件，出现清单外内容即拒绝。
 - 所有队列和内存使用有上限；取消、deadline、overload、shutdown 和后台错误有确定行为。
@@ -411,7 +411,7 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 | 已完成 | Foundation 依赖与工程检查 | Tokio、Axum、Serde、Clap、Tracing；format/check/test/clippy 已通过 |
 | 已完成 | 配置、错误、ID 与 Runtime snapshot | executable 同级必需 `config.json`、无自定义运行时配置路径、`run`/`web` 模式、`check-config`、默认不覆盖且可显式安全重置的 `create-config`、严格 JSON、稳定错误、UUID v7 Runtime ID、revision 和生命周期 |
 | 已完成 | Runtime/Handle 与集成 HTTP | 有界命令队列、协作关闭、health、JSON snapshot 和极简 HTML |
-| 已完成 | 存储 Foundation | 四域规范化、Data 实例锁、`redb` schema v2、v1 原地迁移、本地画廊登记表和存储 snapshot |
+| 已完成 | 存储 Foundation | 四域规范化、Data 实例锁、`redb` schema v3、旧 schema 原地迁移、本地画廊登记表、provider-scoped 收藏搜索和存储 snapshot |
 | 已完成 | Command/Event/Operation Foundation | Operation ID、状态机、有界 active/queue/retention、deadline、取消、event journal/cursor 和 SSE |
 | 已完成 | 共享 session 与网络 Foundation | Reqwest/Rustls、profile generation、代理、同 scheme/allowlist redirect、E-Hentai 专用图片 API origin、响应上限、取消和 Cookie 脱敏 |
 | 已完成 | Provider 限流与两大 Booru 查询闭环 | Generation 级并发/启动间隔；Danbooru JSON 与 Gelbooru JSON DAPI 搜索/详情、fixture、稳定错误和 HTTP 路由 |
@@ -424,4 +424,5 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 | 已完成 | 本地画廊显式确认删除 | 预检返回五分钟一次性令牌和文件/字节范围；提交重验 unchanged 文件清单，读写占用阻止 ZIP 阅读与删除竞争，持久清单支持中断恢复，先隐藏目录再清除 consumed Archive task 路径，JSON API 与 WebUI 二次确认已贯通 |
 | 已完成 | 本地画廊导出语义 | `LocalGalleryExport` 以 64 KiB 有界块流式读取原 ZIP，同时最多两个导出并持有共享画廊占用；嵌入 API、HTTP 附件下载和 WebUI 已贯通，descriptor 与响应不暴露服务器 Path |
 | 已完成 | 本地数据盘点与配置展示 | `redb` 登记区分已导入和扫描候选；全量 ZIP/sidecar 健康检查、四类 inventory、按 gallery ID 显式导入、JSON API 和 WebUI 已贯通；配置 snapshot/API 脱敏，调试 HTML 页按 DANGER 例外明文编辑 Provider secret，并可配置默认开启的 LAN 访问 |
-| 下一步 | 完整图像缓存监管 | 全局 chunk 级在途预算、Cache snapshot/维护、alias schema/version、staging 清理和更多格式 fixture |
+| 已完成 | 图像缓存监管基础 | 网络 body 按真实 chunk 申请全局在途预算；Cache snapshot、非阻塞内容审计、显式清理无效 blob/stale alias、alias schema v1/旧格式迁移、受管 staging 启动清理及 JSON/WebUI 已贯通 |
+| 下一步 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 查询均支持 provider-scoped 收藏搜索；继续补 Pixiv 推荐/关注/收藏/排行和更多 Booru 协议族 |
