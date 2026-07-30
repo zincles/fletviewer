@@ -767,6 +767,78 @@ impl CoreHandle {
             .await
     }
 
+    /// Searches one E621-compatible profile through its public JSON API.
+    pub async fn search_e621(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+    ) -> Result<crate::BooruSearchResult, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .search_e621(key, query, page, limit, self.shutdown.child_token())
+            .await
+    }
+
+    /// Fetches one post from an E621-compatible profile.
+    pub async fn e621_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+    ) -> Result<crate::BooruPost, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .get_e621_post(key, post_id, self.shutdown.child_token())
+            .await
+    }
+
+    /// Searches one Philomena-compatible profile through its JSON API.
+    pub async fn search_philomena(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+    ) -> Result<crate::BooruSearchResult, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .search_philomena(key, query, page, limit, self.shutdown.child_token())
+            .await
+    }
+
+    /// Fetches one image from a Philomena-compatible profile.
+    pub async fn philomena_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+    ) -> Result<crate::BooruPost, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .get_philomena_post(key, post_id, self.shutdown.child_token())
+            .await
+    }
+
+    /// Searches Rule34.Paheal through its legacy XML API.
+    pub async fn search_paheal(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+    ) -> Result<crate::BooruSearchResult, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .search_paheal(key, query, page, limit, self.shutdown.child_token())
+            .await
+    }
+
+    /// Fetches one Rule34.Paheal post through its legacy XML API.
+    pub async fn paheal_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+    ) -> Result<crate::BooruPost, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .get_paheal_post(key, post_id, self.shutdown.child_token())
+            .await
+    }
+
     /// Fetches one EH front-page listing using the shared profile session.
     pub async fn eh_home(
         &self,
@@ -2347,6 +2419,172 @@ mod tests {
         assert!(detail.starts_with("HTTP/1.1 200 OK"));
         assert!(detail.contains("/post/show/2468"));
         runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn serves_e621_provider_through_integrated_http() {
+        const POSTS: &str = include_str!("../tests/fixtures/e621/posts.json");
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        let provider_router = axum::Router::new().route(
+            "/posts.json",
+            axum::routing::get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    POSTS,
+                )
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(provider_listener, provider_router)
+                .await
+                .unwrap()
+        });
+
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config.profiles.insert(
+            "e621".to_owned(),
+            ProviderProfileConfig {
+                provider: "e621".to_owned(),
+                base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let response = String::from_utf8(
+            http_request(
+                runtime.control_listen().unwrap(),
+                b"GET /api/v1/providers/e621/default/posts?tags=fox&page=1&limit=40 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"provider\":\"e621\""));
+        assert!(response.contains("\"species\":[\"fox\"]"));
+        assert!(response.contains("\"byte_length\":456789"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn philomena_unknown_md5_fetch_alias_survives_restart() {
+        const IMAGES: &str = include_str!("../tests/fixtures/philomena/images.json");
+        let image = Arc::new(test_jpeg());
+        let image_requests = Arc::new(AtomicUsize::new(0));
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        let provider_router = axum::Router::new()
+            .route(
+                "/api/v1/json/search/images",
+                axum::routing::get(|| async {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        IMAGES,
+                    )
+                }),
+            )
+            .route(
+                "/api/v1/json/images/97531",
+                axum::routing::get(|| async {
+                    let value: serde_json::Value = serde_json::from_str(IMAGES).unwrap();
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        serde_json::json!({"image": &value["images"][0]}).to_string(),
+                    )
+                }),
+            )
+            .route(
+                "/img/view/2026/7/30/97531.webp",
+                axum::routing::get({
+                    let image = image.clone();
+                    let image_requests = image_requests.clone();
+                    move || {
+                        let image = image.clone();
+                        let image_requests = image_requests.clone();
+                        async move {
+                            image_requests.fetch_add(1, Ordering::SeqCst);
+                            (
+                                [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
+                                image.as_ref().clone(),
+                            )
+                        }
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(provider_listener, provider_router)
+                .await
+                .unwrap()
+        });
+
+        let temp = TempDir::new().unwrap();
+        let mut core_config = config(&temp);
+        core_config.control.enabled = true;
+        core_config.control.listen = "127.0.0.1:0".parse().unwrap();
+        core_config.profiles.insert(
+            "derpibooru".to_owned(),
+            ProviderProfileConfig {
+                provider: "derpibooru".to_owned(),
+                base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let runtime = CoreBuilder::new(core_config).build().await.unwrap();
+        let response = String::from_utf8(
+            http_request(
+                runtime.control_listen().unwrap(),
+                b"GET /api/v1/providers/derpibooru/default/posts?tags=landscape&page=1&limit=40 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"provider\":\"derpibooru\""));
+        assert!(response.contains("\"original_md5\":null"));
+        let operation = runtime
+            .handle()
+            .start_booru_original_fetch(BooruOriginalFetchRequest {
+                profile: ProfileKey::new("derpibooru", "default"),
+                post_id: 97531,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            operation.resource_key.as_ref().unwrap(),
+            &crate::ResourceKey::new("derpibooru", "97531", 0, "original").unwrap()
+        );
+        let terminal = wait_terminal(&runtime.handle(), operation.id).await;
+        assert_eq!(terminal.state, OperationState::Completed);
+        assert_eq!(terminal.resource.unwrap().source, ResourceSource::Network);
+        assert_eq!(image_requests.load(Ordering::SeqCst), 1);
+        runtime.shutdown().await.unwrap();
+
+        let mut restart_config = config(&temp);
+        restart_config.profiles.insert(
+            "derpibooru".to_owned(),
+            ProviderProfileConfig {
+                provider: "derpibooru".to_owned(),
+                base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let restarted = CoreBuilder::new(restart_config).build().await.unwrap();
+        let operation = restarted
+            .handle()
+            .start_booru_original_fetch(BooruOriginalFetchRequest {
+                profile: ProfileKey::new("derpibooru", "default"),
+                post_id: 97531,
+            })
+            .await
+            .unwrap();
+        let terminal = wait_terminal(&restarted.handle(), operation.id).await;
+        assert_eq!(terminal.state, OperationState::Completed);
+        assert_eq!(terminal.resource.unwrap().source, ResourceSource::Disk);
+        assert_eq!(image_requests.load(Ordering::SeqCst), 1);
+        restarted.shutdown().await.unwrap();
     }
 
     #[tokio::test]

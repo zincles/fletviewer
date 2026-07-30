@@ -493,6 +493,21 @@ async fn search_extended_booru(
             .core
             .search_moebooru(&key, &query.tags, query.page, query.limit)
             .await
+    } else if matches!(key.provider.as_str(), "e621" | "e926") {
+        state
+            .core
+            .search_e621(&key, &query.tags, query.page, query.limit)
+            .await
+    } else if matches!(key.provider.as_str(), "derpibooru" | "furbooru") {
+        state
+            .core
+            .search_philomena(&key, &query.tags, query.page, query.limit)
+            .await
+    } else if key.provider == "paheal" {
+        state
+            .core
+            .search_paheal(&key, &query.tags, query.page, query.limit)
+            .await
     } else {
         state
             .core
@@ -515,6 +530,12 @@ async fn get_extended_booru_post(
         "yandere" | "konachan" | "konachan_net" | "lolibooru" | "behoimi"
     ) {
         state.core.moebooru_post(&key, post_id).await
+    } else if matches!(key.provider.as_str(), "e621" | "e926") {
+        state.core.e621_post(&key, post_id).await
+    } else if matches!(key.provider.as_str(), "derpibooru" | "furbooru") {
+        state.core.philomena_post(&key, post_id).await
+    } else if key.provider == "paheal" {
+        state.core.paheal_post(&key, post_id).await
     } else {
         state.core.gelbooru_xml_post(&key, post_id).await
     };

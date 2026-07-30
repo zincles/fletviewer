@@ -422,6 +422,24 @@ async fn inspect_query(
                     "yandere" | "konachan" | "konachan_net" | "lolibooru" | "behoimi",
                     BooruInspectCommand::Post { id },
                 ) => serde_json::to_value(core.moebooru_post(&key, *id).await?),
+                ("e621" | "e926", BooruInspectCommand::Search { tags, page, limit }) => {
+                    serde_json::to_value(core.search_e621(&key, tags, *page, *limit).await?)
+                }
+                ("e621" | "e926", BooruInspectCommand::Post { id }) => {
+                    serde_json::to_value(core.e621_post(&key, *id).await?)
+                }
+                ("derpibooru" | "furbooru", BooruInspectCommand::Search { tags, page, limit }) => {
+                    serde_json::to_value(core.search_philomena(&key, tags, *page, *limit).await?)
+                }
+                ("derpibooru" | "furbooru", BooruInspectCommand::Post { id }) => {
+                    serde_json::to_value(core.philomena_post(&key, *id).await?)
+                }
+                ("paheal", BooruInspectCommand::Search { tags, page, limit }) => {
+                    serde_json::to_value(core.search_paheal(&key, tags, *page, *limit).await?)
+                }
+                ("paheal", BooruInspectCommand::Post { id }) => {
+                    serde_json::to_value(core.paheal_post(&key, *id).await?)
+                }
                 _ => return Err(inspect_booru_provider_error(provider)),
             }
         }
@@ -1068,6 +1086,36 @@ mod tests {
                 .is_ok()
             );
         }
+        for provider in ["e621", "e926"] {
+            assert!(
+                Cli::try_parse_from(["fvcore", "inspect", "booru", provider, "search", "fox",])
+                    .is_ok()
+            );
+        }
+        for provider in ["derpibooru", "furbooru"] {
+            assert!(
+                Cli::try_parse_from([
+                    "fvcore",
+                    "inspect",
+                    "booru",
+                    provider,
+                    "search",
+                    "landscape",
+                ])
+                .is_ok()
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "fvcore",
+                "inspect",
+                "booru",
+                "paheal",
+                "search",
+                "landscape",
+            ])
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from([
                 "fvcore", "inspect", "booru", "danbooru", "tags", "blue", "--limit", "10",

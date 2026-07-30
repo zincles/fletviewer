@@ -5,7 +5,7 @@ use crate::{
     session::{ApiAuth, NetworkResponse, SessionRegistry},
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -47,6 +47,8 @@ pub struct BooruPost {
     pub copyright_tags: Vec<String>,
     /// Provider metadata tags.
     pub meta_tags: Vec<String>,
+    /// Complete Provider-specific tag categories, including categories outside the common five.
+    pub provider_tags: BTreeMap<String, Vec<String>>,
     /// Provider rating value.
     pub rating: String,
     /// Provider score.
@@ -542,6 +544,250 @@ impl BooruService {
             suggestions,
         })
     }
+
+    pub(crate) async fn search_e621(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+        cancellation: CancellationToken,
+    ) -> Result<BooruSearchResult, CoreError> {
+        ensure_e621_provider(key)?;
+        let page = page.max(1);
+        let limit = limit.clamp(1, 320);
+        let parameters = vec![
+            ("tags".to_owned(), query.trim().to_owned()),
+            ("page".to_owned(), page.to_string()),
+            ("limit".to_owned(), limit.to_string()),
+        ];
+        let response = self
+            .sessions
+            .get_with_query(key, "posts.json", &parameters, ApiAuth::None, cancellation)
+            .await?;
+        let generation = response.generation;
+        let base_url = response.final_url.clone();
+        let raw_posts = parse_e621_posts(response)?;
+        let reached_limit = raw_posts.len() == limit as usize;
+        let posts = raw_posts
+            .iter()
+            .map(|post| map_e621_post(key, &base_url, post))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(BooruSearchResult {
+            provider: key.provider.clone(),
+            profile: key.profile.clone(),
+            generation,
+            query: query.trim().to_owned(),
+            page,
+            next_page: reached_limit.then_some(page + 1),
+            total_count: None,
+            posts,
+        })
+    }
+
+    pub(crate) async fn get_e621_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+        cancellation: CancellationToken,
+    ) -> Result<BooruPost, CoreError> {
+        ensure_e621_provider(key)?;
+        if post_id == 0 {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "E621 post ID must be greater than zero",
+                false,
+            ));
+        }
+        let response = self
+            .sessions
+            .get_with_query(
+                key,
+                &format!("posts/{post_id}.json"),
+                &[],
+                ApiAuth::None,
+                cancellation,
+            )
+            .await?;
+        let base_url = response.final_url.clone();
+        let value: serde_json::Value = parse_json(response)?;
+        let post = value.get("post").ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::ResourceNotFound,
+                format!("{} post {post_id} was not found", key.provider),
+                false,
+            )
+        })?;
+        map_e621_post(key, &base_url, post)
+    }
+
+    pub(crate) async fn search_philomena(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+        cancellation: CancellationToken,
+    ) -> Result<BooruSearchResult, CoreError> {
+        ensure_philomena_provider(key)?;
+        let page = page.max(1);
+        let limit = limit.clamp(1, 50);
+        let parameters = vec![
+            ("q".to_owned(), query.trim().to_owned()),
+            ("page".to_owned(), page.to_string()),
+            ("per_page".to_owned(), limit.to_string()),
+        ];
+        let response = self
+            .sessions
+            .get_with_query(
+                key,
+                "api/v1/json/search/images",
+                &parameters,
+                ApiAuth::PhilomenaQuery,
+                cancellation,
+            )
+            .await?;
+        let generation = response.generation;
+        let base_url = response.final_url.clone();
+        let (raw_posts, total_count) = parse_philomena_posts(response)?;
+        let reached_limit = raw_posts.len() == limit as usize;
+        let posts = raw_posts
+            .iter()
+            .map(|post| map_philomena_post(key, &base_url, post))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(BooruSearchResult {
+            provider: key.provider.clone(),
+            profile: key.profile.clone(),
+            generation,
+            query: query.trim().to_owned(),
+            page,
+            next_page: reached_limit.then_some(page + 1),
+            total_count,
+            posts,
+        })
+    }
+
+    pub(crate) async fn get_philomena_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+        cancellation: CancellationToken,
+    ) -> Result<BooruPost, CoreError> {
+        ensure_philomena_provider(key)?;
+        if post_id == 0 {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Philomena image ID must be greater than zero",
+                false,
+            ));
+        }
+        let response = self
+            .sessions
+            .get_with_query(
+                key,
+                &format!("api/v1/json/images/{post_id}"),
+                &[],
+                ApiAuth::PhilomenaQuery,
+                cancellation,
+            )
+            .await?;
+        let base_url = response.final_url.clone();
+        let value: serde_json::Value = parse_json(response)?;
+        let post = value.get("image").ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::ResourceNotFound,
+                format!("{} image {post_id} was not found", key.provider),
+                false,
+            )
+        })?;
+        map_philomena_post(key, &base_url, post)
+    }
+
+    pub(crate) async fn search_paheal(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+        cancellation: CancellationToken,
+    ) -> Result<BooruSearchResult, CoreError> {
+        ensure_provider(key, "paheal")?;
+        let page = page.max(1);
+        let limit = limit.clamp(1, 100);
+        let parameters = vec![
+            ("tags".to_owned(), query.trim().to_owned()),
+            ("page".to_owned(), page.to_string()),
+            ("limit".to_owned(), limit.to_string()),
+        ];
+        let response = self
+            .sessions
+            .get_with_query(
+                key,
+                "api/danbooru/find_posts/index.xml",
+                &parameters,
+                ApiAuth::None,
+                cancellation,
+            )
+            .await?;
+        let generation = response.generation;
+        let base_url = response.final_url.clone();
+        let raw_posts = parse_paheal_posts(response)?;
+        let reached_limit = raw_posts.len() == limit as usize;
+        let posts = raw_posts
+            .iter()
+            .map(|post| map_paheal_post(key, &base_url, post))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(BooruSearchResult {
+            provider: key.provider.clone(),
+            profile: key.profile.clone(),
+            generation,
+            query: query.trim().to_owned(),
+            page,
+            next_page: reached_limit.then_some(page + 1),
+            total_count: None,
+            posts,
+        })
+    }
+
+    pub(crate) async fn get_paheal_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+        cancellation: CancellationToken,
+    ) -> Result<BooruPost, CoreError> {
+        ensure_provider(key, "paheal")?;
+        if post_id == 0 {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Paheal post ID must be greater than zero",
+                false,
+            ));
+        }
+        let parameters = vec![
+            ("id".to_owned(), post_id.to_string()),
+            ("limit".to_owned(), "1".to_owned()),
+        ];
+        let response = self
+            .sessions
+            .get_with_query(
+                key,
+                "api/danbooru/find_posts/index.xml",
+                &parameters,
+                ApiAuth::None,
+                cancellation,
+            )
+            .await?;
+        let base_url = response.final_url.clone();
+        let mut posts = parse_paheal_posts(response)?;
+        let post = posts.pop().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::ResourceNotFound,
+                format!("Paheal post {post_id} was not found"),
+                false,
+            )
+        })?;
+        map_paheal_post(key, &base_url, &post)
+    }
 }
 
 fn gelbooru_tag_parameters(query: &str, limit: u32, json: bool) -> Vec<(String, String)> {
@@ -617,6 +863,7 @@ fn map_danbooru_post(
         character_tags: split_tags(&post.tag_string_character),
         copyright_tags: split_tags(&post.tag_string_copyright),
         meta_tags: split_tags(&post.tag_string_meta),
+        provider_tags: BTreeMap::new(),
         rating: post.rating,
         score: post.score,
         source: nonempty(post.source),
@@ -910,6 +1157,7 @@ fn map_gelbooru_post(
         character_tags: Vec::new(),
         copyright_tags: Vec::new(),
         meta_tags: Vec::new(),
+        provider_tags: BTreeMap::new(),
         rating: object
             .get("rating")
             .and_then(serde_json::Value::as_str)
@@ -948,6 +1196,281 @@ fn map_moebooru_post(
         serde_json::Value::String(value) => value.clone(),
         value => value.to_string(),
     });
+    Ok(post)
+}
+
+fn parse_e621_posts(response: NetworkResponse) -> Result<Vec<serde_json::Value>, CoreError> {
+    let mut value: serde_json::Value = parse_json(response)?;
+    match value.get_mut("posts").map(serde_json::Value::take) {
+        Some(serde_json::Value::Array(posts)) => Ok(posts),
+        _ => Err(unexpected("E621 API returned an invalid post list")),
+    }
+}
+
+fn map_e621_post(
+    key: &ProfileKey,
+    response_url: &Url,
+    value: &serde_json::Value,
+) -> Result<BooruPost, CoreError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| unexpected("E621 API post must be an object"))?;
+    let id = object
+        .get("id")
+        .and_then(value_u64)
+        .ok_or_else(|| unexpected("E621 API post has no valid ID"))?;
+    let file = object
+        .get("file")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| unexpected("E621 API post has no file metadata"))?;
+    let sample = object.get("sample").and_then(serde_json::Value::as_object);
+    let preview = object.get("preview").and_then(serde_json::Value::as_object);
+    let original_url = file
+        .get("url")
+        .and_then(|value| value_url_with_base(value, response_url));
+    if original_url.is_none() {
+        return Err(unexpected(format!(
+            "{} post {id} has no downloadable image URL",
+            key.provider
+        )));
+    }
+    let provider_tags = object
+        .get("tags")
+        .and_then(serde_json::Value::as_object)
+        .map(|tags| {
+            tags.iter()
+                .filter_map(|(category, values)| {
+                    let values = values.as_array()?;
+                    Some((
+                        category.clone(),
+                        values
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                            .collect(),
+                    ))
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut page_url = response_url.clone();
+    page_url.set_path(&format!("/posts/{id}"));
+    page_url.set_query(None);
+    Ok(BooruPost {
+        provider: key.provider.clone(),
+        id,
+        page_url,
+        original: ImageVariant {
+            url: original_url,
+            width: file.get("width").and_then(value_u32),
+            height: file.get("height").and_then(value_u32),
+            byte_length: file.get("size").and_then(value_u64),
+        },
+        sample: ImageVariant {
+            url: sample
+                .and_then(|sample| sample.get("url"))
+                .and_then(|value| value_url_with_base(value, response_url)),
+            width: sample
+                .and_then(|sample| sample.get("width"))
+                .and_then(value_u32),
+            height: sample
+                .and_then(|sample| sample.get("height"))
+                .and_then(value_u32),
+            byte_length: None,
+        },
+        preview: ImageVariant {
+            url: preview
+                .and_then(|preview| preview.get("url"))
+                .and_then(|value| value_url_with_base(value, response_url)),
+            width: preview
+                .and_then(|preview| preview.get("width"))
+                .and_then(value_u32),
+            height: preview
+                .and_then(|preview| preview.get("height"))
+                .and_then(value_u32),
+            byte_length: None,
+        },
+        general_tags: provider_tags.get("general").cloned().unwrap_or_default(),
+        artist_tags: provider_tags.get("artist").cloned().unwrap_or_default(),
+        character_tags: provider_tags.get("character").cloned().unwrap_or_default(),
+        copyright_tags: provider_tags.get("copyright").cloned().unwrap_or_default(),
+        meta_tags: provider_tags.get("meta").cloned().unwrap_or_default(),
+        provider_tags,
+        rating: object
+            .get("rating")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        score: object
+            .get("score")
+            .and_then(|score| score.get("total").or(Some(score)))
+            .and_then(value_i64)
+            .unwrap_or_default(),
+        source: object
+            .get("sources")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|sources| sources.first())
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .and_then(nonempty),
+        original_md5: normalize_md5(
+            file.get("md5")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        )?,
+        file_extension: file
+            .get("ext")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .and_then(normalize_extension),
+        created_at: object
+            .get("created_at")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+fn parse_philomena_posts(
+    response: NetworkResponse,
+) -> Result<(Vec<serde_json::Value>, Option<u64>), CoreError> {
+    let mut value: serde_json::Value = parse_json(response)?;
+    let total = value.get("total").and_then(value_u64);
+    match value.get_mut("images").map(serde_json::Value::take) {
+        Some(serde_json::Value::Array(posts)) => Ok((posts, total)),
+        _ => Err(unexpected("Philomena API returned an invalid image list")),
+    }
+}
+
+fn map_philomena_post(
+    key: &ProfileKey,
+    response_url: &Url,
+    value: &serde_json::Value,
+) -> Result<BooruPost, CoreError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| unexpected("Philomena API image must be an object"))?;
+    let id = object
+        .get("id")
+        .and_then(value_u64)
+        .ok_or_else(|| unexpected("Philomena API image has no valid ID"))?;
+    let representations = object
+        .get("representations")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| unexpected("Philomena API image has no representations"))?;
+    let original_url = representations
+        .get("full")
+        .and_then(|value| value_url_with_base(value, response_url));
+    if original_url.is_none() {
+        return Err(unexpected(format!(
+            "{} image {id} has no full representation",
+            key.provider
+        )));
+    }
+    let general_tags = object
+        .get("tags")
+        .and_then(serde_json::Value::as_array)
+        .map(|tags| {
+            tags.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let provider_tags = BTreeMap::from([("general".to_owned(), general_tags.clone())]);
+    let mut page_url = response_url.clone();
+    page_url.set_path(&format!("/images/{id}"));
+    page_url.set_query(None);
+    Ok(BooruPost {
+        provider: key.provider.clone(),
+        id,
+        page_url,
+        original: ImageVariant {
+            url: original_url,
+            width: object.get("width").and_then(value_u32),
+            height: object.get("height").and_then(value_u32),
+            byte_length: None,
+        },
+        sample: ImageVariant {
+            url: representations
+                .get("large")
+                .and_then(|value| value_url_with_base(value, response_url)),
+            ..ImageVariant::default()
+        },
+        preview: ImageVariant {
+            url: representations
+                .get("thumb")
+                .or_else(|| representations.get("small"))
+                .and_then(|value| value_url_with_base(value, response_url)),
+            ..ImageVariant::default()
+        },
+        general_tags,
+        artist_tags: Vec::new(),
+        character_tags: Vec::new(),
+        copyright_tags: Vec::new(),
+        meta_tags: Vec::new(),
+        provider_tags,
+        rating: object
+            .get("sfw")
+            .map(serde_json::Value::to_string)
+            .unwrap_or_default(),
+        score: object.get("score").and_then(value_i64).unwrap_or_default(),
+        source: object
+            .get("source_url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .and_then(nonempty),
+        original_md5: None,
+        file_extension: representations
+            .get("full")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|url| {
+                url.rsplit_once('.')
+                    .map(|(_, extension)| extension.to_owned())
+            })
+            .and_then(normalize_extension),
+        created_at: object
+            .get("created_at")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+fn parse_paheal_posts(response: NetworkResponse) -> Result<Vec<serde_json::Value>, CoreError> {
+    let body = std::str::from_utf8(&response.body)
+        .map_err(|_| unexpected("Paheal API returned non-UTF-8 XML"))?;
+    let document = roxmltree::Document::parse(body)
+        .map_err(|_| unexpected("Paheal API returned malformed XML"))?;
+    Ok(document
+        .descendants()
+        .filter(|node| {
+            node.is_element()
+                && matches!(node.tag_name().name(), "post" | "tag")
+                && node.attribute("file_url").is_some()
+        })
+        .map(|node| {
+            serde_json::Value::Object(
+                node.attributes()
+                    .map(|attribute| {
+                        (
+                            attribute.name().to_owned(),
+                            serde_json::Value::String(attribute.value().to_owned()),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect())
+}
+
+fn map_paheal_post(
+    key: &ProfileKey,
+    response_url: &Url,
+    value: &serde_json::Value,
+) -> Result<BooruPost, CoreError> {
+    let mut post = map_gelbooru_post(key, response_url, value)?;
+    post.page_url.set_path(&format!("/post/view/{}", post.id));
+    post.page_url.set_query(None);
+    post.original_md5 = None;
     Ok(post)
 }
 
@@ -1024,6 +1547,30 @@ fn ensure_moebooru_provider(key: &ProfileKey) -> Result<(), CoreError> {
     }
 }
 
+fn ensure_e621_provider(key: &ProfileKey) -> Result<(), CoreError> {
+    if matches!(key.provider.as_str(), "e621" | "e926") {
+        Ok(())
+    } else {
+        Err(CoreError::new(
+            ErrorCode::InvalidInput,
+            format!("profile {key} is not a supported E621 profile"),
+            false,
+        ))
+    }
+}
+
+fn ensure_philomena_provider(key: &ProfileKey) -> Result<(), CoreError> {
+    if matches!(key.provider.as_str(), "derpibooru" | "furbooru") {
+        Ok(())
+    } else {
+        Err(CoreError::new(
+            ErrorCode::InvalidInput,
+            format!("profile {key} is not a supported Philomena profile"),
+            false,
+        ))
+    }
+}
+
 fn split_tags(value: &str) -> Vec<String> {
     value.split_whitespace().map(str::to_owned).collect()
 }
@@ -1085,6 +1632,9 @@ mod tests {
     const MOEBOORU_POSTS: &str = include_str!("../../tests/fixtures/moebooru/posts.json");
     const TAGS_JSON: &str = include_str!("../../tests/fixtures/booru/tags.json");
     const TAGS_XML: &str = include_str!("../../tests/fixtures/booru/tags.xml");
+    const E621_POSTS: &str = include_str!("../../tests/fixtures/e621/posts.json");
+    const PHILOMENA_IMAGES: &str = include_str!("../../tests/fixtures/philomena/images.json");
+    const PAHEAL_POSTS: &str = include_str!("../../tests/fixtures/paheal/posts.xml");
 
     async fn server(router: Router) -> std::net::SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1405,6 +1955,164 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), crate::ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn maps_e621_search_detail_and_provider_specific_tags() {
+        let router = Router::new()
+            .route(
+                "/posts.json",
+                get(|Query(query): Query<HashMap<String, String>>| async move {
+                    assert_eq!(query.get("tags").map(String::as_str), Some("fox"));
+                    assert_eq!(query.get("page").map(String::as_str), Some("1"));
+                    assert_eq!(query.get("limit").map(String::as_str), Some("1"));
+                    ([(header::CONTENT_TYPE, "application/json")], E621_POSTS)
+                }),
+            )
+            .route(
+                "/posts/13579.json",
+                get(|| async {
+                    let value: serde_json::Value = serde_json::from_str(E621_POSTS).unwrap();
+                    let post = &value["posts"][0];
+                    (
+                        [(header::CONTENT_TYPE, "application/json")],
+                        serde_json::json!({"post": post}).to_string(),
+                    )
+                }),
+            );
+        let listen = server(router).await;
+        let (e621, key) = service("e621", listen);
+        let result = e621
+            .search_e621(&key, "fox", 1, 1, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.provider, "e621");
+        assert_eq!(result.next_page, Some(2));
+        let post = &result.posts[0];
+        assert_eq!(post.id, 13579);
+        assert_eq!(post.score, 47);
+        assert_eq!(post.original.byte_length, Some(456789));
+        assert_eq!(post.provider_tags["species"], ["fox"]);
+        assert_eq!(post.artist_tags, ["fixture_artist"]);
+
+        let detail = e621
+            .get_e621_post(&key, 13579, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(detail.file_extension.as_deref(), Some("webp"));
+        assert_eq!(
+            detail.original_md5.as_deref(),
+            Some("d256310bfab43e08b6422e311cd9b2c9")
+        );
+
+        let (e926, key) = service("e926", listen);
+        let detail = e926
+            .get_e621_post(&key, 13579, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(detail.provider, "e926");
+    }
+
+    #[tokio::test]
+    async fn maps_philomena_search_detail_and_api_key() {
+        let router = Router::new()
+            .route(
+                "/api/v1/json/search/images",
+                get(|Query(query): Query<HashMap<String, String>>| async move {
+                    assert_eq!(query.get("q").map(String::as_str), Some("landscape"));
+                    assert_eq!(query.get("per_page").map(String::as_str), Some("1"));
+                    assert_eq!(query.get("key").map(String::as_str), Some("fixture-key"));
+                    (
+                        [(header::CONTENT_TYPE, "application/json")],
+                        PHILOMENA_IMAGES,
+                    )
+                }),
+            )
+            .route(
+                "/api/v1/json/images/97531",
+                get(|Query(query): Query<HashMap<String, String>>| async move {
+                    assert_eq!(query.get("key").map(String::as_str), Some("fixture-key"));
+                    let value: serde_json::Value = serde_json::from_str(PHILOMENA_IMAGES).unwrap();
+                    (
+                        [(header::CONTENT_TYPE, "application/json")],
+                        serde_json::json!({"image": &value["images"][0]}).to_string(),
+                    )
+                }),
+            );
+        let listen = server(router).await;
+        let profile = ProviderProfileConfig {
+            provider: "derpibooru".to_owned(),
+            profile: "default".to_owned(),
+            base_url: Url::parse(&format!("http://{listen}/")).unwrap(),
+            api_key: Some("fixture-key".to_owned()),
+            ..ProviderProfileConfig::default()
+        };
+        let sessions = Arc::new(
+            SessionRegistry::new(
+                &BTreeMap::from([("default".to_owned(), profile)]),
+                &NetworkConfig::default(),
+            )
+            .unwrap(),
+        );
+        let service = BooruService::new(sessions);
+        let key = ProfileKey::new("derpibooru", "default");
+        let result = service
+            .search_philomena(&key, "landscape", 1, 1, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.total_count, Some(1));
+        assert_eq!(result.posts[0].id, 97531);
+        assert_eq!(result.posts[0].general_tags[2], "blue sky");
+        assert_eq!(result.posts[0].rating, "true");
+        assert_eq!(result.posts[0].original_md5, None);
+
+        let detail = service
+            .get_philomena_post(&key, 97531, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(detail.file_extension.as_deref(), Some("webp"));
+        assert!(detail.page_url.as_str().ends_with("/images/97531"));
+    }
+
+    #[tokio::test]
+    async fn maps_paheal_legacy_xml_search_and_detail() {
+        let router = Router::new().route(
+            "/api/danbooru/find_posts/index.xml",
+            get(|Query(query): Query<HashMap<String, String>>| async move {
+                if query.get("id").map(String::as_str) == Some("999") {
+                    return ([(header::CONTENT_TYPE, "application/xml")], "<posts />")
+                        .into_response();
+                }
+                ([(header::CONTENT_TYPE, "application/xml")], PAHEAL_POSTS).into_response()
+            }),
+        );
+        let listen = server(router).await;
+        let (paheal, key) = service("paheal", listen);
+        let result = paheal
+            .search_paheal(&key, "landscape", 1, 1, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.next_page, Some(2));
+        assert_eq!(result.posts[0].id, 86420);
+        assert_eq!(result.posts[0].general_tags, ["landscape", "blue_sky"]);
+        assert!(
+            result.posts[0]
+                .page_url
+                .as_str()
+                .ends_with("/post/view/86420")
+        );
+        assert_eq!(result.posts[0].original_md5, None);
+
+        let detail = paheal
+            .get_paheal_post(&key, 86420, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(detail.file_extension.as_deref(), Some("webp"));
+        let missing = paheal
+            .get_paheal_post(&key, 999, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(missing.code(), crate::ErrorCode::ResourceNotFound);
     }
 
     #[tokio::test]

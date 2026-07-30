@@ -728,13 +728,22 @@ impl ProviderProfileConfig {
                 false,
             ));
         }
-        if self.api_user.is_some() != self.api_key.is_some()
-            || (self.api_user.is_none()
-                && self.api_user_env.is_some() != self.api_key_env.is_some())
-        {
+        let philomena = matches!(self.provider.as_str(), "derpibooru" | "furbooru");
+        let invalid_api_pair = if philomena {
+            self.api_user.is_some() || self.api_user_env.is_some()
+        } else {
+            self.api_user.is_some() != self.api_key.is_some()
+                || (self.api_user.is_none()
+                    && self.api_user_env.is_some() != self.api_key_env.is_some())
+        };
+        if invalid_api_pair {
             return Err(CoreError::new(
                 ErrorCode::InvalidConfig,
-                format!("profile {key} API user and key must be configured together"),
+                if philomena {
+                    format!("profile {key} accepts an API key without an API user")
+                } else {
+                    format!("profile {key} API user and key must be configured together")
+                },
                 false,
             ));
         }
@@ -862,6 +871,18 @@ mod tests {
         missing_key.cookie = Some("plain-cookie".to_owned());
         missing_key.max_concurrent_requests = 0;
         assert!(missing_key.validate("danbooru").is_err());
+    }
+
+    #[test]
+    fn philomena_profiles_accept_key_only_credentials() {
+        let mut profile = super::ProviderProfileConfig {
+            provider: "derpibooru".to_owned(),
+            api_key: Some("secret".to_owned()),
+            ..super::ProviderProfileConfig::default()
+        };
+        assert!(profile.validate("derpibooru").is_ok());
+        profile.api_user = Some("unexpected".to_owned());
+        assert!(profile.validate("derpibooru").is_err());
     }
 
     #[test]

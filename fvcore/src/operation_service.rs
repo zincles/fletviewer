@@ -223,6 +223,11 @@ impl OperationService {
                 | "konachan_net"
                 | "lolibooru"
                 | "behoimi"
+                | "e621"
+                | "e926"
+                | "derpibooru"
+                | "furbooru"
+                | "paheal"
         ) {
             return Err(CoreError::new(
                 ErrorCode::InvalidInput,
@@ -547,7 +552,14 @@ fn operation_resource_key(request: &OperationRequest) -> Result<Option<ResourceK
             "viewer",
         )
         .map(Some),
-        OperationRequest::Fake(_) | OperationRequest::BooruOriginal(_) => Ok(None),
+        OperationRequest::BooruOriginal(request) => ResourceKey::new(
+            &request.profile.provider,
+            request.post_id.to_string(),
+            0,
+            "original",
+        )
+        .map(Some),
+        OperationRequest::Fake(_) => Ok(None),
     }
 }
 
@@ -667,6 +679,33 @@ async fn run_booru_original(
                 )
                 .await
         }
+        "e621" | "e926" => {
+            booru
+                .get_e621_post(
+                    &request.profile,
+                    request.post_id,
+                    cancellation.child_token(),
+                )
+                .await
+        }
+        "derpibooru" | "furbooru" => {
+            booru
+                .get_philomena_post(
+                    &request.profile,
+                    request.post_id,
+                    cancellation.child_token(),
+                )
+                .await
+        }
+        "paheal" => {
+            booru
+                .get_paheal_post(
+                    &request.profile,
+                    request.post_id,
+                    cancellation.child_token(),
+                )
+                .await
+        }
         _ => unreachable!("validated before scheduling"),
     };
     let post = match post {
@@ -680,16 +719,24 @@ async fn run_booru_original(
             false,
         ));
     };
-    let Some(md5) = post.original_md5 else {
-        return worker_error(CoreError::new(
-            ErrorCode::UnexpectedResponse,
-            "Booru post has no original content MD5",
-            false,
-        ));
+    let expected_md5 = match post.original_md5 {
+        Some(md5) => match ContentMd5::from_str(&md5) {
+            Ok(md5) => Some(md5),
+            Err(error) => return worker_error(error),
+        },
+        None => None,
     };
-    let expected_md5 = match ContentMd5::from_str(&md5) {
-        Ok(md5) => md5,
-        Err(error) => return worker_error(error),
+    let resource_key = match expected_md5 {
+        Some(_) => None,
+        None => match ResourceKey::new(
+            &request.profile.provider,
+            request.post_id.to_string(),
+            0,
+            "original",
+        ) {
+            Ok(key) => Some(key),
+            Err(error) => return worker_error(error),
+        },
     };
     let mut last_phase = "";
     let mut last_bytes = 0_u64;
@@ -699,8 +746,8 @@ async fn run_booru_original(
             ImageFetchSpec {
                 profile: request.profile,
                 url,
-                expected_md5: Some(expected_md5),
-                resource_key: None,
+                expected_md5,
+                resource_key,
                 expected_bytes: post.original.byte_length,
                 referer: Some(post.page_url),
             },

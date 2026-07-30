@@ -29,6 +29,7 @@ pub(crate) enum ApiAuth {
     None,
     Basic,
     GelbooruQuery,
+    PhilomenaQuery,
 }
 
 /// Stable Provider profile identity.
@@ -532,7 +533,12 @@ impl SessionGeneration {
             generation: self.number,
             base_url: self.config.base_url.to_string(),
             has_cookie: self.cookie.is_some(),
-            has_api_credentials: self.api_user.is_some() && self.api_key.is_some(),
+            has_api_credentials: if matches!(self.key.provider.as_str(), "derpibooru" | "furbooru")
+            {
+                self.api_key.is_some()
+            } else {
+                self.api_user.is_some() && self.api_key.is_some()
+            },
             max_concurrent_requests: self.config.max_concurrent_requests,
             min_request_interval_ms: self.config.min_request_interval_ms,
             active_requests: self
@@ -574,6 +580,11 @@ impl SessionGeneration {
                         ("user_id", user.expose_secret()),
                         ("api_key", key.expose_secret()),
                     ]);
+                }
+            }
+            ApiAuth::PhilomenaQuery => {
+                if let Some(key) = &self.api_key {
+                    request = request.query(&[("key", key.expose_secret())]);
                 }
             }
         }
