@@ -85,6 +85,15 @@ pub struct ImageDownloadTaskSnapshot {
     /// Zero-based illustration page for a Pixiv task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<u32>,
+    /// Current metadata, cache, or network phase.
+    #[serde(default)]
+    pub phase: String,
+    /// Bytes made available by the shared image transfer.
+    #[serde(default)]
+    pub bytes_done: u64,
+    /// Expected transfer length when known.
+    #[serde(default)]
+    pub bytes_total: Option<u64>,
     /// Downloaded immutable byte count after completion.
     pub byte_length: Option<u64>,
     /// Verified real-content MD5 after completion.
@@ -151,6 +160,7 @@ impl ImageDownloadService {
             };
             if task.snapshot.state == ImageDownloadState::Running {
                 task.snapshot.state = ImageDownloadState::Failed;
+                task.snapshot.phase = "failed".to_owned();
                 task.snapshot.revision += 1;
                 task.snapshot.error = Some("Runtime stopped during image download".to_owned());
                 task.snapshot.updated_at = OffsetDateTime::now_utc();
@@ -193,6 +203,9 @@ impl ImageDownloadService {
                 post_id: Some(request.post_id),
                 illust_id: None,
                 page: None,
+                phase: "metadata".to_owned(),
+                bytes_done: 0,
+                bytes_total: None,
                 byte_length: None,
                 content_md5: None,
                 output: None,
@@ -230,6 +243,9 @@ impl ImageDownloadService {
                 post_id: None,
                 illust_id: Some(request.illust_id),
                 page: Some(request.page),
+                phase: "metadata".to_owned(),
+                bytes_done: 0,
+                bytes_total: None,
                 byte_length: None,
                 content_md5: None,
                 output: None,
@@ -324,6 +340,9 @@ impl ImageDownloadService {
             task.snapshot.content_md5 = None;
             task.snapshot.output = None;
             task.snapshot.error = None;
+            task.snapshot.phase = "metadata".to_owned();
+            task.snapshot.bytes_done = 0;
+            task.snapshot.bytes_total = None;
             task.snapshot.updated_at = OffsetDateTime::now_utc();
             persist(&self.tasks_root, &task).await?;
             tasks.insert(id, task.clone());
@@ -386,24 +405,41 @@ impl ImageDownloadService {
         mut task: PersistedImageDownloadTask,
         cancellation: CancellationToken,
     ) {
+        let (progress_tx, progress_rx) = mpsc::channel(16);
+        let progress_service = self.clone();
+        let task_id = task.snapshot.id;
+        let progress_worker = tokio::spawn(async move {
+            progress_service
+                .consume_progress(task_id, progress_rx)
+                .await;
+        });
         let result = self
-            .fetch_and_publish(&task.snapshot, cancellation.clone())
+            .fetch_and_publish(&task.snapshot, cancellation.clone(), progress_tx)
             .await;
+        let _ = progress_worker.await;
+        if let Some(current) = self.tasks.lock().await.get(&task.snapshot.id).cloned() {
+            task = current;
+        }
         task.snapshot.revision += 1;
         task.snapshot.updated_at = OffsetDateTime::now_utc();
         match result {
             Ok((output, resource)) => {
                 task.snapshot.state = ImageDownloadState::Completed;
+                task.snapshot.phase = "completed".to_owned();
+                task.snapshot.bytes_done = resource.descriptor().byte_length as u64;
+                task.snapshot.bytes_total = Some(resource.descriptor().byte_length as u64);
                 task.snapshot.byte_length = Some(resource.descriptor().byte_length as u64);
                 task.snapshot.content_md5 = Some(resource.descriptor().content_md5.to_string());
                 task.snapshot.output = Some(output);
             }
             Err(error) if error.code() == ErrorCode::Cancelled || cancellation.is_cancelled() => {
                 task.snapshot.state = ImageDownloadState::Cancelled;
+                task.snapshot.phase = "cancelled".to_owned();
                 task.snapshot.error = Some("image download was cancelled".to_owned());
             }
             Err(error) => {
                 task.snapshot.state = ImageDownloadState::Failed;
+                task.snapshot.phase = "failed".to_owned();
                 task.snapshot.error = Some(error.message().to_owned());
             }
         }
@@ -419,10 +455,45 @@ impl ImageDownloadService {
             .await;
     }
 
+    async fn consume_progress(
+        &self,
+        id: Uuid,
+        mut progress_rx: mpsc::Receiver<crate::image::ImageProgress>,
+    ) {
+        let mut persisted_bytes = 0_u64;
+        let mut persisted_at = std::time::Instant::now();
+        while let Some(progress) = progress_rx.recv().await {
+            let task = {
+                let mut tasks = self.tasks.lock().await;
+                let Some(task) = tasks.get_mut(&id) else {
+                    return;
+                };
+                task.snapshot.phase = progress.phase.to_owned();
+                task.snapshot.bytes_done = progress.bytes_done;
+                task.snapshot.bytes_total = progress.bytes_total;
+                task.snapshot.revision += 1;
+                task.snapshot.updated_at = OffsetDateTime::now_utc();
+                task.clone()
+            };
+            let should_persist = task.snapshot.bytes_done.saturating_sub(persisted_bytes)
+                >= 1024 * 1024
+                || persisted_at.elapsed() >= std::time::Duration::from_secs(2);
+            if should_persist && persist(&self.tasks_root, &task).await.is_ok() {
+                persisted_bytes = task.snapshot.bytes_done;
+                persisted_at = std::time::Instant::now();
+            }
+            let _ = self
+                .message_tx
+                .send(OperationMessage::ImageDownloadTask(task.snapshot))
+                .await;
+        }
+    }
+
     async fn fetch_and_publish(
         &self,
         task: &ImageDownloadTaskSnapshot,
         cancellation: CancellationToken,
+        progress_tx: mpsc::Sender<crate::image::ImageProgress>,
     ) -> Result<(String, crate::ImageResource), CoreError> {
         let (url, expected_md5, resource_key, expected_bytes, referer, stem) = match task.kind {
             ImageDownloadKind::BooruOriginal => {
@@ -489,6 +560,9 @@ impl ImageDownloadService {
                 )
             }
         };
+        let mut last_phase = "";
+        let mut last_bytes = 0_u64;
+        let mut last_update = std::time::Instant::now();
         let resource = self
             .images
             .fetch(
@@ -501,7 +575,17 @@ impl ImageDownloadService {
                     referer,
                 },
                 cancellation,
-                |_| {},
+                move |progress| {
+                    let publish = progress.phase != last_phase
+                        || progress.bytes_done.saturating_sub(last_bytes) >= 64 * 1024
+                        || last_update.elapsed() >= std::time::Duration::from_millis(100);
+                    if publish {
+                        last_phase = progress.phase;
+                        last_bytes = progress.bytes_done;
+                        last_update = std::time::Instant::now();
+                        let _ = progress_tx.try_send(progress);
+                    }
+                },
             )
             .await?;
         let provider_root = self.images_root.join(&task.profile.provider);

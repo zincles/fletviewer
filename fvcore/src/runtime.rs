@@ -3934,7 +3934,10 @@ mod tests {
         assert_eq!(retried.revision, recovered.revision + 1);
         let retried = wait_image_download(&restarted.handle(), retried.id).await;
         assert_eq!(retried.state, ImageDownloadState::Completed);
-        assert_eq!(retried.revision, recovered.revision + 2);
+        assert!(retried.revision > recovered.revision + 1);
+        assert_eq!(retried.phase, "completed");
+        assert_eq!(retried.bytes_done, image.len() as u64);
+        assert_eq!(retried.bytes_total, Some(image.len() as u64));
         let output = retried.output.clone().unwrap();
         restarted
             .handle()
@@ -4129,7 +4132,10 @@ mod tests {
         assert!(retried.starts_with(b"HTTP/1.1 202 Accepted"));
         let retried = wait_image_download(&handle, http_task.id).await;
         assert_eq!(retried.state, ImageDownloadState::Completed);
-        assert_eq!(retried.revision, http_task.revision + 2);
+        assert!(retried.revision > http_task.revision + 1);
+        assert_eq!(retried.phase, "completed");
+        assert_eq!(retried.bytes_done, image.len() as u64);
+        assert_eq!(retried.bytes_total, Some(image.len() as u64));
         let deleted = http_request(
             control_listen,
             format!(
