@@ -4,7 +4,11 @@
 
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use fs2::FileExt;
-use fvcore::{CoreBuilder, CoreConfig, CoreError};
+use fvcore::{
+    CoreBuilder, CoreConfig, CoreError, CoreHandle, PixivBookmarkVisibility,
+    PixivFollowingVisibility, ProfileKey,
+};
+use serde::Serialize;
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -87,6 +91,129 @@ enum Command {
         #[arg(long = "override")]
         override_existing: bool,
     },
+    /// 执行一次只读诊断查询，输出 JSON 后正常关闭 Runtime。
+    #[command(
+        help_template = "{about}\n\n用法: {usage}\n\n命令:\n{subcommands}\n\n选项:\n{options}",
+        subcommand_value_name = "诊断"
+    )]
+    Inspect {
+        #[command(subcommand)]
+        command: InspectCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum InspectCommand {
+    /// 输出当前 Runtime 的安全 snapshot。
+    Runtime,
+    /// 输出一个 Provider profile 的安全 snapshot。
+    Profile {
+        /// Provider 名称，例如 pixiv。
+        provider: String,
+        /// Profile 名称，例如 default。
+        profile: String,
+    },
+    /// 执行一次 Pixiv 只读查询。
+    #[command(
+        help_template = "{about}\n\n用法: {usage}\n\n命令:\n{subcommands}\n\n选项:\n{options}",
+        subcommand_value_name = "查询"
+    )]
+    Pixiv {
+        /// Pixiv profile 名称。
+        #[arg(long, default_value = "default")]
+        profile: String,
+        #[command(subcommand)]
+        command: PixivInspectCommand,
+    },
+    /// 执行一次 Booru 只读查询。
+    #[command(
+        help_template = "{about}\n\n用法: {usage}\n\n命令:\n{subcommands}\n\n选项:\n{options}",
+        subcommand_value_name = "查询"
+    )]
+    Booru {
+        /// Provider 名称：danbooru 或 gelbooru。
+        provider: String,
+        /// Provider profile 名称。
+        #[arg(long, default_value = "default")]
+        profile: String,
+        #[command(subcommand)]
+        command: BooruInspectCommand,
+    },
+    /// 执行一次 EH 主页或搜索诊断查询。
+    Eh {
+        /// EH profile 名称。
+        #[arg(long, default_value = "default")]
+        profile: String,
+        #[command(subcommand)]
+        command: EhInspectCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PixivInspectCommand {
+    /// 查询一幅作品及其页面 metadata。
+    Illust { id: String },
+    /// 搜索标签。
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+    },
+    /// 查询日榜、周榜或月榜。
+    Ranking {
+        #[arg(long, default_value = "day")]
+        mode: String,
+        #[arg(long, default_value = "")]
+        date: String,
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+    },
+    /// 查询当前推荐 snapshot。
+    Recommendations,
+    /// 查询登录用户的关注动态。
+    Following {
+        #[arg(long, default_value = "public")]
+        visibility: String,
+        #[arg(long, default_value_t = 1)]
+        page: u32,
+    },
+    /// 查询登录用户的收藏。
+    Bookmarks {
+        #[arg(long, default_value = "public")]
+        visibility: String,
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+#[command(
+    help_template = "{about}\n\n用法: {usage}\n\n命令:\n{subcommands}\n\n选项:\n{options}",
+    subcommand_value_name = "查询"
+)]
+enum BooruInspectCommand {
+    /// 搜索帖子。
+    Search {
+        tags: String,
+        #[arg(long, default_value_t = 1)]
+        page: u64,
+        #[arg(long, default_value_t = 40)]
+        limit: u32,
+    },
+    /// 查询一个帖子 metadata。
+    Post { id: u64 },
+}
+
+#[derive(Debug, Subcommand)]
+#[command(
+    help_template = "{about}\n\n用法: {usage}\n\n命令:\n{subcommands}\n\n选项:\n{options}",
+    subcommand_value_name = "查询"
+)]
+enum EhInspectCommand {
+    /// 查询 EH 主页。
+    Home,
+    /// 以 provider-native 文本搜索 EH。
+    Search { query: String },
 }
 
 #[tokio::main]
@@ -139,6 +266,7 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
             }
             return Ok(());
         }
+        Some(Command::Inspect { command }) => return inspect(command).await,
         Some(Command::Run { .. }) | Some(Command::Web { .. }) | None => {}
     }
     let web = matches!(cli.command, Some(Command::Web { .. }));
@@ -177,6 +305,164 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
     }
     tracing::info!("graceful shutdown requested");
     runtime.shutdown().await
+}
+
+async fn inspect(command: &InspectCommand) -> Result<(), CoreError> {
+    let config_path = executable_directory()?.join(CONFIG_FILENAME);
+    let runtime = CoreBuilder::new(load_config(false)?)
+        .config_file(config_path)
+        .build()
+        .await?;
+    let result = inspect_query(runtime.handle(), command).await;
+    let shutdown = runtime.shutdown().await;
+    let value = result?;
+    shutdown?;
+    print_json(&value)
+}
+
+async fn inspect_query(
+    core: CoreHandle,
+    command: &InspectCommand,
+) -> Result<serde_json::Value, CoreError> {
+    let value = match command {
+        InspectCommand::Runtime => serde_json::to_value(core.snapshot().await?),
+        InspectCommand::Profile { provider, profile } => {
+            let key = ProfileKey::new(provider, profile);
+            let profile = core
+                .profiles()?
+                .into_iter()
+                .find(|candidate| candidate.key == key)
+                .ok_or_else(|| {
+                    CoreError::new(
+                        fvcore::ErrorCode::ProfileNotFound,
+                        format!("Provider profile {key} was not found"),
+                        false,
+                    )
+                })?;
+            serde_json::to_value(profile)
+        }
+        InspectCommand::Pixiv { profile, command } => {
+            let key = ProfileKey::new("pixiv", profile);
+            match command {
+                PixivInspectCommand::Illust { id } => {
+                    serde_json::to_value(core.pixiv_illust(&key, id).await?)
+                }
+                PixivInspectCommand::Search { query, page } => {
+                    serde_json::to_value(core.search_pixiv(&key, query, *page).await?)
+                }
+                PixivInspectCommand::Ranking { mode, date, page } => {
+                    serde_json::to_value(core.pixiv_ranking(&key, mode, date, *page).await?)
+                }
+                PixivInspectCommand::Recommendations => {
+                    serde_json::to_value(core.pixiv_recommendations(&key).await?)
+                }
+                PixivInspectCommand::Following { visibility, page } => serde_json::to_value(
+                    core.pixiv_following(&key, parse_following_visibility(visibility)?, *page)
+                        .await?,
+                ),
+                PixivInspectCommand::Bookmarks { visibility, offset } => serde_json::to_value(
+                    core.pixiv_bookmarks(&key, parse_bookmark_visibility(visibility)?, *offset)
+                        .await?,
+                ),
+            }
+        }
+        InspectCommand::Booru {
+            provider,
+            profile,
+            command,
+        } => {
+            let key = ProfileKey::new(provider, profile);
+            match (provider.as_str(), command) {
+                ("danbooru", BooruInspectCommand::Search { tags, page, limit }) => {
+                    serde_json::to_value(core.search_danbooru(&key, tags, *page, *limit).await?)
+                }
+                ("danbooru", BooruInspectCommand::Post { id }) => {
+                    serde_json::to_value(core.danbooru_post(&key, *id).await?)
+                }
+                ("gelbooru", BooruInspectCommand::Search { tags, page, limit }) => {
+                    serde_json::to_value(core.search_gelbooru(&key, tags, *page, *limit).await?)
+                }
+                ("gelbooru", BooruInspectCommand::Post { id }) => {
+                    serde_json::to_value(core.gelbooru_post(&key, *id).await?)
+                }
+                _ => return Err(inspect_booru_provider_error(provider)),
+            }
+        }
+        InspectCommand::Eh { profile, command } => {
+            let key = ProfileKey::new("eh", profile);
+            match command {
+                EhInspectCommand::Home => serde_json::to_value(core.eh_home(&key, None).await?),
+                EhInspectCommand::Search { query } => {
+                    serde_json::to_value(core.eh_search(&key, query, None).await?)
+                }
+            }
+        }
+    }
+    .map_err(|error| {
+        CoreError::new(
+            fvcore::ErrorCode::Internal,
+            format!("failed to encode inspect result: {error}"),
+            false,
+        )
+    })?;
+    Ok(sanitize_inspect_json(value))
+}
+
+fn inspect_booru_provider_error(provider: &str) -> CoreError {
+    CoreError::new(
+        fvcore::ErrorCode::InvalidInput,
+        format!("inspect booru provider must be danbooru or gelbooru, got {provider}"),
+        false,
+    )
+}
+
+fn sanitize_inspect_json(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(storage) = value
+        .get_mut("storage")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        storage.remove("data");
+        storage.remove("cache");
+        storage.remove("downloads");
+        storage.remove("temp");
+    }
+    value
+}
+
+fn parse_following_visibility(value: &str) -> Result<PixivFollowingVisibility, CoreError> {
+    match value {
+        "public" => Ok(PixivFollowingVisibility::Public),
+        "private" => Ok(PixivFollowingVisibility::Private),
+        _ => Err(inspect_visibility_error("following")),
+    }
+}
+
+fn parse_bookmark_visibility(value: &str) -> Result<PixivBookmarkVisibility, CoreError> {
+    match value {
+        "public" => Ok(PixivBookmarkVisibility::Public),
+        "private" => Ok(PixivBookmarkVisibility::Private),
+        _ => Err(inspect_visibility_error("bookmarks")),
+    }
+}
+
+fn inspect_visibility_error(feed: &str) -> CoreError {
+    CoreError::new(
+        fvcore::ErrorCode::InvalidInput,
+        format!("Pixiv {feed} visibility must be public or private"),
+        false,
+    )
+}
+
+fn print_json<T: Serialize>(value: &T) -> Result<(), CoreError> {
+    let json = serde_json::to_string_pretty(value).map_err(|error| {
+        CoreError::new(
+            fvcore::ErrorCode::Internal,
+            format!("failed to encode inspect result: {error}"),
+            false,
+        )
+    })?;
+    println!("{json}");
+    Ok(())
 }
 
 async fn wait_for_shutdown(quit_in_seconds: Option<u64>) -> Result<bool, CoreError> {
@@ -609,8 +895,9 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::{
-        CONFIG_BACKUP_FILENAME, Cli, check_config, check_config_path, create_config,
-        create_config_directory, executable_directory, load_config_for_executable,
+        BooruInspectCommand, CONFIG_BACKUP_FILENAME, Cli, EhInspectCommand, InspectCommand,
+        PixivInspectCommand, check_config, check_config_path, create_config,
+        create_config_directory, executable_directory, inspect_query, load_config_for_executable,
         local_control_url, lock_config, recover_config_override, wait_for_shutdown_duration,
     };
     use clap::{CommandFactory, Parser};
@@ -697,7 +984,147 @@ mod tests {
         assert!(Cli::try_parse_from(["fvcore", "create-config", "."]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "create-config", "--override"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "create-config", ".", "--override"]).is_ok());
+        assert!(Cli::try_parse_from(["fvcore", "inspect", "runtime"]).is_ok());
+        assert!(Cli::try_parse_from(["fvcore", "inspect", "profile", "pixiv", "default"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "fvcore",
+                "inspect",
+                "booru",
+                "danbooru",
+                "search",
+                "landscape",
+                "--page",
+                "2",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["fvcore", "inspect", "booru", "gelbooru", "post", "42",]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["fvcore", "inspect", "eh", "home"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "fvcore",
+                "inspect",
+                "eh",
+                "--profile",
+                "private",
+                "search",
+                "風景",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "fvcore",
+                "inspect",
+                "pixiv",
+                "--profile",
+                "secondary",
+                "search",
+                "風景",
+                "--page",
+                "2",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "fvcore",
+                "inspect",
+                "pixiv",
+                "following",
+                "--visibility",
+                "private",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "fvcore",
+                "inspect",
+                "pixiv",
+                "bookmarks",
+                "--visibility",
+                "unknown",
+            ])
+            .is_ok()
+        );
         assert!(Cli::try_parse_from(["fvcore", "check"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn inspect_profile_returns_only_the_safe_session_snapshot() {
+        let temp = TempDir::new().unwrap();
+        let mut config = fvcore::CoreConfig::default();
+        config.storage.data = temp.path().join("Data");
+        config.storage.cache = temp.path().join("Cache");
+        config.storage.downloads = temp.path().join("Downloads");
+        config.storage.temp = temp.path().join("Temp");
+        let mut profile = fvcore::ProviderProfileConfig {
+            provider: "pixiv".to_owned(),
+            ..fvcore::ProviderProfileConfig::default()
+        };
+        profile.cookie = Some("PHPSESSID=42_inspect-secret".to_owned());
+        config.profiles.insert("pixiv".to_owned(), profile);
+        let runtime = fvcore::CoreBuilder::new(config).build().await.unwrap();
+        let value = inspect_query(
+            runtime.handle(),
+            &InspectCommand::Profile {
+                provider: "pixiv".to_owned(),
+                profile: "default".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(value["has_cookie"], true);
+        assert!(!value.to_string().contains("42_inspect-secret"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn inspect_runtime_redacts_server_storage_paths() {
+        let temp = TempDir::new().unwrap();
+        let mut config = fvcore::CoreConfig::default();
+        config.storage.data = temp.path().join("Data");
+        config.storage.cache = temp.path().join("Cache");
+        config.storage.downloads = temp.path().join("Downloads");
+        config.storage.temp = temp.path().join("Temp");
+        let runtime = fvcore::CoreBuilder::new(config).build().await.unwrap();
+        let value = inspect_query(runtime.handle(), &InspectCommand::Runtime)
+            .await
+            .unwrap();
+        let storage = value["storage"].as_object().unwrap();
+        assert!(!storage.contains_key("data"));
+        assert!(!storage.contains_key("cache"));
+        assert!(!storage.contains_key("downloads"));
+        assert!(!storage.contains_key("temp"));
+        assert!(
+            !value
+                .to_string()
+                .contains(&temp.path().display().to_string())
+        );
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn inspect_visibility_validation_is_stable() {
+        assert!(super::parse_following_visibility("public").is_ok());
+        assert!(super::parse_bookmark_visibility("private").is_ok());
+        let error = super::parse_bookmark_visibility("unknown").unwrap_err();
+        assert_eq!(error.code(), fvcore::ErrorCode::InvalidInput);
+        assert!(error.message().contains("public or private"));
+        let _ = PixivInspectCommand::Recommendations;
+        let _ = BooruInspectCommand::Post { id: 42 };
+        let _ = EhInspectCommand::Home;
+    }
+
+    #[test]
+    fn inspect_booru_rejects_unknown_provider() {
+        let error = super::inspect_booru_provider_error("unknown");
+        assert_eq!(error.code(), fvcore::ErrorCode::InvalidInput);
+        assert!(error.message().contains("danbooru or gelbooru"));
     }
 
     #[tokio::test]
@@ -722,6 +1149,44 @@ mod tests {
         assert!(root_help.contains("自动化测试并执行优雅关闭"));
         assert!(!root_help.contains("Usage:"));
         assert!(!root_help.contains("Options:"));
+
+        let inspect_command = root
+            .find_subcommand_mut("inspect")
+            .expect("inspect subcommand exists");
+        let inspect = inspect_command.render_help().to_string();
+        assert!(inspect.contains("只读诊断查询"));
+        assert!(inspect.contains("runtime"));
+        assert!(inspect.contains("pixiv"));
+        assert!(inspect.contains("booru"));
+        assert!(inspect.contains("eh"));
+        assert!(!inspect.contains("Usage:"));
+        assert!(!inspect.contains("Commands:"));
+        assert!(!inspect.contains("Options:"));
+
+        let pixiv = inspect_command
+            .find_subcommand_mut("pixiv")
+            .expect("Pixiv inspect subcommand exists")
+            .render_help()
+            .to_string();
+        assert!(pixiv.contains("用法:"));
+        assert!(pixiv.contains("命令:"));
+        assert!(pixiv.contains("选项:"));
+        assert!(pixiv.contains("bookmarks"));
+        assert!(!pixiv.contains("Usage:"));
+        assert!(!pixiv.contains("Commands:"));
+        assert!(!pixiv.contains("Options:"));
+
+        for name in ["booru", "eh"] {
+            let command = inspect_command
+                .find_subcommand_mut(name)
+                .expect("inspect provider subcommand exists")
+                .render_help()
+                .to_string();
+            assert!(command.contains("用法:"));
+            assert!(command.contains("命令:"));
+            assert!(!command.contains("Usage:"));
+            assert!(!command.contains("Commands:"));
+        }
 
         for name in ["run", "web"] {
             let command = root

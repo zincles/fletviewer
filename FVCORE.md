@@ -428,4 +428,5 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 | 已完成 | 本地画廊导出语义 | `LocalGalleryExport` 以 64 KiB 有界块流式读取原 ZIP，同时最多两个导出并持有共享画廊占用；嵌入 API、HTTP 附件下载和 WebUI 已贯通，descriptor 与响应不暴露服务器 Path |
 | 已完成 | 本地数据盘点与配置展示 | `redb` 登记区分已导入和扫描候选；全量 ZIP/sidecar 健康检查、四类 inventory、按 gallery ID 显式导入、JSON API 和 WebUI 已贯通；配置 snapshot/API 脱敏，调试 HTML 页按 DANGER 例外明文编辑 Provider secret，并可配置默认开启的 LAN 访问 |
 | 已完成 | 图像缓存监管基础 | 网络 body 按真实 chunk 申请全局在途预算；Cache snapshot、非阻塞内容审计、显式清理无效 blob/stale alias、alias schema v1/旧格式迁移、受管 staging 启动清理及 JSON/WebUI 已贯通 |
+| 进行中 | 只读 CLI 诊断 | `fvcore inspect` 已采用 provider 子命令结构：单次严格加载同级配置、创建 Runtime、调用已有 `CoreHandle` query、正常 shutdown 后 JSON stdout；Runtime/Profile/Pixiv、Danbooru/Gelbooru 搜索与详情、EH 主页与文本搜索已完成，Runtime snapshot 额外移除服务器存储路径。后续 EH 详情/缩略图、本地画廊。CLI 不复制业务，不含下载、删除、配置修改或 Archive 提交；不输出 secret、代理/签名 URL、服务器 Path 或当前 Pixiv 用户 ID。图片/Archive 不使用 JSON/base64，图片仅按需提供独立受限 stdout resource 流 |
 | 下一步 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 查询均支持 provider-scoped 收藏搜索；Pixiv 无游标推荐流、日/周/月排行、可选历史日期、登录前置的 public/private 关注分页及从同一会话安全推导当前用户身份的 public/private 收藏 offset 分页已贯通 Provider/Core/API/WebUI；继续补 Gelbooru-style/Moebooru 协议族 |

@@ -14,6 +14,7 @@
 - Flet 产品线后续重做主浏览体验的信息架构：阅读首页、搜索、详情页、查看器、下载/本地画廊之间保持连续动线；`fvcore` 已提供不暴露 Archive 路径的本地 ZIP 分页与单页 resource，后续前端只包装该公开语义。
 - Flet 画廊列表仍需补回自动加载下一页，并保留手动翻页、失败重试和当前页反馈；Rust WebUI 的 EH seek cursor 手动分页已经完成，不等同于 Flet 产品分页验收。
 - 存储可靠性完成后增加受限的“存储浏览器”页面：仅浏览 Data/Cache/Downloads/Temp 四域，支持路径、大小、mtime、JSON/文本预览、ZIP 文件列表、缓存/临时文件维护和导出诊断；不得允许路径逃逸，Android 外部文件继续通过 FilePicker/SAF 交换，Web 端明确展示的是服务器文件而非浏览器设备文件。
+- 已建立只读 `fvcore inspect` CLI 诊断面：固定 executable 同级配置，单次创建 Runtime、调用既有 `CoreHandle` query、JSON stdout、正常 shutdown；Runtime/Profile/Pixiv、Danbooru/Gelbooru 搜索与详情、EH 主页与文本搜索已覆盖，Runtime 输出额外移除服务器四域路径。后续覆盖 EH 详情/缩略图、本地画廊和受限 resource stdout 流。不得复制 Provider 业务、不得加入下载/删除/凭据修改/Archive 提交等可变命令，不得输出 Cookie、API secret、代理 URL、签名 URL、服务器 Path 或当前 Pixiv 用户 ID；二进制图片仅按需经独立受限 resource stdout 流输出，不混入 JSON。
 
 ## 当前产品与未来 Core
 
@@ -53,6 +54,7 @@
 | 已完成 | 本地数据盘点与配置 WebUI | inventory 分类已登记健康/损坏、未登记可导入、格式无效，检查全部 ZIP 页面与 sidecar；显式导入只收 gallery ID；当前生效配置 snapshot 和页面已脱敏 secret、代理值及 URL 凭据 |
 | 已完成 | 图像缓存监管基础 | 全局 chunk 级在途预算、Cache snapshot、非阻塞内容 MD5/shard/extension/magic 审计、显式维护无效 blob/stale alias、alias schema v1/旧格式迁移及受管 staging 启动清理已贯通 |
 | 进行中 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 的查询/翻页和 provider-scoped 收藏搜索已接入 redb schema v3、Core/API/WebUI；Pixiv 无游标推荐流、日/周/月排行、可选历史日期、登录前置的 public/private 关注分页及不泄漏当前用户 ID 的 public/private 收藏 offset 分页已贯通；后续补 Gelbooru-style/Moebooru 协议族及正式下载能力 |
+| 进行中 | 只读 CLI 诊断 | `inspect` 已复用 Runtime 公开 query 和 JSON-safe snapshot/result；Runtime/Profile/Pixiv、Danbooru/Gelbooru 搜索与详情、EH 主页与文本搜索均在正常 shutdown 后输出 JSON，Runtime 额外移除服务器路径；后续接入 EH 详情/缩略图、本地画廊和受限 resource stdout 流 |
 
 ## Core 独立化进度
 
