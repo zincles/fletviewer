@@ -3,8 +3,9 @@
 use crate::{
     ArchiveTaskSnapshot, BooruOriginalFetchRequest, CoreError, CoreEvent, CoreEventSubject,
     EhPageFetchRequest, ErrorCode, ErrorSnapshot, EventBatch, EventConfig, FakeOperationRequest,
-    FakeOutcome, ImageResourceDescriptor, OperationConfig, OperationId, OperationKind,
-    OperationSnapshot, OperationState, PixivPageFetchRequest, ResourceKey, RuntimeId,
+    FakeOutcome, ImageDownloadTaskSnapshot, ImageResourceDescriptor, OperationConfig, OperationId,
+    OperationKind, OperationSnapshot, OperationState, PixivPageFetchRequest, ResourceKey,
+    RuntimeId,
     image::{ContentMd5, ImageFetchSpec, ImageProgress, ImageService},
     provider::booru::BooruService,
     provider::eh::EhService,
@@ -32,6 +33,7 @@ pub(crate) enum OperationMessage {
         result: WorkerResult,
     },
     ArchiveTask(ArchiveTaskSnapshot),
+    ImageDownloadTask(ImageDownloadTaskSnapshot),
 }
 
 #[derive(Clone)]
@@ -117,6 +119,16 @@ impl EventHub {
             runtime_id,
             revision: task.revision,
             subject: CoreEventSubject::ArchiveTask { task },
+        };
+        self.push(event);
+    }
+
+    fn publish_image_download(&mut self, runtime_id: RuntimeId, task: ImageDownloadTaskSnapshot) {
+        let event = CoreEvent {
+            sequence: self.next_sequence,
+            runtime_id,
+            revision: task.revision,
+            subject: CoreEventSubject::ImageDownloadTask { task },
         };
         self.push(event);
     }
@@ -414,6 +426,10 @@ impl OperationService {
         self.events.publish_archive(self.runtime_id, task);
     }
 
+    pub(crate) fn image_download_event(&mut self, task: ImageDownloadTaskSnapshot) {
+        self.events.publish_image_download(self.runtime_id, task);
+    }
+
     pub(crate) fn events_after(&self, cursor: u64) -> EventBatch {
         self.events.batch_after(cursor)
     }
@@ -642,72 +658,13 @@ async fn run_booru_original(
     messages: mpsc::Sender<OperationMessage>,
 ) -> WorkerResult {
     let booru = BooruService::new(sessions);
-    let post = match request.profile.provider.as_str() {
-        "danbooru" => {
-            booru
-                .get_danbooru_post(
-                    &request.profile,
-                    request.post_id,
-                    cancellation.child_token(),
-                )
-                .await
-        }
-        "gelbooru" => {
-            booru
-                .get_gelbooru_post(
-                    &request.profile,
-                    request.post_id,
-                    cancellation.child_token(),
-                )
-                .await
-        }
-        "safebooru" | "rule34" | "tbib" | "xbooru" | "hypnohub" => {
-            booru
-                .get_gelbooru_xml_post(
-                    &request.profile,
-                    request.post_id,
-                    cancellation.child_token(),
-                )
-                .await
-        }
-        "yandere" | "konachan" | "konachan_net" | "lolibooru" | "behoimi" => {
-            booru
-                .get_moebooru_post(
-                    &request.profile,
-                    request.post_id,
-                    cancellation.child_token(),
-                )
-                .await
-        }
-        "e621" | "e926" => {
-            booru
-                .get_e621_post(
-                    &request.profile,
-                    request.post_id,
-                    cancellation.child_token(),
-                )
-                .await
-        }
-        "derpibooru" | "furbooru" => {
-            booru
-                .get_philomena_post(
-                    &request.profile,
-                    request.post_id,
-                    cancellation.child_token(),
-                )
-                .await
-        }
-        "paheal" => {
-            booru
-                .get_paheal_post(
-                    &request.profile,
-                    request.post_id,
-                    cancellation.child_token(),
-                )
-                .await
-        }
-        _ => unreachable!("validated before scheduling"),
-    };
+    let post = booru
+        .get_post(
+            &request.profile,
+            request.post_id,
+            cancellation.child_token(),
+        )
+        .await;
     let post = match post {
         Ok(post) => post,
         Err(error) => return worker_error(error),

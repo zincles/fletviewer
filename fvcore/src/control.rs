@@ -225,6 +225,10 @@ pub(crate) async fn start(
             post(start_booru_original_fetch),
         )
         .route(
+            "/api/v1/providers/{provider}/{profile}/posts/{post_id}/original/download",
+            post(start_booru_image_download),
+        )
+        .route(
             "/api/v1/providers/{provider}/{profile}/tags",
             get(booru_tag_suggestions),
         )
@@ -294,6 +298,10 @@ pub(crate) async fn start(
             post(start_eh_archive_download),
         )
         .route("/api/v1/archive-tasks", get(list_archive_tasks))
+        .route(
+            "/api/v1/image-download-tasks",
+            get(list_image_download_tasks),
+        )
         .route("/api/v1/local-galleries", get(list_local_galleries))
         .route(
             "/api/v1/local-gallery-inventory",
@@ -334,6 +342,14 @@ pub(crate) async fn start(
             post(cancel_archive_task),
         )
         .route("/api/v1/archive-tasks/{id}/retry", post(retry_archive_task))
+        .route(
+            "/api/v1/image-download-tasks/{id}",
+            get(get_image_download_task),
+        )
+        .route(
+            "/api/v1/image-download-tasks/{id}/cancel",
+            post(cancel_image_download_task),
+        )
         .route(
             "/api/v1/operations",
             get(list_operations).post(start_fake_operation),
@@ -564,6 +580,23 @@ async fn start_booru_original_fetch(
     }
 }
 
+async fn start_booru_image_download(
+    State(state): State<ControlState>,
+    Path((provider, profile, post_id)): Path<(String, String, u64)>,
+) -> Response {
+    match state
+        .core
+        .start_booru_image_download(crate::BooruImageDownloadRequest {
+            profile: crate::ProfileKey::new(provider, profile),
+            post_id,
+        })
+        .await
+    {
+        Ok(task) => with_security_headers((StatusCode::ACCEPTED, Json(task)).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
 async fn booru_tag_suggestions(
     State(state): State<ControlState>,
     Path((provider, profile)): Path<(String, String)>,
@@ -772,6 +805,10 @@ async fn start_eh_archive_download(
 
 async fn list_archive_tasks(State(state): State<ControlState>) -> Response {
     with_security_headers(Json(state.core.archive_tasks().await).into_response())
+}
+
+async fn list_image_download_tasks(State(state): State<ControlState>) -> Response {
+    with_security_headers(Json(state.core.image_download_tasks().await).into_response())
 }
 
 async fn list_local_galleries(State(state): State<ControlState>) -> Response {
@@ -1036,6 +1073,42 @@ fn invalid_archive_task_id() -> CoreError {
     )
 }
 
+async fn get_image_download_task(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_image_download_task_id()),
+    };
+    match state.core.image_download_task(id).await {
+        Ok(task) => with_security_headers(Json(task).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn cancel_image_download_task(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_image_download_task_id()),
+    };
+    match state.core.cancel_image_download_task(id).await {
+        Ok(task) => with_security_headers(Json(task).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+fn invalid_image_download_task_id() -> CoreError {
+    CoreError::new(
+        ErrorCode::InvalidInput,
+        "Image download task ID must be a valid UUID",
+        false,
+    )
+}
+
 fn invalid_local_gallery_id() -> CoreError {
     CoreError::new(
         ErrorCode::InvalidInput,
@@ -1216,6 +1289,7 @@ async fn events(State(state): State<ControlState>, Query(query): Query<EventQuer
                     let event_name = match &core_event.subject {
                         crate::CoreEventSubject::Operation { .. } => "operation",
                         crate::CoreEventSubject::ArchiveTask { .. } => "archive_task",
+                        crate::CoreEventSubject::ImageDownloadTask { .. } => "image_download_task",
                     };
                     let data = match serde_json::to_string(&core_event) {
                         Ok(data) => data,

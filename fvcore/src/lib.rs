@@ -10,6 +10,7 @@ mod error;
 mod gallery;
 mod id;
 mod image;
+mod image_download;
 mod operation;
 mod operation_service;
 mod provider;
@@ -37,6 +38,9 @@ pub use id::{OperationId, RuntimeId};
 pub use image::{
     ContentMd5, ImageCacheMaintenance, ImageCacheSemanticSnapshot, ImageCacheSnapshot,
     ImageResource, ImageResourceDescriptor, ResourceKey, ResourceSource,
+};
+pub use image_download::{
+    BooruImageDownloadRequest, ImageDownloadState, ImageDownloadTaskSnapshot,
 };
 pub use operation::{
     BooruOriginalFetchRequest, CoreEvent, CoreEventSubject, EhPageFetchRequest, ErrorSnapshot,

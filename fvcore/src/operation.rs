@@ -1,8 +1,8 @@
 //! Immutable operation and event contracts.
 
 use crate::{
-    ArchiveTaskSnapshot, EhGalleryRef, ErrorCode, ImageResourceDescriptor, OperationId, ProfileKey,
-    ResourceSource, RuntimeId,
+    ArchiveTaskSnapshot, EhGalleryRef, ErrorCode, ImageDownloadTaskSnapshot,
+    ImageResourceDescriptor, OperationId, ProfileKey, ResourceSource, RuntimeId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -202,6 +202,11 @@ pub enum CoreEventSubject {
     ArchiveTask {
         /// Complete immutable Archive task snapshot at this revision.
         task: ArchiveTaskSnapshot,
+    },
+    /// Persistent single-image download task transition.
+    ImageDownloadTask {
+        /// Complete immutable image download task snapshot at this revision.
+        task: ImageDownloadTaskSnapshot,
     },
 }
 

@@ -158,6 +158,28 @@ impl BooruService {
         Self { sessions }
     }
 
+    pub(crate) async fn get_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+        cancellation: CancellationToken,
+    ) -> Result<BooruPost, CoreError> {
+        match key.provider.as_str() {
+            "danbooru" => self.get_danbooru_post(key, post_id, cancellation).await,
+            "gelbooru" => self.get_gelbooru_post(key, post_id, cancellation).await,
+            "safebooru" | "rule34" | "tbib" | "xbooru" | "hypnohub" => {
+                self.get_gelbooru_xml_post(key, post_id, cancellation).await
+            }
+            "yandere" | "konachan" | "konachan_net" | "lolibooru" | "behoimi" => {
+                self.get_moebooru_post(key, post_id, cancellation).await
+            }
+            "e621" | "e926" => self.get_e621_post(key, post_id, cancellation).await,
+            "derpibooru" | "furbooru" => self.get_philomena_post(key, post_id, cancellation).await,
+            "paheal" => self.get_paheal_post(key, post_id, cancellation).await,
+            _ => Err(unsupported_booru_provider(key)),
+        }
+    }
+
     pub(crate) async fn search_danbooru(
         &self,
         key: &ProfileKey,

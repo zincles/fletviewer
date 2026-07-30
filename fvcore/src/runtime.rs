@@ -1,15 +1,16 @@
 //! Core Runtime lifecycle and embedded handle.
 
 use crate::{
-    ArchiveTaskSnapshot, BooruOriginalFetchRequest, ContentMd5, CoreConfig, CoreError,
-    CoreSnapshot, EhArchiveDownloadRequest, EhPageFetchRequest, ErrorCode, EventBatch,
-    EventSubscription, FakeOperationRequest, ImageResource, OperationId, OperationSnapshot,
-    PixivPageFetchRequest, ProfileKey, ProfileProbeSnapshot, ProfileSnapshot,
-    ProviderProfileConfig, RuntimeId, RuntimeState, StorageSnapshot,
+    ArchiveTaskSnapshot, BooruImageDownloadRequest, BooruOriginalFetchRequest, ContentMd5,
+    CoreConfig, CoreError, CoreSnapshot, EhArchiveDownloadRequest, EhPageFetchRequest, ErrorCode,
+    EventBatch, EventSubscription, FakeOperationRequest, ImageDownloadTaskSnapshot, ImageResource,
+    OperationId, OperationSnapshot, PixivPageFetchRequest, ProfileKey, ProfileProbeSnapshot,
+    ProfileSnapshot, ProviderProfileConfig, RuntimeId, RuntimeState, StorageSnapshot,
     archive::ArchiveService,
     control,
     gallery::GalleryService,
     image::ImageService,
+    image_download::ImageDownloadService,
     operation_service::{OperationCompletion, OperationMessage, OperationService},
     provider::booru::BooruService,
     provider::eh::EhService,
@@ -174,6 +175,14 @@ impl CoreBuilder {
         let actor_shutdown = shutdown.clone();
         let runtime_id = RuntimeId::new();
         let images = ImageService::new(self.config.images.clone(), cache_path, sessions.clone())?;
+        let image_downloads = ImageDownloadService::open(
+            downloads_path.clone(),
+            sessions.clone(),
+            images.clone(),
+            shutdown.child_token(),
+            message_tx.clone(),
+        )
+        .await?;
         let archives = ArchiveService::open(
             downloads_path.clone(),
             sessions.clone(),
@@ -223,6 +232,7 @@ impl CoreBuilder {
             shutdown_seconds,
             sessions,
             images,
+            image_downloads,
             archives,
             galleries,
             favorite_searches,
@@ -276,6 +286,7 @@ pub struct CoreHandle {
     shutdown_seconds: u64,
     sessions: Arc<SessionRegistry>,
     images: Arc<ImageService>,
+    image_downloads: Arc<ImageDownloadService>,
     archives: Arc<ArchiveService>,
     galleries: Arc<GalleryService>,
     favorite_searches: Arc<FavoriteSearchRegistry>,
@@ -445,6 +456,35 @@ impl CoreHandle {
         request: EhArchiveDownloadRequest,
     ) -> Result<ArchiveTaskSnapshot, CoreError> {
         self.archives.start(request).await
+    }
+
+    /// Creates and starts one persistent Booru original image download.
+    pub async fn start_booru_image_download(
+        &self,
+        request: BooruImageDownloadRequest,
+    ) -> Result<ImageDownloadTaskSnapshot, CoreError> {
+        self.image_downloads.start(request).await
+    }
+
+    /// Returns all persistent single-image download tasks in creation order.
+    pub async fn image_download_tasks(&self) -> Vec<ImageDownloadTaskSnapshot> {
+        self.image_downloads.list().await
+    }
+
+    /// Returns one persistent single-image download task.
+    pub async fn image_download_task(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<ImageDownloadTaskSnapshot, CoreError> {
+        self.image_downloads.get(id).await
+    }
+
+    /// Cancels one active single-image download subscription.
+    pub async fn cancel_image_download_task(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<ImageDownloadTaskSnapshot, CoreError> {
+        self.image_downloads.cancel(id).await
     }
 
     /// Returns all persistent EH Archive task snapshots in creation order.
@@ -1078,6 +1118,11 @@ impl CoreRuntime {
             timed_out = true;
         }
         let remaining = deadline.saturating_sub(started.elapsed());
+        if let Err(error) = self.handle.image_downloads.shutdown(remaining).await {
+            tracing::warn!(%error, "image download service did not stop cleanly");
+            timed_out = true;
+        }
+        let remaining = deadline.saturating_sub(started.elapsed());
         if let Err(error) = self.handle.images.shutdown(remaining).await {
             tracing::warn!(%error, "image service did not drain cleanly");
             timed_out = true;
@@ -1240,6 +1285,9 @@ async fn run_actor(
                         data.operations.complete(OperationCompletion { id, result });
                     }
                     OperationMessage::ArchiveTask(task) => data.operations.archive_event(task),
+                    OperationMessage::ImageDownloadTask(task) => {
+                        data.operations.image_download_event(task);
+                    }
                 }
             },
         }
@@ -1448,9 +1496,10 @@ fn config_io_error(action: &str, path: &std::path::Path, error: std::io::Error) 
 mod tests {
     use super::CoreBuilder;
     use crate::{
-        BooruOriginalFetchRequest, ContentMd5, CoreConfig, EhPageFetchRequest, ErrorCode,
-        EventConfig, FakeOperationRequest, OperationConfig, OperationState, PixivPageFetchRequest,
-        ProfileKey, ProviderProfileConfig, ResourceSource, RuntimeState, StorageConfig,
+        BooruImageDownloadRequest, BooruOriginalFetchRequest, ContentMd5, CoreConfig,
+        EhPageFetchRequest, ErrorCode, EventConfig, FakeOperationRequest, ImageDownloadState,
+        OperationConfig, OperationState, PixivPageFetchRequest, ProfileKey, ProviderProfileConfig,
+        ResourceSource, RuntimeState, StorageConfig,
     };
     use md5::{Digest, Md5};
     use std::{
@@ -1487,6 +1536,23 @@ mod tests {
             loop {
                 let snapshot = handle.operation(id).await.unwrap();
                 if snapshot.state.is_terminal() {
+                    return snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn wait_image_download(
+        handle: &super::CoreHandle,
+        id: uuid::Uuid,
+    ) -> crate::ImageDownloadTaskSnapshot {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = handle.image_download_task(id).await.unwrap();
+                if snapshot.state != ImageDownloadState::Running {
                     return snapshot;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -3700,6 +3766,135 @@ mod tests {
         assert_eq!(
             restarted_fetch.resource.unwrap().source,
             ResourceSource::Disk
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        restarted.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn booru_image_download_reuses_image_service_and_survives_restart() {
+        let image = Arc::new(test_jpeg());
+        let digest = md5_hex(&image);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let listen = image_provider(image.clone(), digest.clone(), requests.clone()).await;
+        let temp = TempDir::new().unwrap();
+        let mut core_config = config(&temp);
+        core_config
+            .profiles
+            .insert("danbooru".to_owned(), danbooru_profile(listen));
+        core_config.control.enabled = true;
+        core_config.control.listen = "127.0.0.1:0".parse().unwrap();
+        let runtime = CoreBuilder::new(core_config).build().await.unwrap();
+        let handle = runtime.handle();
+        let control_listen = runtime.control_listen().unwrap();
+        let request = BooruImageDownloadRequest {
+            profile: ProfileKey::new("danbooru", "default"),
+            post_id: 7,
+        };
+        let task = handle
+            .start_booru_image_download(request.clone())
+            .await
+            .unwrap();
+        let task = wait_image_download(&handle, task.id).await;
+        assert_eq!(task.state, ImageDownloadState::Completed);
+        assert_eq!(task.content_md5.as_deref(), Some(digest.as_str()));
+        assert_eq!(task.byte_length, Some(image.len() as u64));
+        let output = task.output.unwrap();
+        assert_eq!(output, format!("Images/danbooru/7-{digest}.jpg"));
+        assert_eq!(
+            std::fs::read(temp.path().join("Downloads").join(output)).unwrap(),
+            *image
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let events = handle.events_after(0).await.unwrap();
+                if events.events.iter().any(|event| {
+                    matches!(
+                        &event.subject,
+                        crate::CoreEventSubject::ImageDownloadTask { task: event_task }
+                            if event_task.id == task.id
+                                && event_task.state == ImageDownloadState::Completed
+                    )
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let repeated = handle.start_booru_image_download(request).await.unwrap();
+        let repeated = wait_image_download(&handle, repeated.id).await;
+        assert_eq!(repeated.state, ImageDownloadState::Completed);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let started = http_request(
+            control_listen,
+            b"POST /api/v1/providers/danbooru/default/posts/7/original/download HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(started.starts_with(b"HTTP/1.1 202 Accepted"));
+        let separator = started
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap();
+        let started_task: crate::ImageDownloadTaskSnapshot =
+            serde_json::from_slice(&started[separator + 4..]).unwrap();
+        let http_task = wait_image_download(&handle, started_task.id).await;
+        let queried = http_request(
+            control_listen,
+            format!(
+                "GET /api/v1/image-download-tasks/{} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                http_task.id
+            )
+            .as_bytes(),
+        )
+        .await;
+        assert!(queried.starts_with(b"HTTP/1.1 200 OK"));
+        assert!(!String::from_utf8_lossy(&queried).contains(temp.path().to_str().unwrap()));
+        runtime.shutdown().await.unwrap();
+
+        let task_path = temp
+            .path()
+            .join("Downloads/ImageTasks")
+            .join(task.id.to_string())
+            .join("task.json");
+        let mut persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&task_path).unwrap()).unwrap();
+        persisted["snapshot"]["state"] = serde_json::json!("running");
+        let previous_revision = persisted["snapshot"]["revision"].as_u64().unwrap();
+        std::fs::write(
+            &task_path,
+            format!("{}\n", serde_json::to_string_pretty(&persisted).unwrap()),
+        )
+        .unwrap();
+
+        let mut restart_config = config(&temp);
+        restart_config
+            .profiles
+            .insert("danbooru".to_owned(), danbooru_profile(listen));
+        let restarted = CoreBuilder::new(restart_config).build().await.unwrap();
+        let tasks = restarted.handle().image_download_tasks().await;
+        assert_eq!(tasks.len(), 3);
+        let recovered = tasks
+            .iter()
+            .find(|candidate| candidate.id == task.id)
+            .unwrap();
+        assert_eq!(recovered.state, ImageDownloadState::Failed);
+        assert_eq!(recovered.revision, previous_revision + 1);
+        assert!(
+            recovered
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Runtime stopped")
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|task| task.state == ImageDownloadState::Completed)
+                .count(),
+            2
         );
         assert_eq!(requests.load(Ordering::SeqCst), 1);
         restarted.shutdown().await.unwrap();
