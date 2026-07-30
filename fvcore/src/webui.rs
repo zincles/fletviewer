@@ -95,6 +95,15 @@ struct PixivFollowingQuery {
 }
 
 #[derive(Deserialize)]
+struct PixivBookmarksQuery {
+    profile: String,
+    #[serde(default = "default_pixiv_bookmark_visibility")]
+    visibility: crate::PixivBookmarkVisibility,
+    #[serde(default)]
+    offset: u32,
+}
+
+#[derive(Deserialize)]
 struct PixivFetchForm {
     profile: String,
     illust_id: String,
@@ -241,6 +250,7 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/pixiv/ranking", get(pixiv_ranking))
         .route("/ui/pixiv/recommendations", get(pixiv_recommendations))
         .route("/ui/pixiv/following", get(pixiv_following))
+        .route("/ui/pixiv/bookmarks", get(pixiv_bookmarks))
         .route("/ui/pixiv/fetch", post(start_pixiv_fetch))
         .route("/ui/eh", get(eh_home))
         .route("/ui/favorite-search", post(create_favorite_search))
@@ -379,7 +389,7 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
         .map(|profile| profile.key.profile.as_str())
         .unwrap_or("default");
     let pixiv_form = format!(
-        "<form method=\"get\" action=\"/ui/pixiv\"><label>会话名称<input name=\"profile\" value=\"{}\" required></label><label>作品 ID<input name=\"id\" inputmode=\"numeric\" required></label><button type=\"submit\">查看作品详情</button></form><form method=\"get\" action=\"/ui/pixiv/search\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"1\"><label>Pixiv 标签<input name=\"query\" required maxlength=\"500\"></label><button type=\"submit\">搜索 Pixiv</button></form><p><a href=\"{}\">浏览 Pixiv 推荐</a> · <a href=\"{}\">浏览 Pixiv 关注</a> · <a href=\"{}\">浏览 Pixiv 日榜</a></p>",
+        "<form method=\"get\" action=\"/ui/pixiv\"><label>会话名称<input name=\"profile\" value=\"{}\" required></label><label>作品 ID<input name=\"id\" inputmode=\"numeric\" required></label><button type=\"submit\">查看作品详情</button></form><form method=\"get\" action=\"/ui/pixiv/search\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"1\"><label>Pixiv 标签<input name=\"query\" required maxlength=\"500\"></label><button type=\"submit\">搜索 Pixiv</button></form><p><a href=\"{}\">浏览 Pixiv 推荐</a> · <a href=\"{}\">浏览 Pixiv 关注</a> · <a href=\"{}\">浏览 Pixiv 收藏</a> · <a href=\"{}\">浏览 Pixiv 日榜</a></p>",
         escape(pixiv_profile),
         escape(pixiv_profile),
         escape(&pixiv_recommendations_url(pixiv_profile)),
@@ -387,6 +397,11 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
             pixiv_profile,
             crate::PixivFollowingVisibility::Public,
             1,
+        )),
+        escape(&pixiv_bookmarks_url(
+            pixiv_profile,
+            crate::PixivBookmarkVisibility::Public,
+            0,
         )),
         escape(&pixiv_ranking_url(pixiv_profile, "day", "", 1)),
     );
@@ -2099,6 +2114,79 @@ async fn pixiv_following(
     )
 }
 
+async fn pixiv_bookmarks(
+    State(state): State<ControlState>,
+    Query(query): Query<PixivBookmarksQuery>,
+) -> Response {
+    let result = match state
+        .core
+        .pixiv_bookmarks(
+            &ProfileKey::new("pixiv", &query.profile),
+            query.visibility,
+            query.offset,
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => return error_page(&error),
+    };
+    let mut cards = String::new();
+    for item in &result.items {
+        let _ = write!(
+            cards,
+            "<article class=\"card\"><h2><a href=\"{}\">{}</a></h2><p>作品 {} · 作者 {} ({}) · {} 页 · R18 {}</p><p class=\"muted\">{}</p></article>",
+            escape(&pixiv_detail_url(&query.profile, &item.id)),
+            escape(&item.title),
+            escape(&item.id),
+            escape(&item.user.name),
+            escape(&item.user.id),
+            item.page_count,
+            item.x_restrict,
+            escape(&item.tags.join(" ")),
+        );
+    }
+    if cards.is_empty() {
+        cards.push_str("<p class=\"muted\">当前没有返回 Pixiv 收藏作品。</p>");
+    }
+    let next = result.next_offset.map_or_else(String::new, |offset| {
+        format!(
+            "<a href=\"{}\">下一页</a>",
+            escape(&pixiv_bookmarks_url(
+                &query.profile,
+                result.visibility,
+                offset,
+            ))
+        )
+    });
+    let previous = (result.offset > 0).then(|| {
+        format!(
+            "<a href=\"{}\">上一页</a>",
+            escape(&pixiv_bookmarks_url(
+                &query.profile,
+                result.visibility,
+                result.offset.saturating_sub(result.limit),
+            ))
+        )
+    });
+    html_page(
+        StatusCode::OK,
+        "Pixiv 收藏",
+        &format!(
+            "<h1>Pixiv 收藏</h1><p class=\"muted\">仅显示当前登录 Pixiv 用户的收藏，需要 profile 已加载登录 Cookie。</p><form method=\"get\" action=\"/ui/pixiv/bookmarks\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"offset\" value=\"0\"><label>范围<select name=\"visibility\"><option value=\"public\"{}>公开收藏</option><option value=\"private\"{}>私密收藏</option></select></label><button type=\"submit\">查看收藏</button></form><p>会话 {} · 代次 {} · 偏移 {} · 共 {} 个作品</p><p>{} {next}</p><div class=\"grid\">{cards}</div><p>{} {next}</p>",
+            escape(&query.profile),
+            selected(result.visibility == crate::PixivBookmarkVisibility::Public),
+            selected(result.visibility == crate::PixivBookmarkVisibility::Private),
+            escape(&result.profile),
+            result.generation,
+            result.offset,
+            result.total,
+            previous.as_deref().unwrap_or(""),
+            previous.as_deref().unwrap_or(""),
+        ),
+        None,
+    )
+}
+
 async fn start_pixiv_fetch(
     State(state): State<ControlState>,
     Form(form): Form<PixivFetchForm>,
@@ -2530,6 +2618,23 @@ fn pixiv_following_url(
     format!("/ui/pixiv/following?{query}")
 }
 
+fn pixiv_bookmarks_url(
+    profile: &str,
+    visibility: crate::PixivBookmarkVisibility,
+    offset: u32,
+) -> String {
+    let visibility = match visibility {
+        crate::PixivBookmarkVisibility::Public => "public",
+        crate::PixivBookmarkVisibility::Private => "private",
+    };
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("profile", profile)
+        .append_pair("visibility", visibility)
+        .append_pair("offset", &offset.to_string())
+        .finish();
+    format!("/ui/pixiv/bookmarks?{query}")
+}
+
 fn pixiv_detail_url(profile: &str, id: &str) -> String {
     let query = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("profile", profile)
@@ -2548,6 +2653,10 @@ fn default_pixiv_ranking_mode() -> String {
 
 const fn default_pixiv_following_visibility() -> crate::PixivFollowingVisibility {
     crate::PixivFollowingVisibility::Public
+}
+
+const fn default_pixiv_bookmark_visibility() -> crate::PixivBookmarkVisibility {
+    crate::PixivBookmarkVisibility::Public
 }
 
 const fn selected(value: bool) -> &'static str {

@@ -354,14 +354,37 @@ impl SessionRegistry {
     ) -> Result<NetworkResponse, CoreError> {
         let session = self.session(key)?;
         if session.cookie.is_none() {
-            return Err(CoreError::new(
-                ErrorCode::AuthenticationRequired,
-                "Pixiv requires a logged-in browser Cookie for this request",
-                false,
-            ));
+            return Err(pixiv_authentication_required());
         }
         session
             .get_pixiv_ajax(relative_path, query, referer_path, cancellation)
+            .await
+    }
+
+    pub(crate) async fn get_current_user_pixiv_ajax<F>(
+        &self,
+        key: &ProfileKey,
+        query: &[(String, String)],
+        cancellation: CancellationToken,
+        paths: F,
+    ) -> Result<NetworkResponse, CoreError>
+    where
+        F: FnOnce(&str) -> (String, String),
+    {
+        let session = self.session(key)?;
+        let Some(cookie) = &session.cookie else {
+            return Err(pixiv_authentication_required());
+        };
+        let Some(user_id) = pixiv_user_id(cookie.expose_secret()) else {
+            return Err(CoreError::new(
+                ErrorCode::AuthenticationRequired,
+                "Pixiv Cookie does not contain a usable logged-in user ID",
+                false,
+            ));
+        };
+        let (relative_path, referer_path) = paths(user_id);
+        session
+            .get_pixiv_ajax(&relative_path, query, &referer_path, cancellation)
             .await
     }
 
@@ -412,6 +435,14 @@ impl SessionRegistry {
             )
         })
     }
+}
+
+fn pixiv_authentication_required() -> CoreError {
+    CoreError::new(
+        ErrorCode::AuthenticationRequired,
+        "Pixiv requires a logged-in browser Cookie for this request",
+        false,
+    )
 }
 
 impl SessionGeneration {

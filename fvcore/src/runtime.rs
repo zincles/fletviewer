@@ -409,6 +409,18 @@ impl CoreHandle {
             .await
     }
 
+    /// Returns one authenticated current-user Pixiv bookmark slice.
+    pub async fn pixiv_bookmarks(
+        &self,
+        key: &ProfileKey,
+        visibility: crate::PixivBookmarkVisibility,
+        offset: u32,
+    ) -> Result<crate::PixivBookmarksResult, CoreError> {
+        crate::provider::pixiv::PixivService::new(self.sessions.clone())
+            .bookmarks(key, visibility, offset, self.shutdown.child_token())
+            .await
+    }
+
     /// Starts a cancellable original image fetch for one Pixiv illustration page.
     pub async fn start_pixiv_page_fetch(
         &self,
@@ -1790,6 +1802,51 @@ mod tests {
                                 }]},
                                 "page": {"isLastPage": false}
                             }
+                        }))
+                    },
+                ),
+            )
+            .route(
+                "/ajax/user/{user_id}/illusts/bookmarks",
+                axum::routing::get(
+                    |axum::extract::Path(user_id): axum::extract::Path<String>,
+                     axum::extract::Query(params): axum::extract::Query<
+                        std::collections::HashMap<String, String>,
+                    >,
+                     headers: axum::http::HeaderMap| async move {
+                        assert_eq!(user_id, "42");
+                        assert_eq!(params.get("tag").map(String::as_str), Some(""));
+                        assert_eq!(params.get("offset").map(String::as_str), Some("0"));
+                        assert_eq!(params.get("limit").map(String::as_str), Some("48"));
+                        assert_eq!(params.get("rest").map(String::as_str), Some("show"));
+                        assert_eq!(params.get("lang").map(String::as_str), Some("zh"));
+                        assert_eq!(
+                            headers
+                                .get("x-user-id")
+                                .and_then(|value| value.to_str().ok()),
+                            Some("42")
+                        );
+                        assert!(
+                            headers
+                                .get(axum::http::header::REFERER)
+                                .and_then(|value| value.to_str().ok())
+                                .is_some_and(
+                                    |value| value.ends_with("/users/42/bookmarks/artworks")
+                                )
+                        );
+                        axum::Json(serde_json::json!({
+                            "error": false,
+                            "message": "",
+                            "body": {"works": [{
+                                "id": "77889900",
+                                "title": "Bookmark Fixture",
+                                "userId": "112244",
+                                "userName": "Bookmark Artist",
+                                "pageCount": 2,
+                                "xRestrict": 0,
+                                "url": "https://i.pximg.net/bookmark.jpg",
+                                "tags": ["saved", "illustration"]
+                            }], "total": 49}
                         }))
                     },
                 ),
@@ -3376,6 +3433,24 @@ mod tests {
         assert!(following_api.contains("\"id\":\"44332211\""));
         assert!(following_api.contains("\"next_page\":2"));
         assert!(!following_api.contains("PHPSESSID"));
+        assert!(!following_api.contains("\"42\""));
+        let bookmarks_api = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/providers/pixiv/default/bookmarks?visibility=public&offset=0 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(bookmarks_api.starts_with("HTTP/1.1 200 OK"));
+        assert!(bookmarks_api.contains("\"visibility\":\"public\""));
+        assert!(bookmarks_api.contains("\"offset\":0"));
+        assert!(bookmarks_api.contains("\"limit\":48"));
+        assert!(bookmarks_api.contains("\"total\":49"));
+        assert!(bookmarks_api.contains("\"next_offset\":48"));
+        assert!(bookmarks_api.contains("\"id\":\"77889900\""));
+        assert!(!bookmarks_api.contains("PHPSESSID"));
+        assert!(!bookmarks_api.contains("\"42\""));
         let favorite = runtime
             .handle()
             .create_favorite_search(
@@ -3447,6 +3522,22 @@ mod tests {
         assert!(following_webui.contains("page=2"));
         assert!(!following_webui.contains("PHPSESSID"));
         assert!(!following_webui.contains("<img"));
+        let bookmarks_webui = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/pixiv/bookmarks?profile=default&visibility=public&offset=0 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(bookmarks_webui.starts_with("HTTP/1.1 200 OK"));
+        assert!(bookmarks_webui.contains("Pixiv 收藏"));
+        assert!(bookmarks_webui.contains("Bookmark Fixture"));
+        assert!(bookmarks_webui.contains("id=77889900"));
+        assert!(bookmarks_webui.contains("offset=48"));
+        assert!(!bookmarks_webui.contains("PHPSESSID"));
+        assert!(!bookmarks_webui.contains("users/42"));
+        assert!(!bookmarks_webui.contains("<img"));
         runtime.shutdown().await.unwrap();
     }
 
@@ -3487,6 +3578,17 @@ mod tests {
         assert!(response.contains("\"code\":\"authentication_required\""));
         assert!(response.contains("logged-in browser Cookie"));
         assert!(!response.contains("42_fixture"));
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        let bookmarks_response = String::from_utf8(
+            http_request(
+                runtime.control_listen().unwrap(),
+                b"GET /api/v1/providers/pixiv/default/bookmarks?visibility=public&offset=0 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(bookmarks_response.starts_with("HTTP/1.1 401 Unauthorized"));
+        assert!(bookmarks_response.contains("\"code\":\"authentication_required\""));
         assert_eq!(requests.load(Ordering::SeqCst), 0);
         runtime.shutdown().await.unwrap();
     }

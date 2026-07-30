@@ -1,0 +1,19 @@
+{
+  "error": false,
+  "message": "",
+  "body": {
+    "works": [
+      {
+        "id": "77889900",
+        "title": "Bookmark Fixture",
+        "userId": "112244",
+        "userName": "Bookmark Artist",
+        "pageCount": 2,
+        "xRestrict": 0,
+        "url": "https://i.pximg.net/c/250x250_80_a2/img-master/bookmark.jpg",
+        "tags": ["saved", "illustration"]
+      }
+    ],
+    "total": "49"
+  }
+}

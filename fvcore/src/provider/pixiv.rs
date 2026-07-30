@@ -141,6 +141,37 @@ pub struct PixivFollowingResult {
     pub items: Vec<PixivSearchItem>,
 }
 
+/// Which authenticated Pixiv bookmark collection to read.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PixivBookmarkVisibility {
+    /// Public bookmarks visible to the signed-in user.
+    Public,
+    /// Private bookmarks visible only to the signed-in user.
+    Private,
+}
+
+/// One bounded slice of the authenticated current-user Pixiv bookmarks.
+#[derive(Clone, Debug, Serialize)]
+pub struct PixivBookmarksResult {
+    /// Profile that executed the request.
+    pub profile: String,
+    /// Immutable authenticated session generation used for the response body.
+    pub generation: u64,
+    /// Requested public or private bookmark collection.
+    pub visibility: PixivBookmarkVisibility,
+    /// Zero-based result offset.
+    pub offset: u32,
+    /// Fixed number of results requested per slice.
+    pub limit: u32,
+    /// Total bookmarked works reported by Pixiv.
+    pub total: u32,
+    /// Next offset when more results exist.
+    pub next_offset: Option<u32>,
+    /// Artwork summaries in Provider order.
+    pub items: Vec<PixivSearchItem>,
+}
+
 /// One Pixiv artwork summary returned by the ranking feed.
 #[derive(Clone, Debug, Serialize)]
 pub struct PixivRankingItem {
@@ -416,6 +447,65 @@ impl PixivService {
             items,
         })
     }
+
+    pub(crate) async fn bookmarks(
+        &self,
+        key: &ProfileKey,
+        visibility: PixivBookmarkVisibility,
+        offset: u32,
+        cancellation: CancellationToken,
+    ) -> Result<PixivBookmarksResult, CoreError> {
+        ensure_pixiv_offset(key, offset, "bookmarks")?;
+        let rest = match visibility {
+            PixivBookmarkVisibility::Public => "show",
+            PixivBookmarkVisibility::Private => "hide",
+        };
+        const LIMIT: u32 = 48;
+        let response = self
+            .sessions
+            .get_current_user_pixiv_ajax(
+                key,
+                &[
+                    ("tag".to_owned(), String::new()),
+                    ("offset".to_owned(), offset.to_string()),
+                    ("limit".to_owned(), LIMIT.to_string()),
+                    ("rest".to_owned(), rest.to_owned()),
+                    ("lang".to_owned(), "zh".to_owned()),
+                ],
+                cancellation,
+                |user_id| {
+                    (
+                        format!("ajax/user/{user_id}/illusts/bookmarks"),
+                        format!("users/{user_id}/bookmarks/artworks"),
+                    )
+                },
+            )
+            .await?;
+        let generation = response.generation;
+        let result: AjaxResponse<BookmarksBody> = parse_ajax(&response.body)?;
+        let body = result
+            .body
+            .ok_or_else(|| unexpected("Pixiv bookmarks response has no body"))?;
+        let items = body
+            .works
+            .into_iter()
+            .filter(|item| !item.id.is_empty())
+            .map(PixivSearchItem::from)
+            .collect::<Vec<_>>();
+        let next_offset = offset
+            .checked_add(LIMIT)
+            .filter(|next| !items.is_empty() && *next < body.total);
+        Ok(PixivBookmarksResult {
+            profile: key.profile.clone(),
+            generation,
+            visibility,
+            offset,
+            limit: LIMIT,
+            total: body.total,
+            next_offset,
+            items,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -439,6 +529,14 @@ struct FollowingBody {
 #[serde(rename_all = "camelCase")]
 struct FollowingPage {
     is_last_page: bool,
+}
+
+#[derive(Deserialize)]
+struct BookmarksBody {
+    #[serde(default)]
+    works: Vec<SearchItemBody>,
+    #[serde(default, deserialize_with = "u32_from_any")]
+    total: u32,
 }
 
 #[derive(Deserialize)]
@@ -729,6 +827,18 @@ fn ensure_pixiv_page(key: &ProfileKey, page: u32, feed: &str) -> Result<(), Core
     Ok(())
 }
 
+fn ensure_pixiv_offset(key: &ProfileKey, offset: u32, feed: &str) -> Result<(), CoreError> {
+    ensure_pixiv_profile(key)?;
+    if offset > 48_000 {
+        return Err(CoreError::new(
+            ErrorCode::InvalidInput,
+            format!("Pixiv {feed} offset must not exceed 48000"),
+            false,
+        ));
+    }
+    Ok(())
+}
+
 fn ensure_pixiv_search(key: &ProfileKey, query: &str, page: u32) -> Result<(), CoreError> {
     if key.provider != "pixiv"
         || query.trim().is_empty()
@@ -844,7 +954,7 @@ fn unexpected(message: impl Into<String>) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
-        DetailBody, DiscoveryBody, FollowingBody, PageBody, RankingBody, SearchBody,
+        BookmarksBody, DetailBody, DiscoveryBody, FollowingBody, PageBody, RankingBody, SearchBody,
         encode_path_segment, map_illust, parse_ajax,
     };
 
@@ -932,5 +1042,16 @@ mod tests {
         );
         assert_eq!(item.id, "44332211");
         assert_eq!(item.title, "Following Fixture");
+    }
+
+    #[test]
+    fn parses_bookmarks_fixture_and_total() {
+        let bookmarks: super::AjaxResponse<BookmarksBody> =
+            parse_ajax(include_bytes!("../../tests/fixtures/pixiv/bookmarks.json")).unwrap();
+        let body = bookmarks.body.unwrap();
+        assert_eq!(body.total, 49);
+        let item = super::PixivSearchItem::from(body.works.into_iter().next().unwrap());
+        assert_eq!(item.id, "77889900");
+        assert_eq!(item.title, "Bookmark Fixture");
     }
 }

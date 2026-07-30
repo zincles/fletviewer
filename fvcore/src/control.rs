@@ -78,6 +78,22 @@ struct PixivFollowingQuery {
     page: u32,
 }
 
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PixivBookmarksQuery {
+    visibility: crate::PixivBookmarkVisibility,
+    offset: u32,
+}
+
+impl Default for PixivBookmarksQuery {
+    fn default() -> Self {
+        Self {
+            visibility: crate::PixivBookmarkVisibility::Public,
+            offset: 0,
+        }
+    }
+}
+
 impl Default for PixivFollowingQuery {
     fn default() -> Self {
         Self {
@@ -208,6 +224,10 @@ pub(crate) async fn start(
         .route(
             "/api/v1/providers/pixiv/{profile}/following",
             get(pixiv_following),
+        )
+        .route(
+            "/api/v1/providers/pixiv/{profile}/bookmarks",
+            get(pixiv_bookmarks),
         )
         .route(
             "/api/v1/providers/pixiv/{profile}/illusts/{illust_id}/pages/{page}/fetch",
@@ -521,6 +541,22 @@ async fn pixiv_following(
     match state
         .core
         .pixiv_following(&key, query.visibility, query.page)
+        .await
+    {
+        Ok(result) => with_security_headers(Json(result).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn pixiv_bookmarks(
+    State(state): State<ControlState>,
+    Path(profile): Path<String>,
+    Query(query): Query<PixivBookmarksQuery>,
+) -> Response {
+    let key = crate::ProfileKey::new("pixiv", profile);
+    match state
+        .core
+        .pixiv_bookmarks(&key, query.visibility, query.offset)
         .await
     {
         Ok(result) => with_security_headers(Json(result).into_response()),

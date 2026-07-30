@@ -428,4 +428,4 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 | 已完成 | 本地画廊导出语义 | `LocalGalleryExport` 以 64 KiB 有界块流式读取原 ZIP，同时最多两个导出并持有共享画廊占用；嵌入 API、HTTP 附件下载和 WebUI 已贯通，descriptor 与响应不暴露服务器 Path |
 | 已完成 | 本地数据盘点与配置展示 | `redb` 登记区分已导入和扫描候选；全量 ZIP/sidecar 健康检查、四类 inventory、按 gallery ID 显式导入、JSON API 和 WebUI 已贯通；配置 snapshot/API 脱敏，调试 HTML 页按 DANGER 例外明文编辑 Provider secret，并可配置默认开启的 LAN 访问 |
 | 已完成 | 图像缓存监管基础 | 网络 body 按真实 chunk 申请全局在途预算；Cache snapshot、非阻塞内容审计、显式清理无效 blob/stale alias、alias schema v1/旧格式迁移、受管 staging 启动清理及 JSON/WebUI 已贯通 |
-| 下一步 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 查询均支持 provider-scoped 收藏搜索；Pixiv 无游标推荐流、日/周/月排行、可选历史日期及登录前置的 public/private 关注分页已贯通 Provider/Core/API/WebUI；继续补从同一会话安全推导用户身份的 Pixiv 收藏，再补更多 Booru 协议族 |
+| 下一步 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 查询均支持 provider-scoped 收藏搜索；Pixiv 无游标推荐流、日/周/月排行、可选历史日期、登录前置的 public/private 关注分页及从同一会话安全推导当前用户身份的 public/private 收藏 offset 分页已贯通 Provider/Core/API/WebUI；继续补 Gelbooru-style/Moebooru 协议族 |

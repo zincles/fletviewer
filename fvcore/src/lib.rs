@@ -50,8 +50,9 @@ pub use provider::eh::{
     EhImageResolution, EhPageCursor, EhPageDirection, EhThumbnail, EhThumbnailPage,
 };
 pub use provider::pixiv::{
-    PixivFollowingResult, PixivFollowingVisibility, PixivIllust, PixivPage, PixivRankingItem,
-    PixivRankingResult, PixivRecommendationResult, PixivSearchItem, PixivSearchResult, PixivUser,
+    PixivBookmarkVisibility, PixivBookmarksResult, PixivFollowingResult, PixivFollowingVisibility,
+    PixivIllust, PixivPage, PixivRankingItem, PixivRankingResult, PixivRecommendationResult,
+    PixivSearchItem, PixivSearchResult, PixivUser,
 };
 pub use runtime::{CoreBuilder, CoreHandle, CoreRuntime};
 pub use session::{ProfileKey, ProfileProbeSnapshot, ProfileSnapshot};
