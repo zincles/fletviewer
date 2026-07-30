@@ -5,6 +5,7 @@ use crate::{
     image::{ImageFetchSpec, ImageService},
     operation_service::OperationMessage,
     provider::booru::BooruService,
+    provider::pixiv::PixivService,
     session::SessionRegistry,
 };
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,29 @@ pub struct BooruImageDownloadRequest {
     pub post_id: u64,
 }
 
+/// Request for one durable Pixiv original page download.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PixivImageDownloadRequest {
+    /// Configured Pixiv profile.
+    pub profile: ProfileKey,
+    /// Pixiv illustration identifier.
+    pub illust_id: String,
+    /// Zero-based page index.
+    pub page: u32,
+}
+
+/// Provider resource represented by one persistent image download task.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageDownloadKind {
+    /// One Booru post original.
+    #[default]
+    BooruOriginal,
+    /// One Pixiv illustration original page.
+    PixivOriginal,
+}
+
 /// Public immutable image download task state without server absolute paths.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ImageDownloadTaskSnapshot {
@@ -48,10 +72,19 @@ pub struct ImageDownloadTaskSnapshot {
     pub state: ImageDownloadState,
     /// Monotonic task revision.
     pub revision: u64,
+    /// Provider resource kind.
+    #[serde(default)]
+    pub kind: ImageDownloadKind,
     /// Provider profile used by the task.
     pub profile: ProfileKey,
-    /// Provider post identifier.
-    pub post_id: u64,
+    /// Provider post identifier for a Booru task.
+    pub post_id: Option<u64>,
+    /// Illustration identifier for a Pixiv task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub illust_id: Option<String>,
+    /// Zero-based illustration page for a Pixiv task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
     /// Downloaded immutable byte count after completion.
     pub byte_length: Option<u64>,
     /// Verified real-content MD5 after completion.
@@ -141,10 +174,10 @@ impl ImageDownloadService {
         self: &Arc<Self>,
         request: BooruImageDownloadRequest,
     ) -> Result<ImageDownloadTaskSnapshot, CoreError> {
-        if request.post_id == 0 {
+        if request.post_id == 0 || request.profile.provider == "pixiv" {
             return Err(CoreError::new(
                 ErrorCode::InvalidInput,
-                "Booru image download post ID must be greater than zero",
+                "Booru profile and post ID greater than zero are required",
                 false,
             ));
         }
@@ -155,8 +188,11 @@ impl ImageDownloadService {
                 id,
                 state: ImageDownloadState::Running,
                 revision: 1,
+                kind: ImageDownloadKind::BooruOriginal,
                 profile: request.profile,
-                post_id: request.post_id,
+                post_id: Some(request.post_id),
+                illust_id: None,
+                page: None,
                 byte_length: None,
                 content_md5: None,
                 output: None,
@@ -165,6 +201,51 @@ impl ImageDownloadService {
                 updated_at: now,
             },
         };
+        self.start_task(task).await
+    }
+
+    pub(crate) async fn start_pixiv(
+        self: &Arc<Self>,
+        request: PixivImageDownloadRequest,
+    ) -> Result<ImageDownloadTaskSnapshot, CoreError> {
+        if request.profile.provider != "pixiv"
+            || request.illust_id.is_empty()
+            || !request.illust_id.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Pixiv profile and numeric illustration ID are required",
+                false,
+            ));
+        }
+        let id = Uuid::now_v7();
+        let now = OffsetDateTime::now_utc();
+        let task = PersistedImageDownloadTask {
+            snapshot: ImageDownloadTaskSnapshot {
+                id,
+                state: ImageDownloadState::Running,
+                revision: 1,
+                kind: ImageDownloadKind::PixivOriginal,
+                profile: request.profile,
+                post_id: None,
+                illust_id: Some(request.illust_id),
+                page: Some(request.page),
+                byte_length: None,
+                content_md5: None,
+                output: None,
+                error: None,
+                created_at: now,
+                updated_at: now,
+            },
+        };
+        self.start_task(task).await
+    }
+
+    async fn start_task(
+        self: &Arc<Self>,
+        task: PersistedImageDownloadTask,
+    ) -> Result<ImageDownloadTaskSnapshot, CoreError> {
+        let id = task.snapshot.id;
         tokio::fs::create_dir_all(self.tasks_root.join(id.to_string()))
             .await
             .map_err(|error| io_error("create image task", &self.tasks_root, error))?;
@@ -292,32 +373,71 @@ impl ImageDownloadService {
         task: &ImageDownloadTaskSnapshot,
         cancellation: CancellationToken,
     ) -> Result<(String, crate::ImageResource), CoreError> {
-        let post = BooruService::new(self.sessions.clone())
-            .get_post(&task.profile, task.post_id, cancellation.child_token())
-            .await?;
-        let url = post.original.url.ok_or_else(|| {
-            CoreError::new(
-                ErrorCode::UnexpectedResponse,
-                "Booru post has no original image URL",
-                false,
-            )
-        })?;
-        let expected_md5 = post
-            .original_md5
-            .as_deref()
-            .map(ContentMd5::from_str)
-            .transpose()?;
-        let resource_key = expected_md5
-            .is_none()
-            .then(|| {
-                ResourceKey::new(
-                    &task.profile.provider,
-                    task.post_id.to_string(),
-                    0,
-                    "original",
+        let (url, expected_md5, resource_key, expected_bytes, referer, stem) = match task.kind {
+            ImageDownloadKind::BooruOriginal => {
+                let post_id = task
+                    .post_id
+                    .ok_or_else(|| invalid_task("missing Booru post ID"))?;
+                let post = BooruService::new(self.sessions.clone())
+                    .get_post(&task.profile, post_id, cancellation.child_token())
+                    .await?;
+                let url = post.original.url.ok_or_else(|| {
+                    CoreError::new(
+                        ErrorCode::UnexpectedResponse,
+                        "Booru post has no original image URL",
+                        false,
+                    )
+                })?;
+                let expected_md5 = post
+                    .original_md5
+                    .as_deref()
+                    .map(ContentMd5::from_str)
+                    .transpose()?;
+                let resource_key = expected_md5
+                    .is_none()
+                    .then(|| {
+                        ResourceKey::new(&task.profile.provider, post_id.to_string(), 0, "original")
+                    })
+                    .transpose()?;
+                (
+                    url,
+                    expected_md5,
+                    resource_key,
+                    post.original.byte_length,
+                    Some(post.page_url),
+                    post_id.to_string(),
                 )
-            })
-            .transpose()?;
+            }
+            ImageDownloadKind::PixivOriginal => {
+                let illust_id = task
+                    .illust_id
+                    .as_deref()
+                    .ok_or_else(|| invalid_task("missing Pixiv illustration ID"))?;
+                let page_index = task
+                    .page
+                    .ok_or_else(|| invalid_task("missing Pixiv page index"))?;
+                let illust = PixivService::new(self.sessions.clone())
+                    .illust(&task.profile, illust_id, cancellation.child_token())
+                    .await?;
+                let page = illust.pages.get(page_index as usize).ok_or_else(|| {
+                    CoreError::new(
+                        ErrorCode::InvalidInput,
+                        format!("Pixiv page {page_index} is outside the illustration"),
+                        false,
+                    )
+                })?;
+                (
+                    page.original_url.clone(),
+                    None,
+                    Some(ResourceKey::new(
+                        "pixiv", illust_id, page_index, "original",
+                    )?),
+                    None,
+                    Some(illust.page_url),
+                    format!("{illust_id}-p{page_index}"),
+                )
+            }
+        };
         let resource = self
             .images
             .fetch(
@@ -326,8 +446,8 @@ impl ImageDownloadService {
                     url,
                     expected_md5,
                     resource_key,
-                    expected_bytes: post.original.byte_length,
-                    referer: Some(post.page_url),
+                    expected_bytes,
+                    referer,
                 },
                 cancellation,
                 |_| {},
@@ -339,7 +459,7 @@ impl ImageDownloadService {
             .map_err(|error| io_error("create Provider image directory", &provider_root, error))?;
         let filename = format!(
             "{}-{}.{}",
-            task.post_id,
+            stem,
             resource.descriptor().content_md5,
             resource.descriptor().extension
         );
@@ -404,6 +524,14 @@ fn io_error(action: &str, path: &std::path::Path, error: std::io::Error) -> Core
     CoreError::new(
         ErrorCode::Io,
         format!("failed to {action} {}: {error}", path.display()),
+        false,
+    )
+}
+
+fn invalid_task(message: &str) -> CoreError {
+    CoreError::new(
+        ErrorCode::Internal,
+        format!("invalid image task: {message}"),
         false,
     )
 }

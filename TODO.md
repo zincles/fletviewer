@@ -53,7 +53,7 @@
 | 已完成 | 本地画廊导出语义 | `LocalGalleryExport` 固定 64 KiB 有界块、最多两个并发导出并持有共享画廊占用；嵌入 API、HTTP 附件与 WebUI 复用同一流，公开 descriptor 不含服务器 Path，平台嵌入者负责目标文件选择与写入 |
 | 已完成 | 本地数据盘点与配置 WebUI | inventory 分类已登记健康/损坏、未登记可导入、格式无效，检查全部 ZIP 页面与 sidecar；显式导入只收 gallery ID；当前生效配置 snapshot 和页面已脱敏 secret、代理值及 URL 凭据 |
 | 已完成 | 图像缓存监管基础 | 全局 chunk 级在途预算、Cache snapshot、非阻塞内容 MD5/shard/extension/magic 审计、显式维护无效 blob/stale alias、alias schema v1/旧格式迁移及受管 staging 启动清理已贯通 |
-| 进行中 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 的查询/翻页和 provider-scoped 收藏搜索已接入 redb schema v3、Core/API/WebUI；Python 已绑定的 17 个 Booru 均已贯通搜索/详情/original fetch 和复用 `ImageService` 的持久 original 单图下载，前 12 个支持标签补全；有 MD5 时校验摘要，无 MD5 的 Philomena/Paheal 使用稳定 `ResourceKey` alias 并在重启后从内容缓存命中；下一步实现 Pixiv 指定页持久下载 |
+| 进行中 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 的查询/翻页和 provider-scoped 收藏搜索已接入 redb schema v3、Core/API/WebUI；Python 已绑定的 17 个 Booru 均已贯通搜索/详情/original fetch，Booru original 与 Pixiv 指定页均已支持复用 `ImageService` 的持久单图下载；有 MD5 时校验摘要，无 MD5 时使用稳定 `ResourceKey` alias 并在重启后从内容缓存命中；下一步补齐正式下载任务的进度、重试与删除语义 |
 | 进行中 | 只读 CLI 诊断 | `inspect` 已复用 Runtime 公开 query 和 JSON-safe snapshot/result；Runtime/Profile/Pixiv、12 个 Booru 搜索与详情、EH 主页与文本搜索均在正常 shutdown 后输出 JSON，Runtime 额外移除服务器路径；后续接入 EH 详情/缩略图、本地画廊和受限 resource stdout 流 |
 
 ## Core 独立化进度

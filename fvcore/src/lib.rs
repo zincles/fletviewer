@@ -40,7 +40,8 @@ pub use image::{
     ImageResource, ImageResourceDescriptor, ResourceKey, ResourceSource,
 };
 pub use image_download::{
-    BooruImageDownloadRequest, ImageDownloadState, ImageDownloadTaskSnapshot,
+    BooruImageDownloadRequest, ImageDownloadKind, ImageDownloadState, ImageDownloadTaskSnapshot,
+    PixivImageDownloadRequest,
 };
 pub use operation::{
     BooruOriginalFetchRequest, CoreEvent, CoreEventSubject, EhPageFetchRequest, ErrorSnapshot,

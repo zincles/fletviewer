@@ -4,8 +4,9 @@ use crate::{
     ArchiveTaskSnapshot, BooruImageDownloadRequest, BooruOriginalFetchRequest, ContentMd5,
     CoreConfig, CoreError, CoreSnapshot, EhArchiveDownloadRequest, EhPageFetchRequest, ErrorCode,
     EventBatch, EventSubscription, FakeOperationRequest, ImageDownloadTaskSnapshot, ImageResource,
-    OperationId, OperationSnapshot, PixivPageFetchRequest, ProfileKey, ProfileProbeSnapshot,
-    ProfileSnapshot, ProviderProfileConfig, RuntimeId, RuntimeState, StorageSnapshot,
+    OperationId, OperationSnapshot, PixivImageDownloadRequest, PixivPageFetchRequest, ProfileKey,
+    ProfileProbeSnapshot, ProfileSnapshot, ProviderProfileConfig, RuntimeId, RuntimeState,
+    StorageSnapshot,
     archive::ArchiveService,
     control,
     gallery::GalleryService,
@@ -464,6 +465,14 @@ impl CoreHandle {
         request: BooruImageDownloadRequest,
     ) -> Result<ImageDownloadTaskSnapshot, CoreError> {
         self.image_downloads.start(request).await
+    }
+
+    /// Creates and starts one persistent Pixiv original page download.
+    pub async fn start_pixiv_image_download(
+        &self,
+        request: PixivImageDownloadRequest,
+    ) -> Result<ImageDownloadTaskSnapshot, CoreError> {
+        self.image_downloads.start_pixiv(request).await
     }
 
     /// Returns all persistent single-image download tasks in creation order.
@@ -1497,9 +1506,10 @@ mod tests {
     use super::CoreBuilder;
     use crate::{
         BooruImageDownloadRequest, BooruOriginalFetchRequest, ContentMd5, CoreConfig,
-        EhPageFetchRequest, ErrorCode, EventConfig, FakeOperationRequest, ImageDownloadState,
-        OperationConfig, OperationState, PixivPageFetchRequest, ProfileKey, ProviderProfileConfig,
-        ResourceSource, RuntimeState, StorageConfig,
+        EhPageFetchRequest, ErrorCode, EventConfig, FakeOperationRequest, ImageDownloadKind,
+        ImageDownloadState, OperationConfig, OperationState, PixivImageDownloadRequest,
+        PixivPageFetchRequest, ProfileKey, ProviderProfileConfig, ResourceSource, RuntimeState,
+        StorageConfig,
     };
     use md5::{Digest, Md5};
     use std::{
@@ -3862,6 +3872,18 @@ mod tests {
         let mut persisted: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&task_path).unwrap()).unwrap();
         persisted["snapshot"]["state"] = serde_json::json!("running");
+        persisted["snapshot"]
+            .as_object_mut()
+            .unwrap()
+            .remove("kind");
+        persisted["snapshot"]
+            .as_object_mut()
+            .unwrap()
+            .remove("illust_id");
+        persisted["snapshot"]
+            .as_object_mut()
+            .unwrap()
+            .remove("page");
         let previous_revision = persisted["snapshot"]["revision"].as_u64().unwrap();
         std::fs::write(
             &task_path,
@@ -3992,6 +4014,87 @@ mod tests {
         let descriptor = cached.resource.unwrap();
         assert_eq!(descriptor.content_md5, md5);
         assert_eq!(descriptor.source, ResourceSource::Disk);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        restarted.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pixiv_image_download_shares_fetch_and_survives_restart() {
+        let image = Arc::new(test_jpeg());
+        let digest = md5_hex(&image);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let listen = pixiv_provider(image.clone(), requests.clone()).await;
+        let temp = TempDir::new().unwrap();
+        let mut core_config = config(&temp);
+        core_config
+            .profiles
+            .insert("pixiv".to_owned(), pixiv_profile(listen));
+        core_config.control.enabled = true;
+        core_config.control.listen = "127.0.0.1:0".parse().unwrap();
+        let runtime = CoreBuilder::new(core_config).build().await.unwrap();
+        let handle = runtime.handle();
+        let control_listen = runtime.control_listen().unwrap();
+        let operation = handle
+            .start_pixiv_page_fetch(PixivPageFetchRequest {
+                profile: ProfileKey::new("pixiv", "default"),
+                illust_id: "12345678".to_owned(),
+                page: 0,
+            })
+            .await
+            .unwrap();
+        let task = handle
+            .start_pixiv_image_download(PixivImageDownloadRequest {
+                profile: ProfileKey::new("pixiv", "default"),
+                illust_id: "12345678".to_owned(),
+                page: 0,
+            })
+            .await
+            .unwrap();
+        let operation = wait_terminal(&handle, operation.id).await;
+        let task = wait_image_download(&handle, task.id).await;
+        assert_eq!(operation.state, OperationState::Completed);
+        assert_eq!(task.state, ImageDownloadState::Completed);
+        assert_eq!(task.kind, ImageDownloadKind::PixivOriginal);
+        assert_eq!(task.post_id, None);
+        assert_eq!(task.illust_id.as_deref(), Some("12345678"));
+        assert_eq!(task.page, Some(0));
+        assert_eq!(task.content_md5.as_deref(), Some(digest.as_str()));
+        let output = task.output.unwrap();
+        assert_eq!(output, format!("Images/pixiv/12345678-p0-{digest}.jpg"));
+        assert_eq!(
+            std::fs::read(temp.path().join("Downloads").join(output)).unwrap(),
+            *image
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+        let started = http_request(
+            control_listen,
+            b"POST /api/v1/providers/pixiv/default/illusts/12345678/pages/0/download HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(started.starts_with(b"HTTP/1.1 202 Accepted"));
+        let separator = started
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap();
+        let http_task: crate::ImageDownloadTaskSnapshot =
+            serde_json::from_slice(&started[separator + 4..]).unwrap();
+        let http_task = wait_image_download(&handle, http_task.id).await;
+        assert_eq!(http_task.state, ImageDownloadState::Completed);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        runtime.shutdown().await.unwrap();
+
+        let mut restart_config = config(&temp);
+        restart_config
+            .profiles
+            .insert("pixiv".to_owned(), pixiv_profile(listen));
+        let restarted = CoreBuilder::new(restart_config).build().await.unwrap();
+        let tasks = restarted.handle().image_download_tasks().await;
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks.iter().all(|task| {
+            task.kind == ImageDownloadKind::PixivOriginal
+                && task.state == ImageDownloadState::Completed
+        }));
         assert_eq!(requests.load(Ordering::SeqCst), 1);
         restarted.shutdown().await.unwrap();
     }

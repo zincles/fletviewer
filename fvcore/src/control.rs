@@ -261,6 +261,10 @@ pub(crate) async fn start(
             post(start_pixiv_page_fetch),
         )
         .route(
+            "/api/v1/providers/pixiv/{profile}/illusts/{illust_id}/pages/{page}/download",
+            post(start_pixiv_image_download),
+        )
+        .route(
             "/api/v1/resources/images/{digest}/{extension}",
             get(get_image_resource),
         )
@@ -718,6 +722,24 @@ async fn start_pixiv_page_fetch(
         Ok(operation) => {
             with_security_headers((StatusCode::ACCEPTED, Json(operation)).into_response())
         }
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn start_pixiv_image_download(
+    State(state): State<ControlState>,
+    Path((profile, illust_id, page)): Path<(String, String, u32)>,
+) -> Response {
+    match state
+        .core
+        .start_pixiv_image_download(crate::PixivImageDownloadRequest {
+            profile: crate::ProfileKey::new("pixiv", profile),
+            illust_id,
+            page,
+        })
+        .await
+    {
+        Ok(task) => with_security_headers((StatusCode::ACCEPTED, Json(task)).into_response()),
         Err(error) => error_response(&error),
     }
 }

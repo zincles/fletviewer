@@ -271,6 +271,7 @@ EH Archive 始终流式写磁盘，不将整个 ZIP 放入内存。
 - Booru 第一版下载 original；MD5 metadata 属于 original，sample/preview 没有独立摘要时下载后计算。
 - Booru original 持久任务复用统一 metadata dispatcher 与 `ImageService`，产物按 post ID 和内容 MD5 原子发布到受管 Downloads；公开 snapshot、HTTP 和 event 只暴露受管相对文件名，遗留 running 任务启动时恢复为 failed。
 - Pixiv 请求由 illust ID、page index 和 variant 标识；多页作品每个 task 只下载指定一页。
+- Pixiv original 指定页持久任务复用现有 detail/page resolver、语义 `ResourceKey` 与 `ImageService`，可与 reader operation 合并同一在途传输；产物按 illust ID、页码和真实内容 MD5 原子发布。
 - 第一版不做 Pixiv 整本批量、作者批量、ugoira、视频转换、Booru tag 批量或 CBZ 打包。
 - 用户明确下载的文件属于 Downloads，不因清理 Cache 消失；其命名策略和缓存 blob 名称相互独立。
 
