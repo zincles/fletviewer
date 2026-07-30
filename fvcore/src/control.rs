@@ -348,11 +348,15 @@ pub(crate) async fn start(
         .route("/api/v1/archive-tasks/{id}/retry", post(retry_archive_task))
         .route(
             "/api/v1/image-download-tasks/{id}",
-            get(get_image_download_task),
+            get(get_image_download_task).delete(delete_image_download_task),
         )
         .route(
             "/api/v1/image-download-tasks/{id}/cancel",
             post(cancel_image_download_task),
+        )
+        .route(
+            "/api/v1/image-download-tasks/{id}/retry",
+            post(retry_image_download_task),
         )
         .route(
             "/api/v1/operations",
@@ -1119,6 +1123,34 @@ async fn cancel_image_download_task(
     };
     match state.core.cancel_image_download_task(id).await {
         Ok(task) => with_security_headers(Json(task).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn retry_image_download_task(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_image_download_task_id()),
+    };
+    match state.core.retry_image_download_task(id).await {
+        Ok(task) => with_security_headers((StatusCode::ACCEPTED, Json(task)).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn delete_image_download_task(
+    State(state): State<ControlState>,
+    Path(id): Path<String>,
+) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_image_download_task_id()),
+    };
+    match state.core.delete_image_download_task(id).await {
+        Ok(()) => with_security_headers(StatusCode::NO_CONTENT.into_response()),
         Err(error) => error_response(&error),
     }
 }

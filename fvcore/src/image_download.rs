@@ -283,13 +283,7 @@ impl ImageDownloadService {
             .await
             .get(&id)
             .map(|task| task.snapshot.clone())
-            .ok_or_else(|| {
-                CoreError::new(
-                    ErrorCode::ResourceNotFound,
-                    "image download task was not found",
-                    false,
-                )
-            })
+            .ok_or_else(task_not_found)
     }
 
     pub(crate) async fn cancel(&self, id: Uuid) -> Result<ImageDownloadTaskSnapshot, CoreError> {
@@ -308,6 +302,63 @@ impl ImageDownloadService {
             })?;
         cancellation.cancel();
         self.get(id).await
+    }
+
+    pub(crate) async fn retry(
+        self: &Arc<Self>,
+        id: Uuid,
+    ) -> Result<ImageDownloadTaskSnapshot, CoreError> {
+        let task = {
+            let mut tasks = self.tasks.lock().await;
+            let mut task = tasks.get(&id).cloned().ok_or_else(task_not_found)?;
+            if task.snapshot.state == ImageDownloadState::Running {
+                return Err(CoreError::new(
+                    ErrorCode::InvalidInput,
+                    "running image download task cannot be retried",
+                    false,
+                ));
+            }
+            task.snapshot.state = ImageDownloadState::Running;
+            task.snapshot.revision += 1;
+            task.snapshot.byte_length = None;
+            task.snapshot.content_md5 = None;
+            task.snapshot.output = None;
+            task.snapshot.error = None;
+            task.snapshot.updated_at = OffsetDateTime::now_utc();
+            persist(&self.tasks_root, &task).await?;
+            tasks.insert(id, task.clone());
+            task
+        };
+        let _ = self
+            .message_tx
+            .send(OperationMessage::ImageDownloadTask(task.snapshot.clone()))
+            .await;
+        let cancellation = self.shutdown.child_token();
+        self.cancellations
+            .lock()
+            .await
+            .insert(id, cancellation.clone());
+        let service = self.clone();
+        tokio::spawn(async move { service.run(task, cancellation).await });
+        Ok(self.tasks.lock().await[&id].snapshot.clone())
+    }
+
+    pub(crate) async fn delete(&self, id: Uuid) -> Result<(), CoreError> {
+        let mut tasks = self.tasks.lock().await;
+        let task = tasks.get(&id).ok_or_else(task_not_found)?;
+        if task.snapshot.state == ImageDownloadState::Running {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "running image download task cannot be deleted",
+                false,
+            ));
+        }
+        let directory = self.tasks_root.join(id.to_string());
+        tokio::fs::remove_dir_all(&directory)
+            .await
+            .map_err(|error| io_error("delete image task", &directory, error))?;
+        tasks.remove(&id);
+        Ok(())
     }
 
     pub(crate) async fn shutdown(&self, timeout: std::time::Duration) -> Result<(), CoreError> {
@@ -357,6 +408,7 @@ impl ImageDownloadService {
             }
         }
         let _ = persist(&self.tasks_root, &task).await;
+        self.cancellations.lock().await.remove(&task.snapshot.id);
         self.tasks
             .lock()
             .await
@@ -365,7 +417,6 @@ impl ImageDownloadService {
             .message_tx
             .send(OperationMessage::ImageDownloadTask(task.snapshot.clone()))
             .await;
-        self.cancellations.lock().await.remove(&task.snapshot.id);
     }
 
     async fn fetch_and_publish(
@@ -532,6 +583,14 @@ fn invalid_task(message: &str) -> CoreError {
     CoreError::new(
         ErrorCode::Internal,
         format!("invalid image task: {message}"),
+        false,
+    )
+}
+
+fn task_not_found() -> CoreError {
+    CoreError::new(
+        ErrorCode::ResourceNotFound,
+        "image download task was not found",
         false,
     )
 }

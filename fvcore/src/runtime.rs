@@ -496,6 +496,19 @@ impl CoreHandle {
         self.image_downloads.cancel(id).await
     }
 
+    /// Retries one terminal persistent single-image download task in place.
+    pub async fn retry_image_download_task(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<ImageDownloadTaskSnapshot, CoreError> {
+        self.image_downloads.retry(id).await
+    }
+
+    /// Deletes one terminal image task record while preserving its downloaded output.
+    pub async fn delete_image_download_task(&self, id: uuid::Uuid) -> Result<(), CoreError> {
+        self.image_downloads.delete(id).await
+    }
+
     /// Returns all persistent EH Archive task snapshots in creation order.
     pub async fn archive_tasks(&self) -> Vec<ArchiveTaskSnapshot> {
         self.archives.list().await
@@ -3911,6 +3924,28 @@ mod tests {
                 .unwrap()
                 .contains("Runtime stopped")
         );
+        let retried = restarted
+            .handle()
+            .retry_image_download_task(recovered.id)
+            .await
+            .unwrap();
+        assert_eq!(retried.id, recovered.id);
+        assert_eq!(retried.state, ImageDownloadState::Running);
+        assert_eq!(retried.revision, recovered.revision + 1);
+        let retried = wait_image_download(&restarted.handle(), retried.id).await;
+        assert_eq!(retried.state, ImageDownloadState::Completed);
+        assert_eq!(retried.revision, recovered.revision + 2);
+        let output = retried.output.clone().unwrap();
+        restarted
+            .handle()
+            .delete_image_download_task(retried.id)
+            .await
+            .unwrap();
+        assert!(matches!(
+            restarted.handle().image_download_task(retried.id).await,
+            Err(error) if error.code() == ErrorCode::ResourceNotFound
+        ));
+        assert!(temp.path().join("Downloads").join(output).is_file());
         assert_eq!(
             tasks
                 .iter()
@@ -4082,6 +4117,29 @@ mod tests {
         let http_task = wait_image_download(&handle, http_task.id).await;
         assert_eq!(http_task.state, ImageDownloadState::Completed);
         assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let retried = http_request(
+            control_listen,
+            format!(
+                "POST /api/v1/image-download-tasks/{}/retry HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                http_task.id
+            )
+            .as_bytes(),
+        )
+        .await;
+        assert!(retried.starts_with(b"HTTP/1.1 202 Accepted"));
+        let retried = wait_image_download(&handle, http_task.id).await;
+        assert_eq!(retried.state, ImageDownloadState::Completed);
+        assert_eq!(retried.revision, http_task.revision + 2);
+        let deleted = http_request(
+            control_listen,
+            format!(
+                "DELETE /api/v1/image-download-tasks/{} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                http_task.id
+            )
+            .as_bytes(),
+        )
+        .await;
+        assert!(deleted.starts_with(b"HTTP/1.1 204 No Content"));
         runtime.shutdown().await.unwrap();
 
         let mut restart_config = config(&temp);
@@ -4090,7 +4148,7 @@ mod tests {
             .insert("pixiv".to_owned(), pixiv_profile(listen));
         let restarted = CoreBuilder::new(restart_config).build().await.unwrap();
         let tasks = restarted.handle().image_download_tasks().await;
-        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks.len(), 1);
         assert!(tasks.iter().all(|task| {
             task.kind == ImageDownloadKind::PixivOriginal
                 && task.state == ImageDownloadState::Completed
