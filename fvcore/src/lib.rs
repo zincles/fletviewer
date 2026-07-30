@@ -43,7 +43,9 @@ pub use operation::{
     EventBatch, EventStreamItem, EventSubscription, FakeOperationRequest, FakeOutcome,
     OperationKind, OperationSnapshot, OperationState, PixivPageFetchRequest,
 };
-pub use provider::booru::{BooruPost, BooruSearchResult, ImageVariant};
+pub use provider::booru::{
+    BooruPost, BooruSearchResult, BooruTagSuggestion, BooruTagSuggestions, ImageVariant,
+};
 pub use provider::eh::{
     EhArchiveDelivery, EhArchiveOption, EhArchiveOptions, EhArchiveVariant, EhComment,
     EhGalleryDetail, EhGalleryRef, EhGallerySummary, EhGalleryVersion, EhHomePage,

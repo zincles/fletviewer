@@ -49,6 +49,17 @@ struct BooruSearchQuery {
 }
 
 #[derive(Deserialize)]
+struct BooruTagQuery {
+    query: String,
+    #[serde(default = "default_booru_tag_limit")]
+    limit: u32,
+}
+
+fn default_booru_tag_limit() -> u32 {
+    20
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EhHomeQuery {
     search: Option<String>,
@@ -202,8 +213,20 @@ pub(crate) async fn start(
             get(get_gelbooru_post),
         )
         .route(
+            "/api/v1/providers/{provider}/{profile}/posts",
+            get(search_extended_booru),
+        )
+        .route(
+            "/api/v1/providers/{provider}/{profile}/posts/{post_id}",
+            get(get_extended_booru_post),
+        )
+        .route(
             "/api/v1/providers/{provider}/{profile}/posts/{post_id}/original/fetch",
             post(start_booru_original_fetch),
+        )
+        .route(
+            "/api/v1/providers/{provider}/{profile}/tags",
+            get(booru_tag_suggestions),
         )
         .route(
             "/api/v1/providers/pixiv/{profile}/illusts/{illust_id}",
@@ -456,6 +479,51 @@ async fn get_gelbooru_post(
     }
 }
 
+async fn search_extended_booru(
+    State(state): State<ControlState>,
+    Path((provider, profile)): Path<(String, String)>,
+    Query(query): Query<BooruSearchQuery>,
+) -> Response {
+    let key = crate::ProfileKey::new(provider, profile);
+    let result = if matches!(
+        key.provider.as_str(),
+        "yandere" | "konachan" | "konachan_net" | "lolibooru" | "behoimi"
+    ) {
+        state
+            .core
+            .search_moebooru(&key, &query.tags, query.page, query.limit)
+            .await
+    } else {
+        state
+            .core
+            .search_gelbooru_xml(&key, &query.tags, query.page, query.limit)
+            .await
+    };
+    match result {
+        Ok(result) => with_security_headers(Json(result).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_extended_booru_post(
+    State(state): State<ControlState>,
+    Path((provider, profile, post_id)): Path<(String, String, u64)>,
+) -> Response {
+    let key = crate::ProfileKey::new(provider, profile);
+    let result = if matches!(
+        key.provider.as_str(),
+        "yandere" | "konachan" | "konachan_net" | "lolibooru" | "behoimi"
+    ) {
+        state.core.moebooru_post(&key, post_id).await
+    } else {
+        state.core.gelbooru_xml_post(&key, post_id).await
+    };
+    match result {
+        Ok(post) => with_security_headers(Json(post).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
 async fn start_booru_original_fetch(
     State(state): State<ControlState>,
     Path((provider, profile, post_id)): Path<(String, String, u64)>,
@@ -471,6 +539,22 @@ async fn start_booru_original_fetch(
         Ok(operation) => {
             with_security_headers((StatusCode::ACCEPTED, Json(operation)).into_response())
         }
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn booru_tag_suggestions(
+    State(state): State<ControlState>,
+    Path((provider, profile)): Path<(String, String)>,
+    Query(query): Query<BooruTagQuery>,
+) -> Response {
+    let key = crate::ProfileKey::new(provider, profile);
+    match state
+        .core
+        .booru_tag_suggestions(&key, &query.query, query.limit)
+        .await
+    {
+        Ok(result) => with_security_headers(Json(result).into_response()),
         Err(error) => error_response(&error),
     }
 }

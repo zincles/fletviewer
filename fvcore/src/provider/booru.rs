@@ -82,6 +82,32 @@ pub struct BooruSearchResult {
     pub posts: Vec<BooruPost>,
 }
 
+/// One Provider tag completion candidate.
+#[derive(Clone, Debug, Serialize)]
+pub struct BooruTagSuggestion {
+    /// Provider-native tag text.
+    pub tag: String,
+    /// Normalized Provider category name.
+    pub category: String,
+    /// Provider-reported post count.
+    pub count: u64,
+}
+
+/// One immutable collection of Booru tag completion candidates.
+#[derive(Clone, Debug, Serialize)]
+pub struct BooruTagSuggestions {
+    /// Provider implementation identifier.
+    pub provider: String,
+    /// Profile that executed the request.
+    pub profile: String,
+    /// Immutable session generation used for the response body lifetime.
+    pub generation: u64,
+    /// Original trimmed completion query.
+    pub query: String,
+    /// Parsed suggestions in Provider order.
+    pub suggestions: Vec<BooruTagSuggestion>,
+}
+
 #[derive(Deserialize)]
 struct DanbooruPost {
     id: u64,
@@ -289,6 +315,266 @@ impl BooruService {
         })?;
         map_gelbooru_post(key, &base_url, &post)
     }
+
+    pub(crate) async fn search_gelbooru_xml(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+        cancellation: CancellationToken,
+    ) -> Result<BooruSearchResult, CoreError> {
+        ensure_gelbooru_xml_provider(key)?;
+        let limit = limit.clamp(1, 100);
+        let parameters = vec![
+            ("page".to_owned(), "dapi".to_owned()),
+            ("s".to_owned(), "post".to_owned()),
+            ("q".to_owned(), "index".to_owned()),
+            ("tags".to_owned(), query.trim().to_owned()),
+            ("pid".to_owned(), page.to_string()),
+            ("limit".to_owned(), limit.to_string()),
+        ];
+        let response = self
+            .sessions
+            .get_with_query(key, "index.php", &parameters, ApiAuth::None, cancellation)
+            .await?;
+        let generation = response.generation;
+        let base_url = response.final_url.clone();
+        let (raw_posts, total_count) = parse_gelbooru_xml_posts(response, &key.provider)?;
+        let reached_limit = raw_posts.len() == limit as usize;
+        let posts = raw_posts
+            .iter()
+            .map(|post| map_gelbooru_post(key, &base_url, post))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(BooruSearchResult {
+            provider: key.provider.clone(),
+            profile: key.profile.clone(),
+            generation,
+            query: query.trim().to_owned(),
+            page,
+            next_page: reached_limit.then_some(page + 1),
+            total_count,
+            posts,
+        })
+    }
+
+    pub(crate) async fn get_gelbooru_xml_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+        cancellation: CancellationToken,
+    ) -> Result<BooruPost, CoreError> {
+        ensure_gelbooru_xml_provider(key)?;
+        if post_id == 0 {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Gelbooru-style XML post ID must be greater than zero",
+                false,
+            ));
+        }
+        let parameters = vec![
+            ("page".to_owned(), "dapi".to_owned()),
+            ("s".to_owned(), "post".to_owned()),
+            ("q".to_owned(), "index".to_owned()),
+            ("id".to_owned(), post_id.to_string()),
+        ];
+        let response = self
+            .sessions
+            .get_with_query(key, "index.php", &parameters, ApiAuth::None, cancellation)
+            .await?;
+        let base_url = response.final_url.clone();
+        let (mut posts, _) = parse_gelbooru_xml_posts(response, &key.provider)?;
+        let post = posts.pop().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::ResourceNotFound,
+                format!("{} post {post_id} was not found", key.provider),
+                false,
+            )
+        })?;
+        map_gelbooru_post(key, &base_url, &post)
+    }
+
+    pub(crate) async fn search_moebooru(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+        cancellation: CancellationToken,
+    ) -> Result<BooruSearchResult, CoreError> {
+        ensure_moebooru_provider(key)?;
+        let page = page.max(1);
+        let limit = limit.clamp(1, 100);
+        let parameters = vec![
+            ("tags".to_owned(), query.trim().to_owned()),
+            ("page".to_owned(), page.to_string()),
+            ("limit".to_owned(), limit.to_string()),
+        ];
+        let response = self
+            .sessions
+            .get_with_query(key, "post.json", &parameters, ApiAuth::None, cancellation)
+            .await?;
+        let generation = response.generation;
+        let base_url = response.final_url.clone();
+        let raw_posts: Vec<serde_json::Value> = parse_json(response)?;
+        let reached_limit = raw_posts.len() == limit as usize;
+        let posts = raw_posts
+            .iter()
+            .map(|post| map_moebooru_post(key, &base_url, post))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(BooruSearchResult {
+            provider: key.provider.clone(),
+            profile: key.profile.clone(),
+            generation,
+            query: query.trim().to_owned(),
+            page,
+            next_page: reached_limit.then_some(page + 1),
+            total_count: None,
+            posts,
+        })
+    }
+
+    pub(crate) async fn get_moebooru_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+        cancellation: CancellationToken,
+    ) -> Result<BooruPost, CoreError> {
+        ensure_moebooru_provider(key)?;
+        if post_id == 0 {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Moebooru post ID must be greater than zero",
+                false,
+            ));
+        }
+        let parameters = vec![
+            ("tags".to_owned(), format!("id:{post_id}")),
+            ("limit".to_owned(), "1".to_owned()),
+        ];
+        let response = self
+            .sessions
+            .get_with_query(key, "post.json", &parameters, ApiAuth::None, cancellation)
+            .await?;
+        let base_url = response.final_url.clone();
+        let mut posts: Vec<serde_json::Value> = parse_json(response)?;
+        let post = posts.pop().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::ResourceNotFound,
+                format!("{} post {post_id} was not found", key.provider),
+                false,
+            )
+        })?;
+        map_moebooru_post(key, &base_url, &post)
+    }
+
+    pub(crate) async fn tag_suggestions(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        limit: u32,
+        cancellation: CancellationToken,
+    ) -> Result<BooruTagSuggestions, CoreError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Booru tag suggestion query cannot be empty",
+                false,
+            ));
+        }
+        let limit = limit.clamp(1, booru_tag_limit(key)?);
+        let response = match key.provider.as_str() {
+            "danbooru" => {
+                let parameters = vec![
+                    ("search[name_matches]".to_owned(), format!("{query}*")),
+                    ("search[order]".to_owned(), "count".to_owned()),
+                    ("limit".to_owned(), limit.to_string()),
+                ];
+                self.sessions
+                    .get_with_query(key, "tags.json", &parameters, ApiAuth::Basic, cancellation)
+                    .await?
+            }
+            "gelbooru" => {
+                let parameters = gelbooru_tag_parameters(query, limit, true);
+                self.sessions
+                    .get_with_query(
+                        key,
+                        "index.php",
+                        &parameters,
+                        ApiAuth::GelbooruQuery,
+                        cancellation,
+                    )
+                    .await?
+            }
+            "safebooru" | "rule34" | "tbib" | "xbooru" | "hypnohub" => {
+                let parameters = gelbooru_tag_parameters(query, limit, false);
+                self.sessions
+                    .get_with_query(key, "index.php", &parameters, ApiAuth::None, cancellation)
+                    .await?
+            }
+            "yandere" | "konachan" | "konachan_net" | "lolibooru" | "behoimi" => {
+                let parameters = vec![
+                    ("name".to_owned(), format!("{query}*")),
+                    ("order".to_owned(), "count".to_owned()),
+                    ("limit".to_owned(), limit.to_string()),
+                ];
+                self.sessions
+                    .get_with_query(key, "tag.json", &parameters, ApiAuth::None, cancellation)
+                    .await?
+            }
+            _ => return Err(unsupported_booru_provider(key)),
+        };
+        let generation = response.generation;
+        let suggestions = match key.provider.as_str() {
+            "danbooru" => parse_tag_json(response, "category", "post_count")?,
+            "gelbooru" => parse_gelbooru_tag_json(response)?,
+            "safebooru" | "rule34" | "tbib" | "xbooru" | "hypnohub" => {
+                parse_tag_xml(response, &key.provider)?
+            }
+            _ => parse_tag_json(response, "type", "count")?,
+        };
+        Ok(BooruTagSuggestions {
+            provider: key.provider.clone(),
+            profile: key.profile.clone(),
+            generation,
+            query: query.to_owned(),
+            suggestions,
+        })
+    }
+}
+
+fn gelbooru_tag_parameters(query: &str, limit: u32, json: bool) -> Vec<(String, String)> {
+    let mut parameters = vec![
+        ("page".to_owned(), "dapi".to_owned()),
+        ("s".to_owned(), "tag".to_owned()),
+        ("q".to_owned(), "index".to_owned()),
+        ("name_pattern".to_owned(), format!("{query}%")),
+        ("limit".to_owned(), limit.to_string()),
+        ("orderby".to_owned(), "count".to_owned()),
+        ("order".to_owned(), "DESC".to_owned()),
+    ];
+    if json {
+        parameters.push(("json".to_owned(), "1".to_owned()));
+    }
+    parameters
+}
+
+fn booru_tag_limit(key: &ProfileKey) -> Result<u32, CoreError> {
+    match key.provider.as_str() {
+        "danbooru" => Ok(200),
+        "gelbooru" | "safebooru" | "rule34" | "tbib" | "xbooru" | "hypnohub" | "yandere"
+        | "konachan" | "konachan_net" | "lolibooru" | "behoimi" => Ok(100),
+        _ => Err(unsupported_booru_provider(key)),
+    }
+}
+
+fn unsupported_booru_provider(key: &ProfileKey) -> CoreError {
+    CoreError::new(
+        ErrorCode::InvalidInput,
+        format!("profile {key} is not a supported Booru profile"),
+        false,
+    )
 }
 
 fn map_danbooru_post(
@@ -395,6 +681,159 @@ fn parse_gelbooru_posts(
     }
 }
 
+fn parse_gelbooru_xml_posts(
+    response: NetworkResponse,
+    provider: &str,
+) -> Result<(Vec<serde_json::Value>, Option<u64>), CoreError> {
+    let body = std::str::from_utf8(&response.body)
+        .map_err(|_| unexpected(format!("{provider} API returned non-UTF-8 XML")))?;
+    let document = roxmltree::Document::parse(body)
+        .map_err(|_| unexpected(format!("{provider} API returned malformed XML")))?;
+    let root = document.root_element();
+    if root.tag_name().name() == "error" {
+        let message = root.text().map(str::trim).filter(|value| !value.is_empty());
+        return Err(CoreError::new(
+            ErrorCode::AccessDenied,
+            format!(
+                "{provider} API rejected the request: {}",
+                message.unwrap_or("unknown reason")
+            ),
+            false,
+        ));
+    }
+    if root.tag_name().name() != "posts" {
+        return Err(unexpected(format!(
+            "{provider} API returned an invalid XML root"
+        )));
+    }
+    let total_count = root.attribute("count").and_then(|value| value.parse().ok());
+    let posts = root
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "post")
+        .map(|node| {
+            serde_json::Value::Object(
+                node.attributes()
+                    .map(|attribute| {
+                        (
+                            attribute.name().to_owned(),
+                            serde_json::Value::String(attribute.value().to_owned()),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    Ok((posts, total_count))
+}
+
+fn parse_tag_json(
+    response: NetworkResponse,
+    category_field: &str,
+    count_field: &str,
+) -> Result<Vec<BooruTagSuggestion>, CoreError> {
+    let values: Vec<serde_json::Value> = parse_json(response)?;
+    values
+        .iter()
+        .map(|value| map_tag_suggestion(value, category_field, count_field))
+        .collect()
+}
+
+fn parse_gelbooru_tag_json(
+    response: NetworkResponse,
+) -> Result<Vec<BooruTagSuggestion>, CoreError> {
+    let value: serde_json::Value = parse_json(response)?;
+    let values = match value {
+        serde_json::Value::Array(values) => values,
+        serde_json::Value::Object(mut object) => match object.remove("tag") {
+            None | Some(serde_json::Value::Null) => Vec::new(),
+            Some(serde_json::Value::Array(values)) => values,
+            Some(value @ serde_json::Value::Object(_)) => vec![value],
+            Some(_) => return Err(unexpected("Gelbooru API returned an invalid tag list")),
+        },
+        _ => return Err(unexpected("Gelbooru API returned an invalid tag response")),
+    };
+    values
+        .iter()
+        .map(|value| map_tag_suggestion(value, "type", "count"))
+        .collect()
+}
+
+fn map_tag_suggestion(
+    value: &serde_json::Value,
+    category_field: &str,
+    count_field: &str,
+) -> Result<BooruTagSuggestion, CoreError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| unexpected("Booru tag suggestion must be an object"))?;
+    let tag = object
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| unexpected("Booru tag suggestion has no name"))?;
+    Ok(BooruTagSuggestion {
+        tag: tag.to_owned(),
+        category: tag_category(object.get(category_field).and_then(value_i64)),
+        count: object
+            .get(count_field)
+            .and_then(value_u64)
+            .unwrap_or_default(),
+    })
+}
+
+fn parse_tag_xml(
+    response: NetworkResponse,
+    provider: &str,
+) -> Result<Vec<BooruTagSuggestion>, CoreError> {
+    let body = std::str::from_utf8(&response.body)
+        .map_err(|_| unexpected(format!("{provider} API returned non-UTF-8 tag XML")))?;
+    let document = roxmltree::Document::parse(body)
+        .map_err(|_| unexpected(format!("{provider} API returned malformed tag XML")))?;
+    let root = document.root_element();
+    if root.tag_name().name() == "error" {
+        return Err(CoreError::new(
+            ErrorCode::AccessDenied,
+            format!("{provider} tag API rejected the request"),
+            false,
+        ));
+    }
+    if root.tag_name().name() != "tags" {
+        return Err(unexpected(format!(
+            "{provider} API returned an invalid tag XML root"
+        )));
+    }
+    root.children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "tag")
+        .map(|node| {
+            let tag = node
+                .attribute("name")
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| unexpected("Booru tag suggestion has no name"))?;
+            Ok(BooruTagSuggestion {
+                tag: tag.to_owned(),
+                category: tag_category(node.attribute("type").and_then(|value| value.parse().ok())),
+                count: node
+                    .attribute("count")
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+fn tag_category(value: Option<i64>) -> String {
+    match value {
+        Some(1) => "artist",
+        Some(3) => "copyright",
+        Some(4) => "character",
+        Some(5) => "meta",
+        _ => "general",
+    }
+    .to_owned()
+}
+
 fn map_gelbooru_post(
     key: &ProfileKey,
     response_url: &Url,
@@ -407,8 +846,12 @@ fn map_gelbooru_post(
         .get("id")
         .and_then(value_u64)
         .ok_or_else(|| unexpected("Gelbooru API post has no valid ID"))?;
-    let original_url = object.get("file_url").and_then(value_url);
-    let sample_url = object.get("sample_url").and_then(value_url);
+    let original_url = object
+        .get("file_url")
+        .and_then(|value| value_url_with_base(value, response_url));
+    let sample_url = object
+        .get("sample_url")
+        .and_then(|value| value_url_with_base(value, response_url));
     if original_url.is_none() && sample_url.is_none() {
         return Err(unexpected(format!(
             "Gelbooru post {id} has no downloadable image URL"
@@ -455,7 +898,9 @@ fn map_gelbooru_post(
             byte_length: None,
         },
         preview: ImageVariant {
-            url: object.get("preview_url").and_then(value_url),
+            url: object
+                .get("preview_url")
+                .and_then(|value| value_url_with_base(value, response_url)),
             width: object.get("preview_width").and_then(value_u32),
             height: object.get("preview_height").and_then(value_u32),
             byte_length: None,
@@ -485,6 +930,27 @@ fn map_gelbooru_post(
     })
 }
 
+fn map_moebooru_post(
+    key: &ProfileKey,
+    response_url: &Url,
+    value: &serde_json::Value,
+) -> Result<BooruPost, CoreError> {
+    let mut post = map_gelbooru_post(key, response_url, value)?;
+    post.page_url.set_path(&format!("/post/show/{}", post.id));
+    post.page_url.set_query(None);
+    post.file_extension = value
+        .get("file_ext")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .and_then(normalize_extension)
+        .or(post.file_extension);
+    post.created_at = value.get("created_at").map(|value| match value {
+        serde_json::Value::String(value) => value.clone(),
+        value => value.to_string(),
+    });
+    Ok(post)
+}
+
 fn value_u64(value: &serde_json::Value) -> Option<u64> {
     value
         .as_u64()
@@ -501,14 +967,14 @@ fn value_i64(value: &serde_json::Value) -> Option<i64> {
         .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
 }
 
-fn value_url(value: &serde_json::Value) -> Option<Url> {
+fn value_url_with_base(value: &serde_json::Value, base: &Url) -> Option<Url> {
     let value = value.as_str()?.trim();
     if value.is_empty() {
         None
     } else if value.starts_with("//") {
-        Url::parse(&format!("https:{value}")).ok()
+        Url::parse(&format!("{}:{value}", base.scheme())).ok()
     } else {
-        Url::parse(value).ok()
+        Url::parse(value).ok().or_else(|| base.join(value).ok())
     }
 }
 
@@ -523,6 +989,36 @@ fn ensure_provider(key: &ProfileKey, expected: &str) -> Result<(), CoreError> {
         Err(CoreError::new(
             ErrorCode::InvalidInput,
             format!("profile {key} is not a {expected} profile"),
+            false,
+        ))
+    }
+}
+
+fn ensure_gelbooru_xml_provider(key: &ProfileKey) -> Result<(), CoreError> {
+    if matches!(
+        key.provider.as_str(),
+        "safebooru" | "rule34" | "tbib" | "xbooru" | "hypnohub"
+    ) {
+        Ok(())
+    } else {
+        Err(CoreError::new(
+            ErrorCode::InvalidInput,
+            format!("profile {key} is not a supported Gelbooru-style XML profile"),
+            false,
+        ))
+    }
+}
+
+fn ensure_moebooru_provider(key: &ProfileKey) -> Result<(), CoreError> {
+    if matches!(
+        key.provider.as_str(),
+        "yandere" | "konachan" | "konachan_net" | "lolibooru" | "behoimi"
+    ) {
+        Ok(())
+    } else {
+        Err(CoreError::new(
+            ErrorCode::InvalidInput,
+            format!("profile {key} is not a supported Moebooru profile"),
             false,
         ))
     }
@@ -585,6 +1081,10 @@ mod tests {
 
     const DANBOORU_POSTS: &str = include_str!("../../tests/fixtures/danbooru/posts.json");
     const GELBOORU_POSTS: &str = include_str!("../../tests/fixtures/gelbooru/posts.json");
+    const SAFEBOORU_POSTS: &str = include_str!("../../tests/fixtures/safebooru/posts.xml");
+    const MOEBOORU_POSTS: &str = include_str!("../../tests/fixtures/moebooru/posts.json");
+    const TAGS_JSON: &str = include_str!("../../tests/fixtures/booru/tags.json");
+    const TAGS_XML: &str = include_str!("../../tests/fixtures/booru/tags.xml");
 
     async fn server(router: Router) -> std::net::SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -696,6 +1196,215 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), crate::ErrorCode::ResourceNotFound);
+    }
+
+    #[tokio::test]
+    async fn maps_safebooru_xml_search_detail_and_rejection() {
+        let router = Router::new().route(
+            "/index.php",
+            get(|Query(query): Query<HashMap<String, String>>| async move {
+                assert_eq!(query.get("page").map(String::as_str), Some("dapi"));
+                assert_eq!(query.get("s").map(String::as_str), Some("post"));
+                assert_eq!(query.get("q").map(String::as_str), Some("index"));
+                if query.get("id").map(String::as_str) == Some("999") {
+                    return (
+                        [(header::CONTENT_TYPE, "application/xml")],
+                        "<posts count=\"0\" />",
+                    )
+                        .into_response();
+                }
+                if query.get("tags").map(String::as_str) == Some("denied") {
+                    return (
+                        [(header::CONTENT_TYPE, "application/xml")],
+                        "<error>blocked</error>",
+                    )
+                        .into_response();
+                }
+                ([(header::CONTENT_TYPE, "application/xml")], SAFEBOORU_POSTS).into_response()
+            }),
+        );
+        let listen = server(router).await;
+        let (safebooru, key) = service("safebooru", listen);
+        let result = safebooru
+            .search_gelbooru_xml(&key, "blue_sky", 0, 1, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.total_count, Some(1));
+        assert_eq!(result.next_page, Some(1));
+        assert_eq!(result.posts[0].id, 789);
+        assert_eq!(result.posts[0].general_tags, ["blue_sky", "cloud"]);
+        assert_eq!(
+            result.posts[0].original_md5.as_deref(),
+            Some("d256310bfab43e08b6422e311cd9b2c9")
+        );
+        assert_eq!(
+            result.posts[0].original.url.as_ref().unwrap().host_str(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            result.posts[0].preview.url.as_ref().unwrap().as_str(),
+            "http://cdn.safebooru.example/thumbnails/example.jpg"
+        );
+
+        let detail = safebooru
+            .get_gelbooru_xml_post(&key, 789, CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(detail.page_url.as_str().contains("id=789"));
+        let missing = safebooru
+            .get_gelbooru_xml_post(&key, 999, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(missing.code(), crate::ErrorCode::ResourceNotFound);
+        let denied = safebooru
+            .search_gelbooru_xml(&key, "denied", 0, 40, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), crate::ErrorCode::AccessDenied);
+
+        let (rule34, key) = service("rule34", listen);
+        let result = rule34
+            .search_gelbooru_xml(&key, "blue_sky", 0, 40, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.provider, "rule34");
+        assert_eq!(result.posts[0].provider, "rule34");
+
+        let (danbooru, key) = service("danbooru", listen);
+        let error = danbooru
+            .search_gelbooru_xml(&key, "", 0, 40, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), crate::ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn maps_moebooru_search_detail_and_protocol_allowlist() {
+        let router = Router::new().route(
+            "/post.json",
+            get(|Query(query): Query<HashMap<String, String>>| async move {
+                if query.get("tags").map(String::as_str) == Some("id:999") {
+                    return ([(header::CONTENT_TYPE, "application/json")], "[]").into_response();
+                }
+                ([(header::CONTENT_TYPE, "application/json")], MOEBOORU_POSTS).into_response()
+            }),
+        );
+        let listen = server(router).await;
+        let (yandere, key) = service("yandere", listen);
+        let result = yandere
+            .search_moebooru(&key, "landscape", 1, 1, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.provider, "yandere");
+        assert_eq!(result.next_page, Some(2));
+        assert_eq!(result.posts[0].id, 2468);
+        assert_eq!(result.posts[0].file_extension.as_deref(), Some("webp"));
+        assert_eq!(result.posts[0].created_at.as_deref(), Some("1785240000"));
+        assert!(
+            result.posts[0]
+                .page_url
+                .as_str()
+                .ends_with("/post/show/2468")
+        );
+
+        let detail = yandere
+            .get_moebooru_post(&key, 2468, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            detail.original_md5.as_deref(),
+            Some("d256310bfab43e08b6422e311cd9b2c9")
+        );
+        let missing = yandere
+            .get_moebooru_post(&key, 999, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(missing.code(), crate::ErrorCode::ResourceNotFound);
+
+        let (danbooru, key) = service("danbooru", listen);
+        let error = danbooru
+            .search_moebooru(&key, "", 1, 40, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), crate::ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn maps_tag_suggestions_for_all_four_protocols() {
+        let router = Router::new()
+            .route(
+                "/tags.json",
+                get(|Query(query): Query<HashMap<String, String>>| async move {
+                    assert_eq!(
+                        query.get("search[name_matches]").map(String::as_str),
+                        Some("blue*")
+                    );
+                    ([(header::CONTENT_TYPE, "application/json")], TAGS_JSON)
+                }),
+            )
+            .route(
+                "/index.php",
+                get(|Query(query): Query<HashMap<String, String>>| async move {
+                    assert_eq!(query.get("s").map(String::as_str), Some("tag"));
+                    assert_eq!(query.get("name_pattern").map(String::as_str), Some("blue%"));
+                    if query.get("json").map(String::as_str) == Some("1") {
+                        return (
+                            [(header::CONTENT_TYPE, "application/json")],
+                            r#"{"tag":[{"name":"blue_sky","type":"0","count":"1234"}]}"#,
+                        )
+                            .into_response();
+                    }
+                    ([(header::CONTENT_TYPE, "application/xml")], TAGS_XML).into_response()
+                }),
+            )
+            .route(
+                "/tag.json",
+                get(|Query(query): Query<HashMap<String, String>>| async move {
+                    assert_eq!(query.get("name").map(String::as_str), Some("blue*"));
+                    (
+                        [(header::CONTENT_TYPE, "application/json")],
+                        r#"[{"name":"blue_artist","type":1,"count":56}]"#,
+                    )
+                }),
+            );
+        let listen = server(router).await;
+
+        let (danbooru, key) = service("danbooru", listen);
+        let result = danbooru
+            .tag_suggestions(&key, " blue ", 20, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.query, "blue");
+        assert_eq!(result.suggestions[0].category, "general");
+        assert_eq!(result.suggestions[1].category, "artist");
+
+        let (gelbooru, key) = service("gelbooru", listen);
+        let result = gelbooru
+            .tag_suggestions(&key, "blue", 20, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.suggestions[0].count, 1234);
+
+        let (rule34, key) = service("rule34", listen);
+        let result = rule34
+            .tag_suggestions(&key, "blue", 20, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.suggestions[1].category, "character");
+
+        let (yandere, key) = service("yandere", listen);
+        let result = yandere
+            .tag_suggestions(&key, "blue", 20, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.suggestions[0].tag, "blue_artist");
+        assert_eq!(result.suggestions[0].category, "artist");
+
+        let error = yandere
+            .tag_suggestions(&key, " ", 20, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), crate::ErrorCode::InvalidInput);
     }
 
     #[tokio::test]

@@ -1,0 +1,21 @@
+[
+  {
+    "id": 2468,
+    "tags": "landscape blue_sky",
+    "created_at": 1785240000,
+    "score": 23,
+    "rating": "s",
+    "source": "https://example.test/source",
+    "md5": "d256310bfab43e08b6422e311cd9b2c9",
+    "file_ext": "webp",
+    "file_url": "/image/example.webp",
+    "width": 1800,
+    "height": 1200,
+    "sample_url": "//sample.example/sample.jpg",
+    "sample_width": 1200,
+    "sample_height": 800,
+    "preview_url": "/preview/example.jpg",
+    "preview_width": 150,
+    "preview_height": 100
+  }
+]

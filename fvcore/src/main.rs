@@ -131,7 +131,7 @@ enum InspectCommand {
         subcommand_value_name = "查询"
     )]
     Booru {
-        /// Provider 名称：danbooru 或 gelbooru。
+        /// 已支持的 Booru Provider 名称。
         provider: String,
         /// Provider profile 名称。
         #[arg(long, default_value = "default")]
@@ -202,6 +202,12 @@ enum BooruInspectCommand {
     },
     /// 查询一个帖子 metadata。
     Post { id: u64 },
+    /// 查询标签补全建议。
+    Tags {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -372,6 +378,19 @@ async fn inspect_query(
             command,
         } => {
             let key = ProfileKey::new(provider, profile);
+            if let BooruInspectCommand::Tags { query, limit } = command {
+                return serde_json::to_value(
+                    core.booru_tag_suggestions(&key, query, *limit).await?,
+                )
+                .map(sanitize_inspect_json)
+                .map_err(|error| {
+                    CoreError::new(
+                        fvcore::ErrorCode::Internal,
+                        format!("failed to encode inspect result: {error}"),
+                        false,
+                    )
+                });
+            }
             match (provider.as_str(), command) {
                 ("danbooru", BooruInspectCommand::Search { tags, page, limit }) => {
                     serde_json::to_value(core.search_danbooru(&key, tags, *page, *limit).await?)
@@ -385,6 +404,24 @@ async fn inspect_query(
                 ("gelbooru", BooruInspectCommand::Post { id }) => {
                     serde_json::to_value(core.gelbooru_post(&key, *id).await?)
                 }
+                (
+                    "safebooru" | "rule34" | "tbib" | "xbooru" | "hypnohub",
+                    BooruInspectCommand::Search { tags, page, limit },
+                ) => {
+                    serde_json::to_value(core.search_gelbooru_xml(&key, tags, *page, *limit).await?)
+                }
+                (
+                    "safebooru" | "rule34" | "tbib" | "xbooru" | "hypnohub",
+                    BooruInspectCommand::Post { id },
+                ) => serde_json::to_value(core.gelbooru_xml_post(&key, *id).await?),
+                (
+                    "yandere" | "konachan" | "konachan_net" | "lolibooru" | "behoimi",
+                    BooruInspectCommand::Search { tags, page, limit },
+                ) => serde_json::to_value(core.search_moebooru(&key, tags, *page, *limit).await?),
+                (
+                    "yandere" | "konachan" | "konachan_net" | "lolibooru" | "behoimi",
+                    BooruInspectCommand::Post { id },
+                ) => serde_json::to_value(core.moebooru_post(&key, *id).await?),
                 _ => return Err(inspect_booru_provider_error(provider)),
             }
         }
@@ -411,7 +448,7 @@ async fn inspect_query(
 fn inspect_booru_provider_error(provider: &str) -> CoreError {
     CoreError::new(
         fvcore::ErrorCode::InvalidInput,
-        format!("inspect booru provider must be danbooru or gelbooru, got {provider}"),
+        format!("inspect booru provider is not supported: {provider}"),
         false,
     )
 }
@@ -999,8 +1036,57 @@ mod tests {
             ])
             .is_ok()
         );
+        for provider in ["rule34", "tbib", "xbooru", "hypnohub"] {
+            assert!(
+                Cli::try_parse_from([
+                    "fvcore",
+                    "inspect",
+                    "booru",
+                    provider,
+                    "search",
+                    "landscape",
+                ])
+                .is_ok()
+            );
+        }
+        for provider in [
+            "yandere",
+            "konachan",
+            "konachan_net",
+            "lolibooru",
+            "behoimi",
+        ] {
+            assert!(
+                Cli::try_parse_from([
+                    "fvcore",
+                    "inspect",
+                    "booru",
+                    provider,
+                    "search",
+                    "landscape",
+                ])
+                .is_ok()
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "fvcore", "inspect", "booru", "danbooru", "tags", "blue", "--limit", "10",
+            ])
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from(["fvcore", "inspect", "booru", "gelbooru", "post", "42",]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "fvcore",
+                "inspect",
+                "booru",
+                "safebooru",
+                "search",
+                "landscape",
+            ])
+            .is_ok()
         );
         assert!(Cli::try_parse_from(["fvcore", "inspect", "eh", "home"]).is_ok());
         assert!(
@@ -1124,7 +1210,7 @@ mod tests {
     fn inspect_booru_rejects_unknown_provider() {
         let error = super::inspect_booru_provider_error("unknown");
         assert_eq!(error.code(), fvcore::ErrorCode::InvalidInput);
-        assert!(error.message().contains("danbooru or gelbooru"));
+        assert!(error.message().contains("not supported"));
     }
 
     #[tokio::test]

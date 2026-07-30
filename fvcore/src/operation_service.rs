@@ -209,10 +209,24 @@ impl OperationService {
                 false,
             ));
         }
-        if !matches!(request.profile.provider.as_str(), "danbooru" | "gelbooru") {
+        if !matches!(
+            request.profile.provider.as_str(),
+            "danbooru"
+                | "gelbooru"
+                | "safebooru"
+                | "rule34"
+                | "tbib"
+                | "xbooru"
+                | "hypnohub"
+                | "yandere"
+                | "konachan"
+                | "konachan_net"
+                | "lolibooru"
+                | "behoimi"
+        ) {
             return Err(CoreError::new(
                 ErrorCode::InvalidInput,
-                "Booru original fetch supports danbooru and gelbooru profiles",
+                "Booru original fetch does not support this Provider profile",
                 false,
             ));
         }
@@ -629,6 +643,24 @@ async fn run_booru_original(
         "gelbooru" => {
             booru
                 .get_gelbooru_post(
+                    &request.profile,
+                    request.post_id,
+                    cancellation.child_token(),
+                )
+                .await
+        }
+        "safebooru" | "rule34" | "tbib" | "xbooru" | "hypnohub" => {
+            booru
+                .get_gelbooru_xml_post(
+                    &request.profile,
+                    request.post_id,
+                    cancellation.child_token(),
+                )
+                .await
+        }
+        "yandere" | "konachan" | "konachan_net" | "lolibooru" | "behoimi" => {
+            booru
+                .get_moebooru_post(
                     &request.profile,
                     request.post_id,
                     cancellation.child_token(),

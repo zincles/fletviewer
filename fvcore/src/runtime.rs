@@ -707,6 +707,66 @@ impl CoreHandle {
             .await
     }
 
+    /// Searches one supported Gelbooru-style XML profile through its public DAPI.
+    pub async fn search_gelbooru_xml(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+    ) -> Result<crate::BooruSearchResult, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .search_gelbooru_xml(key, query, page, limit, self.shutdown.child_token())
+            .await
+    }
+
+    /// Fetches one post from a supported Gelbooru-style XML profile.
+    pub async fn gelbooru_xml_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+    ) -> Result<crate::BooruPost, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .get_gelbooru_xml_post(key, post_id, self.shutdown.child_token())
+            .await
+    }
+
+    /// Searches one supported Moebooru profile through its public JSON API.
+    pub async fn search_moebooru(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        page: u64,
+        limit: u32,
+    ) -> Result<crate::BooruSearchResult, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .search_moebooru(key, query, page, limit, self.shutdown.child_token())
+            .await
+    }
+
+    /// Fetches one post from a supported Moebooru profile.
+    pub async fn moebooru_post(
+        &self,
+        key: &ProfileKey,
+        post_id: u64,
+    ) -> Result<crate::BooruPost, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .get_moebooru_post(key, post_id, self.shutdown.child_token())
+            .await
+    }
+
+    /// Returns Provider-native Booru tag completion candidates.
+    pub async fn booru_tag_suggestions(
+        &self,
+        key: &ProfileKey,
+        query: &str,
+        limit: u32,
+    ) -> Result<crate::BooruTagSuggestions, CoreError> {
+        BooruService::new(self.sessions.clone())
+            .tag_suggestions(key, query, limit, self.shutdown.child_token())
+            .await
+    }
+
     /// Fetches one EH front-page listing using the shared profile session.
     pub async fn eh_home(
         &self,
@@ -2078,15 +2138,25 @@ mod tests {
     async fn serves_danbooru_through_integrated_http() {
         let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_listen = provider_listener.local_addr().unwrap();
-        let provider_router = axum::Router::new().route(
-            "/posts.json",
-            axum::routing::get(|| async {
-                (
-                    [(axum::http::header::CONTENT_TYPE, "application/json")],
-                    r#"[{"id":9,"md5":"d256310bfab43e08b6422e311cd9b2c9","file_ext":"jpg","file_url":"https://cdn.example/9.jpg"}]"#,
-                )
-            }),
-        );
+        let provider_router = axum::Router::new()
+            .route(
+                "/posts.json",
+                axum::routing::get(|| async {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        r#"[{"id":9,"md5":"d256310bfab43e08b6422e311cd9b2c9","file_ext":"jpg","file_url":"https://cdn.example/9.jpg"}]"#,
+                    )
+                }),
+            )
+            .route(
+                "/tags.json",
+                axum::routing::get(|| async {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        r#"[{"name":"test_tag","category":0,"post_count":99}]"#,
+                    )
+                }),
+            );
         tokio::spawn(async move {
             axum::serve(provider_listener, provider_router)
                 .await
@@ -2120,6 +2190,17 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("\"provider\":\"danbooru\""));
         assert!(response.contains("\"id\":9"));
+        let tags = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/providers/danbooru/default/tags?query=test&limit=20 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(tags.starts_with("HTTP/1.1 200 OK"));
+        assert!(tags.contains("\"tag\":\"test_tag\""));
+        assert!(tags.contains("\"count\":99"));
         let favorite_payload =
             r#"{"provider":"danbooru","profile":"default","name":"Cats","query":"cat rating:s"}"#;
         let create = format!(
@@ -2149,6 +2230,122 @@ mod tests {
         let invalid = String::from_utf8(http_request(listen, invalid.as_bytes()).await).unwrap();
         assert!(invalid.starts_with("HTTP/1.1 404 Not Found"));
         assert_eq!(runtime.handle().favorite_searches().unwrap().len(), 1);
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn serves_gelbooru_xml_provider_through_integrated_http() {
+        const POSTS: &str = include_str!("../tests/fixtures/safebooru/posts.xml");
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        let provider_router = axum::Router::new().route(
+            "/index.php",
+            axum::routing::get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/xml")],
+                    POSTS,
+                )
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(provider_listener, provider_router)
+                .await
+                .unwrap()
+        });
+
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config.profiles.insert(
+            "rule34".to_owned(),
+            ProviderProfileConfig {
+                provider: "rule34".to_owned(),
+                base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let listen = runtime.control_listen().unwrap();
+        let search = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/providers/rule34/default/posts?tags=cloud&page=0&limit=40 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(search.starts_with("HTTP/1.1 200 OK"));
+        assert!(search.contains("\"provider\":\"rule34\""));
+        assert!(search.contains("\"id\":789"));
+        let detail = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/providers/rule34/default/posts/789 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(detail.starts_with("HTTP/1.1 200 OK"));
+        assert!(detail.contains("\"id\":789"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn serves_moebooru_provider_through_integrated_http() {
+        const POSTS: &str = include_str!("../tests/fixtures/moebooru/posts.json");
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        let provider_router = axum::Router::new().route(
+            "/post.json",
+            axum::routing::get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    POSTS,
+                )
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(provider_listener, provider_router)
+                .await
+                .unwrap()
+        });
+
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config.profiles.insert(
+            "yandere".to_owned(),
+            ProviderProfileConfig {
+                provider: "yandere".to_owned(),
+                base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let listen = runtime.control_listen().unwrap();
+        let search = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/providers/yandere/default/posts?tags=landscape&page=1&limit=40 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(search.starts_with("HTTP/1.1 200 OK"));
+        assert!(search.contains("\"provider\":\"yandere\""));
+        assert!(search.contains("\"id\":2468"));
+        let detail = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/providers/yandere/default/posts/2468 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(detail.starts_with("HTTP/1.1 200 OK"));
+        assert!(detail.contains("/post/show/2468"));
         runtime.shutdown().await.unwrap();
     }
 
