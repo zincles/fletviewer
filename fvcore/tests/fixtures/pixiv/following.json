@@ -1,0 +1,23 @@
+{
+  "error": false,
+  "message": "",
+  "body": {
+    "thumbnails": {
+      "illust": [
+        {
+          "id": "44332211",
+          "title": "Following Fixture",
+          "userId": "86420",
+          "userName": "Followed Artist",
+          "pageCount": 1,
+          "xRestrict": 0,
+          "url": "https://i.pximg.net/c/250x250_80_a2/img-master/following.jpg",
+          "tags": ["following", "original"]
+        }
+      ]
+    },
+    "page": {
+      "isLastPage": false
+    }
+  }
+}

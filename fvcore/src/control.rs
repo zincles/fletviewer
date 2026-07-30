@@ -64,6 +64,40 @@ struct PixivSearchQuery {
 }
 
 #[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PixivRankingQuery {
+    mode: String,
+    date: String,
+    page: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct PixivFollowingQuery {
+    visibility: crate::PixivFollowingVisibility,
+    page: u32,
+}
+
+impl Default for PixivFollowingQuery {
+    fn default() -> Self {
+        Self {
+            visibility: crate::PixivFollowingVisibility::Public,
+            page: 1,
+        }
+    }
+}
+
+impl Default for PixivRankingQuery {
+    fn default() -> Self {
+        Self {
+            mode: "day".to_owned(),
+            date: String::new(),
+            page: 1,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FavoriteSearchInput {
     provider: String,
@@ -162,6 +196,18 @@ pub(crate) async fn start(
         .route(
             "/api/v1/providers/pixiv/{profile}/search",
             get(search_pixiv),
+        )
+        .route(
+            "/api/v1/providers/pixiv/{profile}/ranking",
+            get(pixiv_ranking),
+        )
+        .route(
+            "/api/v1/providers/pixiv/{profile}/recommendations",
+            get(pixiv_recommendations),
+        )
+        .route(
+            "/api/v1/providers/pixiv/{profile}/following",
+            get(pixiv_following),
         )
         .route(
             "/api/v1/providers/pixiv/{profile}/illusts/{illust_id}/pages/{page}/fetch",
@@ -432,6 +478,49 @@ async fn search_pixiv(
     match state
         .core
         .search_pixiv(&key, &query.query, query.page)
+        .await
+    {
+        Ok(result) => with_security_headers(Json(result).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn pixiv_ranking(
+    State(state): State<ControlState>,
+    Path(profile): Path<String>,
+    Query(query): Query<PixivRankingQuery>,
+) -> Response {
+    let key = crate::ProfileKey::new("pixiv", profile);
+    match state
+        .core
+        .pixiv_ranking(&key, &query.mode, &query.date, query.page)
+        .await
+    {
+        Ok(result) => with_security_headers(Json(result).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn pixiv_recommendations(
+    State(state): State<ControlState>,
+    Path(profile): Path<String>,
+) -> Response {
+    let key = crate::ProfileKey::new("pixiv", profile);
+    match state.core.pixiv_recommendations(&key).await {
+        Ok(result) => with_security_headers(Json(result).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn pixiv_following(
+    State(state): State<ControlState>,
+    Path(profile): Path<String>,
+    Query(query): Query<PixivFollowingQuery>,
+) -> Response {
+    let key = crate::ProfileKey::new("pixiv", profile);
+    match state
+        .core
+        .pixiv_following(&key, query.visibility, query.page)
         .await
     {
         Ok(result) => with_security_headers(Json(result).into_response()),

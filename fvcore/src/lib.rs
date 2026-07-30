@@ -49,7 +49,10 @@ pub use provider::eh::{
     EhGalleryDetail, EhGalleryRef, EhGallerySummary, EhGalleryVersion, EhHomePage,
     EhImageResolution, EhPageCursor, EhPageDirection, EhThumbnail, EhThumbnailPage,
 };
-pub use provider::pixiv::{PixivIllust, PixivPage, PixivSearchItem, PixivSearchResult, PixivUser};
+pub use provider::pixiv::{
+    PixivFollowingResult, PixivFollowingVisibility, PixivIllust, PixivPage, PixivRankingItem,
+    PixivRankingResult, PixivRecommendationResult, PixivSearchItem, PixivSearchResult, PixivUser,
+};
 pub use runtime::{CoreBuilder, CoreHandle, CoreRuntime};
 pub use session::{ProfileKey, ProfileProbeSnapshot, ProfileSnapshot};
 pub use snapshot::{CoreSnapshot, RuntimeState, StorageSnapshot};

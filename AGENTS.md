@@ -59,6 +59,7 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 
 - Runtime 配置固定为 `fvcore` executable 同目录的 `config.json`，暂不允许通过参数指定其他运行时配置路径；相对存储路径以该目录为基准。
 - `fvcore run` 不挂载 WebUI，HTTP listener 是否启用由配置决定；`fvcore web` 强制启用 HTTP listener 和 WebUI，监听地址仍来自配置。
+- `fvcore run` 与 `fvcore web` 支持 `--quit-in-seconds <正整数>`，用于自动化 smoke test 防止终端阻塞；计时从 Runtime ready 后开始，到期必须走正常 graceful shutdown。
 - `run` 和 `web` 必须在创建 Runtime、数据库、锁或存储目录前严格解析并完整验证 `config.json`；文件缺失、JSON 错误、未知字段或约束失败均拒绝启动。
 - `fvcore check-config` 默认检查 executable 同级的 `config.json`，也可接受一个显式文件用于离线检查；缺失时报告完整期望路径、目录和 `create-config` 命令。
 - `fvcore create-config` 默认在 executable 同级生成完整 `config.json`，也可接受一个已存在目录；固定 pretty JSON 和结尾换行，使用唯一临时文件安全发布，默认拒绝覆盖已有配置。只有显式 `--override` 才将已有配置安全重置为完整默认值，不做字段合并；覆盖使用目录锁、同目录恢复副本和启动时事务恢复，不得先删旧文件。

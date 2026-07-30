@@ -374,6 +374,41 @@ impl CoreHandle {
             .await
     }
 
+    /// Returns one Pixiv ranking page through the shared Web profile session.
+    pub async fn pixiv_ranking(
+        &self,
+        key: &ProfileKey,
+        mode: &str,
+        date: &str,
+        page: u32,
+    ) -> Result<crate::PixivRankingResult, CoreError> {
+        crate::provider::pixiv::PixivService::new(self.sessions.clone())
+            .ranking(key, mode, date, page, self.shutdown.child_token())
+            .await
+    }
+
+    /// Returns the current Pixiv discovery recommendations through the shared profile session.
+    pub async fn pixiv_recommendations(
+        &self,
+        key: &ProfileKey,
+    ) -> Result<crate::PixivRecommendationResult, CoreError> {
+        crate::provider::pixiv::PixivService::new(self.sessions.clone())
+            .recommendations(key, self.shutdown.child_token())
+            .await
+    }
+
+    /// Returns one authenticated Pixiv followed-artists feed page.
+    pub async fn pixiv_following(
+        &self,
+        key: &ProfileKey,
+        visibility: crate::PixivFollowingVisibility,
+        page: u32,
+    ) -> Result<crate::PixivFollowingResult, CoreError> {
+        crate::provider::pixiv::PixivService::new(self.sessions.clone())
+            .following(key, visibility, page, self.shutdown.child_token())
+            .await
+    }
+
     /// Starts a cancellable original image fetch for one Pixiv illustration page.
     pub async fn start_pixiv_page_fetch(
         &self,
@@ -1644,6 +1679,117 @@ mod tests {
                                 "url": "https://i.pximg.net/fixture.jpg",
                                 "tags": ["風景", "sky"]
                             }], "lastPage": 3}}
+                        }))
+                    },
+                ),
+            )
+            .route(
+                "/ranking.php",
+                axum::routing::get(
+                    |axum::extract::Query(params): axum::extract::Query<
+                        std::collections::HashMap<String, String>,
+                    >,
+                     headers: axum::http::HeaderMap| async move {
+                        assert_eq!(params.get("mode").map(String::as_str), Some("daily"));
+                        assert_eq!(params.get("content").map(String::as_str), Some("all"));
+                        assert_eq!(params.get("p").map(String::as_str), Some("1"));
+                        assert_eq!(params.get("format").map(String::as_str), Some("json"));
+                        assert_eq!(params.get("date").map(String::as_str), Some("20260725"));
+                        assert!(
+                            headers
+                                .get(axum::http::header::REFERER)
+                                .and_then(|value| value.to_str().ok())
+                                .is_some_and(|value| value.ends_with("/ranking.php"))
+                        );
+                        axum::Json(serde_json::json!({
+                            "contents": [{
+                                "rank": 1,
+                                "yes_rank": 3,
+                                "illust_id": "99887766",
+                                "title": "Ranking Fixture",
+                                "user_id": "24680",
+                                "user_name": "Ranking Artist",
+                                "illust_page_count": 2,
+                                "x_restrict": 0,
+                                "url": "https://i.pximg.net/ranking.jpg",
+                                "tags": ["風景", "空"]
+                            }],
+                            "next": 2
+                        }))
+                    },
+                ),
+            )
+            .route(
+                "/ajax/discovery/artworks",
+                axum::routing::get(
+                    |axum::extract::Query(params): axum::extract::Query<
+                        std::collections::HashMap<String, String>,
+                    >,
+                     headers: axum::http::HeaderMap| async move {
+                        assert_eq!(params.get("mode").map(String::as_str), Some("all"));
+                        assert_eq!(params.get("limit").map(String::as_str), Some("100"));
+                        assert_eq!(params.get("lang").map(String::as_str), Some("zh"));
+                        assert!(
+                            headers
+                                .get(axum::http::header::REFERER)
+                                .and_then(|value| value.to_str().ok())
+                                .is_some_and(|value| value.ends_with("/discovery"))
+                        );
+                        axum::Json(serde_json::json!({
+                            "error": false,
+                            "message": "",
+                            "body": {"thumbnails": {"illust": [{
+                                "id": "11223344",
+                                "title": "Discovery Fixture",
+                                "userId": "13579",
+                                "userName": "Discovery Artist",
+                                "pageCount": 1,
+                                "xRestrict": 0,
+                                "url": "https://i.pximg.net/discovery.jpg",
+                                "tags": ["original", "landscape"]
+                            }]}}
+                        }))
+                    },
+                ),
+            )
+            .route(
+                "/ajax/follow_latest/illust",
+                axum::routing::get(
+                    |axum::extract::Query(params): axum::extract::Query<
+                        std::collections::HashMap<String, String>,
+                    >,
+                     headers: axum::http::HeaderMap| async move {
+                        assert_eq!(params.get("p").map(String::as_str), Some("1"));
+                        assert_eq!(params.get("mode").map(String::as_str), Some("all"));
+                        assert_eq!(params.get("lang").map(String::as_str), Some("zh"));
+                        assert_eq!(
+                            headers
+                                .get(axum::http::header::COOKIE)
+                                .and_then(|value| value.to_str().ok()),
+                            Some("PHPSESSID=42_fixture")
+                        );
+                        assert!(
+                            headers
+                                .get(axum::http::header::REFERER)
+                                .and_then(|value| value.to_str().ok())
+                                .is_some_and(|value| value.ends_with("/bookmark_new_illust.php"))
+                        );
+                        axum::Json(serde_json::json!({
+                            "error": false,
+                            "message": "",
+                            "body": {
+                                "thumbnails": {"illust": [{
+                                    "id": "44332211",
+                                    "title": "Following Fixture",
+                                    "userId": "86420",
+                                    "userName": "Followed Artist",
+                                    "pageCount": 1,
+                                    "xRestrict": 0,
+                                    "url": "https://i.pximg.net/following.jpg",
+                                    "tags": ["following", "original"]
+                                }]},
+                                "page": {"isLastPage": false}
+                            }
                         }))
                     },
                 ),
@@ -3164,16 +3310,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn serves_pixiv_search_and_favorites_through_api_and_webui() {
+    async fn serves_pixiv_search_ranking_and_favorites_through_api_and_webui() {
         let image = Arc::new(test_jpeg());
         let provider = pixiv_provider(image, Arc::new(AtomicUsize::new(0))).await;
         let temp = TempDir::new().unwrap();
         let mut config = config(&temp);
         config.control.enabled = true;
         config.control.listen = "127.0.0.1:0".parse().unwrap();
-        config
-            .profiles
-            .insert("pixiv".to_owned(), pixiv_profile(provider));
+        config.profiles.insert("pixiv".to_owned(), {
+            let mut profile = pixiv_profile(provider);
+            profile.cookie = Some("PHPSESSID=42_fixture".to_owned());
+            profile
+        });
         let runtime = CoreBuilder::new(config).build().await.unwrap();
         let listen = runtime.control_listen().unwrap();
         let api = String::from_utf8(
@@ -3187,6 +3335,47 @@ mod tests {
         assert!(api.starts_with("HTTP/1.1 200 OK"));
         assert!(api.contains("\"id\":\"12345\""));
         assert!(api.contains("\"next_page\":2"));
+        let ranking_api = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/providers/pixiv/default/ranking?mode=day&date=2026-07-25&page=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(ranking_api.starts_with("HTTP/1.1 200 OK"));
+        assert!(ranking_api.contains("\"mode\":\"day\""));
+        assert!(ranking_api.contains("\"date\":\"2026-07-25\""));
+        assert!(ranking_api.contains("\"rank\":1"));
+        assert!(ranking_api.contains("\"previous_rank\":3"));
+        assert!(ranking_api.contains("\"id\":\"99887766\""));
+        assert!(ranking_api.contains("\"next_page\":2"));
+        let recommendations_api = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/providers/pixiv/default/recommendations HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(recommendations_api.starts_with("HTTP/1.1 200 OK"));
+        assert!(recommendations_api.contains("\"profile\":\"default\""));
+        assert!(recommendations_api.contains("\"id\":\"11223344\""));
+        assert!(recommendations_api.contains("Discovery Fixture"));
+        assert!(!recommendations_api.contains("next_page"));
+        let following_api = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/providers/pixiv/default/following?visibility=public&page=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(following_api.starts_with("HTTP/1.1 200 OK"));
+        assert!(following_api.contains("\"visibility\":\"public\""));
+        assert!(following_api.contains("\"id\":\"44332211\""));
+        assert!(following_api.contains("\"next_page\":2"));
+        assert!(!following_api.contains("PHPSESSID"));
         let favorite = runtime
             .handle()
             .create_favorite_search(
@@ -3211,6 +3400,94 @@ mod tests {
         assert!(webui.contains("/ui/pixiv?profile=default&amp;id=12345"));
         assert!(webui.contains("page=2"));
         assert!(!webui.contains("<img"));
+        let ranking_webui = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/pixiv/ranking?profile=default&mode=day&date=2026-07-25&page=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(ranking_webui.starts_with("HTTP/1.1 200 OK"));
+        assert!(ranking_webui.contains("Pixiv 排行"));
+        assert!(ranking_webui.contains("Ranking Fixture"));
+        assert!(ranking_webui.contains("#1"));
+        assert!(ranking_webui.contains("上期 3"));
+        assert!(ranking_webui.contains("id=99887766"));
+        assert!(ranking_webui.contains("page=2"));
+        assert!(!ranking_webui.contains("<img"));
+        let recommendations_webui = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/pixiv/recommendations?profile=default HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(recommendations_webui.starts_with("HTTP/1.1 200 OK"));
+        assert!(recommendations_webui.contains("Pixiv 推荐"));
+        assert!(recommendations_webui.contains("Discovery Fixture"));
+        assert!(recommendations_webui.contains("id=11223344"));
+        assert!(recommendations_webui.contains("刷新当前推荐"));
+        assert!(!recommendations_webui.contains("下一页"));
+        assert!(!recommendations_webui.contains("<img"));
+        let following_webui = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /ui/pixiv/following?profile=default&visibility=public&page=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(following_webui.starts_with("HTTP/1.1 200 OK"));
+        assert!(following_webui.contains("Pixiv 关注"));
+        assert!(following_webui.contains("Following Fixture"));
+        assert!(following_webui.contains("id=44332211"));
+        assert!(following_webui.contains("visibility=public"));
+        assert!(following_webui.contains("page=2"));
+        assert!(!following_webui.contains("PHPSESSID"));
+        assert!(!following_webui.contains("<img"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pixiv_following_requires_cookie_before_network() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider = listener.local_addr().unwrap();
+        let observed = requests.clone();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new().fallback(move || {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    async { axum::http::StatusCode::INTERNAL_SERVER_ERROR }
+                }),
+            )
+            .await
+            .unwrap();
+        });
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config
+            .profiles
+            .insert("pixiv".to_owned(), pixiv_profile(provider));
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let response = String::from_utf8(
+            http_request(
+                runtime.control_listen().unwrap(),
+                b"GET /api/v1/providers/pixiv/default/following?visibility=public&page=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(response.starts_with("HTTP/1.1 401 Unauthorized"));
+        assert!(response.contains("\"code\":\"authentication_required\""));
+        assert!(response.contains("logged-in browser Cookie"));
+        assert!(!response.contains("42_fixture"));
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
         runtime.shutdown().await.unwrap();
     }
 

@@ -344,6 +344,27 @@ impl SessionRegistry {
             .await
     }
 
+    pub(crate) async fn get_authenticated_pixiv_ajax(
+        &self,
+        key: &ProfileKey,
+        relative_path: &str,
+        query: &[(String, String)],
+        referer_path: &str,
+        cancellation: CancellationToken,
+    ) -> Result<NetworkResponse, CoreError> {
+        let session = self.session(key)?;
+        if session.cookie.is_none() {
+            return Err(CoreError::new(
+                ErrorCode::AuthenticationRequired,
+                "Pixiv requires a logged-in browser Cookie for this request",
+                false,
+            ));
+        }
+        session
+            .get_pixiv_ajax(relative_path, query, referer_path, cancellation)
+            .await
+    }
+
     pub(crate) async fn post_eh_api(
         &self,
         key: &ProfileKey,

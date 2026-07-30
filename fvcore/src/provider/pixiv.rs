@@ -103,6 +103,86 @@ pub struct PixivSearchResult {
     pub items: Vec<PixivSearchItem>,
 }
 
+/// Current Pixiv discovery recommendations without a synthetic pagination cursor.
+#[derive(Clone, Debug, Serialize)]
+pub struct PixivRecommendationResult {
+    /// Profile that executed the request.
+    pub profile: String,
+    /// Immutable session generation used for the response body.
+    pub generation: u64,
+    /// Artwork summaries in Provider order.
+    pub items: Vec<PixivSearchItem>,
+}
+
+/// Which authenticated Pixiv following feed to read.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PixivFollowingVisibility {
+    /// General followed-artists feed.
+    Public,
+    /// R18 followed-artists feed.
+    Private,
+}
+
+/// One stable page of the authenticated Pixiv following feed.
+#[derive(Clone, Debug, Serialize)]
+pub struct PixivFollowingResult {
+    /// Profile that executed the request.
+    pub profile: String,
+    /// Immutable authenticated session generation used for the response body.
+    pub generation: u64,
+    /// Requested public or private feed.
+    pub visibility: PixivFollowingVisibility,
+    /// One-based Pixiv page number.
+    pub page: u32,
+    /// Next page when Pixiv reports that more work exists.
+    pub next_page: Option<u32>,
+    /// Artwork summaries in Provider order.
+    pub items: Vec<PixivSearchItem>,
+}
+
+/// One Pixiv artwork summary returned by the ranking feed.
+#[derive(Clone, Debug, Serialize)]
+pub struct PixivRankingItem {
+    /// Rank on the requested page/date.
+    pub rank: u32,
+    /// Rank in the previous comparable period, when supplied.
+    pub previous_rank: Option<u32>,
+    /// Numeric illustration ID rendered as text.
+    pub id: String,
+    /// Artwork title.
+    pub title: String,
+    /// Creator summary.
+    pub user: PixivUser,
+    /// Number of artwork pages.
+    pub page_count: u32,
+    /// R18 restriction level when supplied by Pixiv.
+    pub x_restrict: u32,
+    /// Ranking thumbnail URL supplied by Pixiv.
+    pub thumbnail_url: Option<Url>,
+    /// Tags supplied by the ranking response.
+    pub tags: Vec<String>,
+}
+
+/// One stable page of Pixiv ranking results.
+#[derive(Clone, Debug, Serialize)]
+pub struct PixivRankingResult {
+    /// Profile that executed the request.
+    pub profile: String,
+    /// Immutable session generation used for the response body.
+    pub generation: u64,
+    /// Stable caller-facing mode: `day`, `week`, or `month`.
+    pub mode: String,
+    /// Optional ranking date in `YYYY-MM-DD` form.
+    pub date: String,
+    /// One-based Pixiv page number.
+    pub page: u32,
+    /// Next page reported by Pixiv.
+    pub next_page: Option<u32>,
+    /// Ranked artwork summaries in Provider order.
+    pub items: Vec<PixivRankingItem>,
+}
+
 pub(crate) struct PixivService {
     sessions: Arc<SessionRegistry>,
 }
@@ -199,6 +279,232 @@ impl PixivService {
             last_page,
             next_page: (!items.is_empty() && page < last_page).then_some(page + 1),
             items,
+        })
+    }
+
+    pub(crate) async fn ranking(
+        &self,
+        key: &ProfileKey,
+        mode: &str,
+        date: &str,
+        page: u32,
+        cancellation: CancellationToken,
+    ) -> Result<PixivRankingResult, CoreError> {
+        let (mode, web_mode) = ensure_pixiv_ranking(key, mode, date, page)?;
+        let mut query = vec![
+            ("mode".to_owned(), web_mode.to_owned()),
+            ("content".to_owned(), "all".to_owned()),
+            ("p".to_owned(), page.to_string()),
+            ("format".to_owned(), "json".to_owned()),
+        ];
+        if !date.is_empty() {
+            query.push(("date".to_owned(), date.replace('-', "")));
+        }
+        let response = self
+            .sessions
+            .get_pixiv_ajax(key, "ranking.php", &query, "ranking.php", cancellation)
+            .await?;
+        let generation = response.generation;
+        let body: RankingBody = serde_json::from_slice(&response.body)
+            .map_err(|_| unexpected("Pixiv ranking response shape is invalid"))?;
+        let items = body
+            .contents
+            .into_iter()
+            .filter_map(PixivRankingItem::from_body)
+            .collect::<Vec<_>>();
+        if body.next.is_some_and(|next| next <= page) {
+            return Err(unexpected("Pixiv ranking pagination is inconsistent"));
+        }
+        Ok(PixivRankingResult {
+            profile: key.profile.clone(),
+            generation,
+            mode: mode.to_owned(),
+            date: date.to_owned(),
+            page,
+            next_page: (!items.is_empty()).then_some(body.next).flatten(),
+            items,
+        })
+    }
+
+    pub(crate) async fn recommendations(
+        &self,
+        key: &ProfileKey,
+        cancellation: CancellationToken,
+    ) -> Result<PixivRecommendationResult, CoreError> {
+        ensure_pixiv_profile(key)?;
+        let response = self
+            .sessions
+            .get_pixiv_ajax(
+                key,
+                "ajax/discovery/artworks",
+                &[
+                    ("mode".to_owned(), "all".to_owned()),
+                    ("limit".to_owned(), "100".to_owned()),
+                    ("lang".to_owned(), "zh".to_owned()),
+                ],
+                "discovery",
+                cancellation,
+            )
+            .await?;
+        let generation = response.generation;
+        let result: AjaxResponse<DiscoveryBody> = parse_ajax(&response.body)?;
+        let items = result
+            .body
+            .and_then(|body| body.thumbnails)
+            .map(|thumbnails| thumbnails.illust)
+            .ok_or_else(|| unexpected("Pixiv discovery response has no illustration feed"))?
+            .into_iter()
+            .filter(|item| !item.id.is_empty())
+            .map(PixivSearchItem::from)
+            .collect();
+        Ok(PixivRecommendationResult {
+            profile: key.profile.clone(),
+            generation,
+            items,
+        })
+    }
+
+    pub(crate) async fn following(
+        &self,
+        key: &ProfileKey,
+        visibility: PixivFollowingVisibility,
+        page: u32,
+        cancellation: CancellationToken,
+    ) -> Result<PixivFollowingResult, CoreError> {
+        ensure_pixiv_page(key, page, "following")?;
+        let mode = match visibility {
+            PixivFollowingVisibility::Public => "all",
+            PixivFollowingVisibility::Private => "r18",
+        };
+        let response = self
+            .sessions
+            .get_authenticated_pixiv_ajax(
+                key,
+                "ajax/follow_latest/illust",
+                &[
+                    ("p".to_owned(), page.to_string()),
+                    ("mode".to_owned(), mode.to_owned()),
+                    ("lang".to_owned(), "zh".to_owned()),
+                ],
+                "bookmark_new_illust.php",
+                cancellation,
+            )
+            .await?;
+        let generation = response.generation;
+        let result: AjaxResponse<FollowingBody> = parse_ajax(&response.body)?;
+        let body = result
+            .body
+            .ok_or_else(|| unexpected("Pixiv following response has no body"))?;
+        let items = body
+            .thumbnails
+            .map(|thumbnails| thumbnails.illust)
+            .ok_or_else(|| unexpected("Pixiv following response has no illustration feed"))?
+            .into_iter()
+            .filter(|item| !item.id.is_empty())
+            .map(PixivSearchItem::from)
+            .collect::<Vec<_>>();
+        let is_last_page = body
+            .page
+            .ok_or_else(|| unexpected("Pixiv following response has no pagination state"))?
+            .is_last_page;
+        Ok(PixivFollowingResult {
+            profile: key.profile.clone(),
+            generation,
+            visibility,
+            page,
+            next_page: (!items.is_empty() && !is_last_page).then_some(page + 1),
+            items,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct DiscoveryBody {
+    thumbnails: Option<DiscoveryThumbnails>,
+}
+
+#[derive(Deserialize)]
+struct DiscoveryThumbnails {
+    #[serde(default)]
+    illust: Vec<SearchItemBody>,
+}
+
+#[derive(Deserialize)]
+struct FollowingBody {
+    thumbnails: Option<DiscoveryThumbnails>,
+    page: Option<FollowingPage>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FollowingPage {
+    is_last_page: bool,
+}
+
+#[derive(Deserialize)]
+struct RankingBody {
+    #[serde(default)]
+    contents: Vec<RankingItemBody>,
+    #[serde(default, deserialize_with = "optional_u32_from_any")]
+    next: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct RankingItemBody {
+    #[serde(default, deserialize_with = "u32_from_any")]
+    rank: u32,
+    #[serde(
+        default,
+        alias = "yes_rank",
+        deserialize_with = "optional_u32_from_any"
+    )]
+    previous_rank: Option<u32>,
+    #[serde(
+        default,
+        alias = "illustId",
+        alias = "illust_id",
+        deserialize_with = "string_from_any"
+    )]
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default, alias = "userId", deserialize_with = "string_from_any")]
+    user_id: String,
+    #[serde(default, alias = "userName")]
+    user_name: String,
+    #[serde(
+        default = "one",
+        alias = "pageCount",
+        alias = "illust_page_count",
+        deserialize_with = "u32_from_any"
+    )]
+    page_count: u32,
+    #[serde(default, alias = "xRestrict", deserialize_with = "u32_from_any")]
+    x_restrict: u32,
+    #[serde(default, alias = "url")]
+    thumbnail_url: Option<Url>,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+impl PixivRankingItem {
+    fn from_body(item: RankingItemBody) -> Option<Self> {
+        if item.id.is_empty() || item.rank == 0 {
+            return None;
+        }
+        Some(Self {
+            rank: item.rank,
+            previous_rank: item.previous_rank,
+            id: item.id,
+            title: item.title,
+            user: PixivUser {
+                id: item.user_id,
+                name: item.user_name,
+            },
+            page_count: item.page_count,
+            x_restrict: item.x_restrict,
+            thumbnail_url: item.thumbnail_url,
+            tags: item.tags,
         })
     }
 }
@@ -387,13 +693,36 @@ fn map_illust(
 }
 
 fn ensure_pixiv(key: &ProfileKey, illust_id: &str) -> Result<(), CoreError> {
-    if key.provider != "pixiv"
+    if ensure_pixiv_profile(key).is_err()
         || illust_id.is_empty()
         || !illust_id.bytes().all(|byte| byte.is_ascii_digit())
     {
         return Err(CoreError::new(
             ErrorCode::InvalidInput,
             "Pixiv profile and numeric illustration ID are required",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_pixiv_profile(key: &ProfileKey) -> Result<(), CoreError> {
+    if key.provider != "pixiv" {
+        return Err(CoreError::new(
+            ErrorCode::InvalidInput,
+            "Pixiv profile is required",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_pixiv_page(key: &ProfileKey, page: u32, feed: &str) -> Result<(), CoreError> {
+    ensure_pixiv_profile(key)?;
+    if page == 0 || page > 1_000 {
+        return Err(CoreError::new(
+            ErrorCode::InvalidInput,
+            format!("Pixiv {feed} page must be from 1 to 1000"),
             false,
         ));
     }
@@ -414,6 +743,77 @@ fn ensure_pixiv_search(key: &ProfileKey, query: &str, page: u32) -> Result<(), C
         ));
     }
     Ok(())
+}
+
+fn ensure_pixiv_ranking<'a>(
+    key: &ProfileKey,
+    mode: &'a str,
+    date: &str,
+    page: u32,
+) -> Result<(&'a str, &'static str), CoreError> {
+    let mode = mode.trim();
+    let web_mode = match mode {
+        "day" => "daily",
+        "week" => "weekly",
+        "month" => "monthly",
+        _ => return Err(invalid_ranking()),
+    };
+    let valid_date = if date.is_empty() {
+        true
+    } else {
+        let format = time::format_description::parse("[year]-[month]-[day]")
+            .map_err(|_| invalid_ranking())?;
+        time::Date::parse(date, &format).is_ok() && date.len() == 10
+    };
+    if key.provider != "pixiv" || page == 0 || page > 1_000 || !valid_date {
+        return Err(invalid_ranking());
+    }
+    Ok((mode, web_mode))
+}
+
+fn invalid_ranking() -> CoreError {
+    CoreError::new(
+        ErrorCode::InvalidInput,
+        "Pixiv ranking requires mode day/week/month, an optional YYYY-MM-DD date, and page from 1 to 1000",
+        false,
+    )
+}
+
+fn string_from_any<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::String(value) => value,
+        serde_json::Value::Number(value) => value.to_string(),
+        _ => String::new(),
+    })
+}
+
+fn u32_from_any<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Number(value) => value.as_u64().and_then(|value| value.try_into().ok()),
+        serde_json::Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+    .unwrap_or_default())
+}
+
+fn optional_u32_from_any<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Number(value) => value.as_u64().and_then(|value| value.try_into().ok()),
+        serde_json::Value::String(value) => value.parse().ok(),
+        _ => None,
+    })
 }
 
 fn encode_path_segment(value: &str) -> Result<String, CoreError> {
@@ -443,7 +843,10 @@ fn unexpected(message: impl Into<String>) -> CoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{DetailBody, PageBody, SearchBody, encode_path_segment, map_illust, parse_ajax};
+    use super::{
+        DetailBody, DiscoveryBody, FollowingBody, PageBody, RankingBody, SearchBody,
+        encode_path_segment, map_illust, parse_ajax,
+    };
 
     #[test]
     fn maps_detail_and_page_fixtures() {
@@ -478,5 +881,56 @@ mod tests {
             encode_path_segment("風景 / sky").unwrap(),
             "%E9%A2%A8%E6%99%AF%20%2F%20sky"
         );
+    }
+
+    #[test]
+    fn parses_ranking_fixture_with_string_and_numeric_fields() {
+        let ranking: RankingBody =
+            serde_json::from_slice(include_bytes!("../../tests/fixtures/pixiv/ranking.json"))
+                .unwrap();
+        assert_eq!(ranking.next, Some(2));
+        let item = super::PixivRankingItem::from_body(ranking.contents.into_iter().next().unwrap())
+            .unwrap();
+        assert_eq!(item.rank, 1);
+        assert_eq!(item.previous_rank, Some(3));
+        assert_eq!(item.id, "99887766");
+        assert_eq!(item.page_count, 2);
+    }
+
+    #[test]
+    fn validates_ranking_mode_date_and_page() {
+        let key = crate::ProfileKey::new("pixiv", "default");
+        assert_eq!(
+            super::ensure_pixiv_ranking(&key, "day", "2026-07-25", 1).unwrap(),
+            ("day", "daily")
+        );
+        assert!(super::ensure_pixiv_ranking(&key, "daily", "", 1).is_err());
+        assert!(super::ensure_pixiv_ranking(&key, "day", "2026-02-30", 1).is_err());
+        assert!(super::ensure_pixiv_ranking(&key, "day", "", 0).is_err());
+    }
+
+    #[test]
+    fn parses_discovery_fixture_without_inventing_pagination() {
+        let discovery: super::AjaxResponse<DiscoveryBody> =
+            parse_ajax(include_bytes!("../../tests/fixtures/pixiv/discovery.json")).unwrap();
+        let items = discovery.body.unwrap().thumbnails.unwrap().illust;
+        assert_eq!(items.len(), 2);
+        let item = super::PixivSearchItem::from(items.into_iter().next().unwrap());
+        assert_eq!(item.id, "11223344");
+        assert_eq!(item.title, "Discovery Fixture");
+        assert_eq!(item.tags, ["original", "landscape"]);
+    }
+
+    #[test]
+    fn parses_following_fixture_and_pagination_state() {
+        let following: super::AjaxResponse<FollowingBody> =
+            parse_ajax(include_bytes!("../../tests/fixtures/pixiv/following.json")).unwrap();
+        let body = following.body.unwrap();
+        assert!(!body.page.unwrap().is_last_page);
+        let item = super::PixivSearchItem::from(
+            body.thumbnails.unwrap().illust.into_iter().next().unwrap(),
+        );
+        assert_eq!(item.id, "44332211");
+        assert_eq!(item.title, "Following Fixture");
     }
 }

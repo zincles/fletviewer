@@ -1,0 +1,30 @@
+{
+  "error": false,
+  "message": "",
+  "body": {
+    "thumbnails": {
+      "illust": [
+        {
+          "id": "11223344",
+          "title": "Discovery Fixture",
+          "userId": "13579",
+          "userName": "Discovery Artist",
+          "pageCount": 1,
+          "xRestrict": 0,
+          "url": "https://i.pximg.net/c/250x250_80_a2/img-master/discovery-1.jpg",
+          "tags": ["original", "landscape"]
+        },
+        {
+          "id": "55667788",
+          "title": "Second Discovery Fixture",
+          "userId": "97531",
+          "userName": "Second Artist",
+          "pageCount": 2,
+          "xRestrict": 1,
+          "url": "https://i.pximg.net/c/250x250_80_a2/img-master/discovery-2.jpg",
+          "tags": ["創作"]
+        }
+      ]
+    }
+  }
+}

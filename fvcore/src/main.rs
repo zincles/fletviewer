@@ -26,7 +26,8 @@ const CONFIG_LOCK_FILENAME: &str = ".config.json.lock";
     disable_version_flag = true,
     disable_help_subcommand = true,
     subcommand_value_name = "命令",
-    help_template = "{name} {version}\n{about}\n\n用法: {usage}\n\n命令:\n{subcommands}\n\n选项:\n{options}"
+    after_help = "示例:\n  fvcore run\n  fvcore web --quit-in-seconds 10\n\nrun 和 web 默认持续运行；--quit-in-seconds 可用于自动化测试并执行优雅关闭。",
+    help_template = "{name} {version}\n{about}\n\n用法: {usage}\n\n命令:\n{subcommands}\n\n选项:\n{options}\n{after-help}"
 )]
 struct Cli {
     /// 显示帮助。
@@ -45,12 +46,26 @@ struct Cli {
 enum Command {
     /// 显示根命令帮助。
     Help,
-    /// 运行核心，直到收到中断信号。
-    #[command(help_template = "{about}\n\n用法: {usage}\n\n选项:\n{options}")]
-    Run,
-    /// 运行核心，同时启用 HTTP 控制面和 WebUI。
-    #[command(help_template = "{about}\n\n用法: {usage}\n\n选项:\n{options}")]
-    Web,
+    /// 运行核心；默认等待中断信号，可设置自动退出计时。
+    #[command(
+        after_help = "示例:\n  fvcore run\n  fvcore run --quit-in-seconds 10",
+        help_template = "{about}\n\n用法: {usage}\n\n选项:\n{options}\n{after-help}"
+    )]
+    Run {
+        /// Runtime 就绪后自动退出的秒数；省略时持续运行。
+        #[arg(long, value_name = "秒", value_parser = clap::value_parser!(u64).range(1..))]
+        quit_in_seconds: Option<u64>,
+    },
+    /// 运行核心并启用 HTTP 控制面和 WebUI；可设置自动退出计时。
+    #[command(
+        after_help = "示例:\n  fvcore web\n  fvcore web --quit-in-seconds 10",
+        help_template = "{about}\n\n用法: {usage}\n\n选项:\n{options}\n{after-help}"
+    )]
+    Web {
+        /// Runtime 就绪后自动退出的秒数；省略时持续运行。
+        #[arg(long, value_name = "秒", value_parser = clap::value_parser!(u64).range(1..))]
+        quit_in_seconds: Option<u64>,
+    },
     /// 解析并完整验证一个 JSON 配置文件，然后退出。
     #[command(
         help_template = "{about}\n\n用法: {usage}\n\n参数:\n{positionals}\n\n选项:\n{options}"
@@ -124,9 +139,15 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
             }
             return Ok(());
         }
-        Some(Command::Run) | Some(Command::Web) | None => {}
+        Some(Command::Run { .. }) | Some(Command::Web { .. }) | None => {}
     }
-    let web = matches!(cli.command, Some(Command::Web));
+    let web = matches!(cli.command, Some(Command::Web { .. }));
+    let quit_in_seconds = match cli.command {
+        Some(Command::Run { quit_in_seconds }) | Some(Command::Web { quit_in_seconds }) => {
+            quit_in_seconds
+        }
+        _ => None,
+    };
     let config_path = executable_directory()?.join(CONFIG_FILENAME);
     let config = load_config(web)?;
     let runtime = CoreBuilder::new(config)
@@ -148,15 +169,43 @@ async fn run(cli: Cli) -> Result<(), CoreError> {
         );
     }
 
-    tokio::signal::ctrl_c().await.map_err(|error| {
-        CoreError::new(
-            fvcore::ErrorCode::Io,
-            format!("failed to wait for shutdown signal: {error}"),
-            false,
-        )
-    })?;
-    tracing::info!("shutdown requested");
+    if let (true, Some(seconds)) = (wait_for_shutdown(quit_in_seconds).await?, quit_in_seconds) {
+        tracing::info!(
+            quit_in_seconds = seconds,
+            "automatic shutdown timer elapsed"
+        );
+    }
+    tracing::info!("graceful shutdown requested");
     runtime.shutdown().await
+}
+
+async fn wait_for_shutdown(quit_in_seconds: Option<u64>) -> Result<bool, CoreError> {
+    wait_for_shutdown_duration(quit_in_seconds.map(std::time::Duration::from_secs)).await
+}
+
+async fn wait_for_shutdown_duration(
+    quit_after: Option<std::time::Duration>,
+) -> Result<bool, CoreError> {
+    if let Some(duration) = quit_after {
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                signal.map_err(signal_error)?;
+                Ok(false)
+            }
+            () = tokio::time::sleep(duration) => Ok(true),
+        }
+    } else {
+        tokio::signal::ctrl_c().await.map_err(signal_error)?;
+        Ok(false)
+    }
+}
+
+fn signal_error(error: std::io::Error) -> CoreError {
+    CoreError::new(
+        fvcore::ErrorCode::Io,
+        format!("failed to wait for shutdown signal: {error}"),
+        false,
+    )
 }
 
 fn local_control_url(listen: std::net::SocketAddr) -> String {
@@ -562,7 +611,7 @@ mod tests {
     use super::{
         CONFIG_BACKUP_FILENAME, Cli, check_config, check_config_path, create_config,
         create_config_directory, executable_directory, load_config_for_executable,
-        local_control_url, lock_config, recover_config_override,
+        local_control_url, lock_config, recover_config_override, wait_for_shutdown_duration,
     };
     use clap::{CommandFactory, Parser};
     use std::fs;
@@ -638,6 +687,10 @@ mod tests {
     fn parses_configuration_management_commands() {
         assert!(Cli::try_parse_from(["fvcore", "help"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "web"]).is_ok());
+        assert!(Cli::try_parse_from(["fvcore", "web", "--quit-in-seconds", "10"]).is_ok());
+        assert!(Cli::try_parse_from(["fvcore", "run", "--quit-in-seconds", "1"]).is_ok());
+        assert!(Cli::try_parse_from(["fvcore", "web", "--quit-in-seconds", "0"]).is_err());
+        assert!(Cli::try_parse_from(["fvcore", "--quit-in-seconds", "10", "web"]).is_err());
         assert!(Cli::try_parse_from(["fvcore", "check-config"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "check-config", "custom.json"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "create-config"]).is_ok());
@@ -645,6 +698,15 @@ mod tests {
         assert!(Cli::try_parse_from(["fvcore", "create-config", "--override"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "create-config", ".", "--override"]).is_ok());
         assert!(Cli::try_parse_from(["fvcore", "check"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn automatic_shutdown_timer_elapses_without_a_signal() {
+        assert!(
+            wait_for_shutdown_duration(Some(std::time::Duration::from_millis(10)))
+                .await
+                .unwrap()
+        );
     }
 
     #[test]
@@ -656,8 +718,22 @@ mod tests {
         assert!(root_help.contains("命令:"));
         assert!(root_help.contains("选项:"));
         assert!(root_help.contains("显示帮助。"));
+        assert!(root_help.contains("fvcore web --quit-in-seconds 10"));
+        assert!(root_help.contains("自动化测试并执行优雅关闭"));
         assert!(!root_help.contains("Usage:"));
         assert!(!root_help.contains("Options:"));
+
+        for name in ["run", "web"] {
+            let command = root
+                .find_subcommand_mut(name)
+                .expect("runtime subcommand exists");
+            let help = command.render_help().to_string();
+            assert!(help.contains("--quit-in-seconds <秒>"));
+            assert!(help.contains("Runtime 就绪后自动退出"));
+            assert!(help.contains(&format!("fvcore {name} --quit-in-seconds 10")));
+            assert!(!help.contains("Usage:"));
+            assert!(!help.contains("Options:"));
+        }
 
         for name in ["check-config", "create-config"] {
             let command = root

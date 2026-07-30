@@ -62,9 +62,34 @@ struct PixivQuery {
 }
 
 #[derive(Deserialize)]
+struct PixivProfileQuery {
+    profile: String,
+}
+
+#[derive(Deserialize)]
 struct PixivSearchQuery {
     profile: String,
     query: String,
+    #[serde(default = "default_page_one")]
+    page: u32,
+}
+
+#[derive(Deserialize)]
+struct PixivRankingQuery {
+    profile: String,
+    #[serde(default = "default_pixiv_ranking_mode")]
+    mode: String,
+    #[serde(default)]
+    date: String,
+    #[serde(default = "default_page_one")]
+    page: u32,
+}
+
+#[derive(Deserialize)]
+struct PixivFollowingQuery {
+    profile: String,
+    #[serde(default = "default_pixiv_following_visibility")]
+    visibility: crate::PixivFollowingVisibility,
     #[serde(default = "default_page_one")]
     page: u32,
 }
@@ -213,6 +238,9 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/fetch", post(start_fetch))
         .route("/ui/pixiv", get(pixiv_detail))
         .route("/ui/pixiv/search", get(pixiv_search))
+        .route("/ui/pixiv/ranking", get(pixiv_ranking))
+        .route("/ui/pixiv/recommendations", get(pixiv_recommendations))
+        .route("/ui/pixiv/following", get(pixiv_following))
         .route("/ui/pixiv/fetch", post(start_pixiv_fetch))
         .route("/ui/eh", get(eh_home))
         .route("/ui/favorite-search", post(create_favorite_search))
@@ -351,9 +379,16 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
         .map(|profile| profile.key.profile.as_str())
         .unwrap_or("default");
     let pixiv_form = format!(
-        "<form method=\"get\" action=\"/ui/pixiv\"><label>会话名称<input name=\"profile\" value=\"{}\" required></label><label>作品 ID<input name=\"id\" inputmode=\"numeric\" required></label><button type=\"submit\">查看作品详情</button></form><form method=\"get\" action=\"/ui/pixiv/search\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"1\"><label>Pixiv 标签<input name=\"query\" required maxlength=\"500\"></label><button type=\"submit\">搜索 Pixiv</button></form>",
+        "<form method=\"get\" action=\"/ui/pixiv\"><label>会话名称<input name=\"profile\" value=\"{}\" required></label><label>作品 ID<input name=\"id\" inputmode=\"numeric\" required></label><button type=\"submit\">查看作品详情</button></form><form method=\"get\" action=\"/ui/pixiv/search\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"1\"><label>Pixiv 标签<input name=\"query\" required maxlength=\"500\"></label><button type=\"submit\">搜索 Pixiv</button></form><p><a href=\"{}\">浏览 Pixiv 推荐</a> · <a href=\"{}\">浏览 Pixiv 关注</a> · <a href=\"{}\">浏览 Pixiv 日榜</a></p>",
         escape(pixiv_profile),
         escape(pixiv_profile),
+        escape(&pixiv_recommendations_url(pixiv_profile)),
+        escape(&pixiv_following_url(
+            pixiv_profile,
+            crate::PixivFollowingVisibility::Public,
+            1,
+        )),
+        escape(&pixiv_ranking_url(pixiv_profile, "day", "", 1)),
     );
     let eh_profile = snapshot
         .profiles
@@ -1857,6 +1892,213 @@ async fn pixiv_search(
     )
 }
 
+async fn pixiv_ranking(
+    State(state): State<ControlState>,
+    Query(query): Query<PixivRankingQuery>,
+) -> Response {
+    let result = match state
+        .core
+        .pixiv_ranking(
+            &ProfileKey::new("pixiv", &query.profile),
+            &query.mode,
+            &query.date,
+            query.page,
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => return error_page(&error),
+    };
+    let mut cards = String::new();
+    for item in &result.items {
+        let previous_rank = item
+            .previous_rank
+            .map_or_else(|| "-".to_owned(), |rank| rank.to_string());
+        let _ = write!(
+            cards,
+            "<article class=\"card\"><h2>#{} <a href=\"{}\">{}</a></h2><p>上期 {} · 作品 {} · 作者 {} ({}) · {} 页 · R18 {}</p><p class=\"muted\">{}</p></article>",
+            item.rank,
+            escape(&pixiv_detail_url(&query.profile, &item.id)),
+            escape(&item.title),
+            previous_rank,
+            escape(&item.id),
+            escape(&item.user.name),
+            escape(&item.user.id),
+            item.page_count,
+            item.x_restrict,
+            escape(&item.tags.join(" ")),
+        );
+    }
+    if cards.is_empty() {
+        cards.push_str("<p class=\"muted\">没有返回 Pixiv 排行作品。</p>");
+    }
+    let next = result.next_page.map_or_else(String::new, |page| {
+        format!(
+            "<a href=\"{}\">下一页</a>",
+            escape(&pixiv_ranking_url(
+                &query.profile,
+                &result.mode,
+                &result.date,
+                page,
+            ))
+        )
+    });
+    let previous = if result.page > 1 {
+        format!(
+            "<a href=\"{}\">上一页</a>",
+            escape(&pixiv_ranking_url(
+                &query.profile,
+                &result.mode,
+                &result.date,
+                result.page - 1,
+            ))
+        )
+    } else {
+        String::new()
+    };
+    let date_label = if result.date.is_empty() {
+        "当前".to_owned()
+    } else {
+        escape(&result.date)
+    };
+    html_page(
+        StatusCode::OK,
+        "Pixiv 排行",
+        &format!(
+            "<h1>Pixiv 排行</h1><form method=\"get\" action=\"/ui/pixiv/ranking\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"1\"><label>模式<select name=\"mode\"><option value=\"day\"{}>日榜</option><option value=\"week\"{}>周榜</option><option value=\"month\"{}>月榜</option></select></label><label>日期（可选）<input name=\"date\" type=\"date\" value=\"{}\"></label><button type=\"submit\">查看排行</button></form><p>会话 {} · 代次 {} · 模式 {} · 日期 {} · 第 {} 页 · {} 个作品</p><p>{previous} {next}</p><div class=\"grid\">{cards}</div><p>{previous} {next}</p>",
+            escape(&query.profile),
+            selected(result.mode == "day"),
+            selected(result.mode == "week"),
+            selected(result.mode == "month"),
+            escape(&result.date),
+            escape(&result.profile),
+            result.generation,
+            escape(&result.mode),
+            date_label,
+            result.page,
+            result.items.len(),
+        ),
+        None,
+    )
+}
+
+async fn pixiv_recommendations(
+    State(state): State<ControlState>,
+    Query(query): Query<PixivProfileQuery>,
+) -> Response {
+    let result = match state
+        .core
+        .pixiv_recommendations(&ProfileKey::new("pixiv", &query.profile))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => return error_page(&error),
+    };
+    let mut cards = String::new();
+    for item in &result.items {
+        let _ = write!(
+            cards,
+            "<article class=\"card\"><h2><a href=\"{}\">{}</a></h2><p>作品 {} · 作者 {} ({}) · {} 页 · R18 {}</p><p class=\"muted\">{}</p></article>",
+            escape(&pixiv_detail_url(&query.profile, &item.id)),
+            escape(&item.title),
+            escape(&item.id),
+            escape(&item.user.name),
+            escape(&item.user.id),
+            item.page_count,
+            item.x_restrict,
+            escape(&item.tags.join(" ")),
+        );
+    }
+    if cards.is_empty() {
+        cards.push_str("<p class=\"muted\">当前没有返回 Pixiv 推荐作品。</p>");
+    }
+    html_page(
+        StatusCode::OK,
+        "Pixiv 推荐",
+        &format!(
+            "<h1>Pixiv 推荐</h1><p>会话 {} · 代次 {} · {} 个作品</p><p><a href=\"{}\">刷新当前推荐</a></p><div class=\"grid\">{cards}</div>",
+            escape(&result.profile),
+            result.generation,
+            result.items.len(),
+            escape(&pixiv_recommendations_url(&query.profile)),
+        ),
+        None,
+    )
+}
+
+async fn pixiv_following(
+    State(state): State<ControlState>,
+    Query(query): Query<PixivFollowingQuery>,
+) -> Response {
+    let result = match state
+        .core
+        .pixiv_following(
+            &ProfileKey::new("pixiv", &query.profile),
+            query.visibility,
+            query.page,
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => return error_page(&error),
+    };
+    let mut cards = String::new();
+    for item in &result.items {
+        let _ = write!(
+            cards,
+            "<article class=\"card\"><h2><a href=\"{}\">{}</a></h2><p>作品 {} · 作者 {} ({}) · {} 页 · R18 {}</p><p class=\"muted\">{}</p></article>",
+            escape(&pixiv_detail_url(&query.profile, &item.id)),
+            escape(&item.title),
+            escape(&item.id),
+            escape(&item.user.name),
+            escape(&item.user.id),
+            item.page_count,
+            item.x_restrict,
+            escape(&item.tags.join(" ")),
+        );
+    }
+    if cards.is_empty() {
+        cards.push_str("<p class=\"muted\">当前没有返回 Pixiv 关注作品。</p>");
+    }
+    let next = result.next_page.map_or_else(String::new, |page| {
+        format!(
+            "<a href=\"{}\">下一页</a>",
+            escape(&pixiv_following_url(
+                &query.profile,
+                result.visibility,
+                page,
+            ))
+        )
+    });
+    let previous = if result.page > 1 {
+        format!(
+            "<a href=\"{}\">上一页</a>",
+            escape(&pixiv_following_url(
+                &query.profile,
+                result.visibility,
+                result.page - 1,
+            ))
+        )
+    } else {
+        String::new()
+    };
+    html_page(
+        StatusCode::OK,
+        "Pixiv 关注",
+        &format!(
+            "<h1>Pixiv 关注</h1><p class=\"muted\">需要当前 Pixiv profile 已加载登录 Cookie。</p><form method=\"get\" action=\"/ui/pixiv/following\"><input type=\"hidden\" name=\"profile\" value=\"{}\"><input type=\"hidden\" name=\"page\" value=\"1\"><label>范围<select name=\"visibility\"><option value=\"public\"{}>公开关注</option><option value=\"private\"{}>R18 关注</option></select></label><button type=\"submit\">查看关注</button></form><p>会话 {} · 代次 {} · 第 {} 页 · {} 个作品</p><p>{previous} {next}</p><div class=\"grid\">{cards}</div><p>{previous} {next}</p>",
+            escape(&query.profile),
+            selected(result.visibility == crate::PixivFollowingVisibility::Public),
+            selected(result.visibility == crate::PixivFollowingVisibility::Private),
+            escape(&result.profile),
+            result.generation,
+            result.page,
+            result.items.len(),
+        ),
+        None,
+    )
+}
+
 async fn start_pixiv_fetch(
     State(state): State<ControlState>,
     Form(form): Form<PixivFetchForm>,
@@ -2254,6 +2496,40 @@ fn pixiv_search_url(profile: &str, query: &str, page: u32) -> String {
     format!("/ui/pixiv/search?{query}")
 }
 
+fn pixiv_ranking_url(profile: &str, mode: &str, date: &str, page: u32) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("profile", profile)
+        .append_pair("mode", mode)
+        .append_pair("date", date)
+        .append_pair("page", &page.to_string())
+        .finish();
+    format!("/ui/pixiv/ranking?{query}")
+}
+
+fn pixiv_recommendations_url(profile: &str) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("profile", profile)
+        .finish();
+    format!("/ui/pixiv/recommendations?{query}")
+}
+
+fn pixiv_following_url(
+    profile: &str,
+    visibility: crate::PixivFollowingVisibility,
+    page: u32,
+) -> String {
+    let visibility = match visibility {
+        crate::PixivFollowingVisibility::Public => "public",
+        crate::PixivFollowingVisibility::Private => "private",
+    };
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("profile", profile)
+        .append_pair("visibility", visibility)
+        .append_pair("page", &page.to_string())
+        .finish();
+    format!("/ui/pixiv/following?{query}")
+}
+
 fn pixiv_detail_url(profile: &str, id: &str) -> String {
     let query = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("profile", profile)
@@ -2264,6 +2540,18 @@ fn pixiv_detail_url(profile: &str, id: &str) -> String {
 
 const fn default_page_one() -> u32 {
     1
+}
+
+fn default_pixiv_ranking_mode() -> String {
+    "day".to_owned()
+}
+
+const fn default_pixiv_following_visibility() -> crate::PixivFollowingVisibility {
+    crate::PixivFollowingVisibility::Public
+}
+
+const fn selected(value: bool) -> &'static str {
+    if value { " selected" } else { "" }
 }
 
 fn eh_gallery_url(profile: &str, gid: u64, token: &str, page: u32) -> String {

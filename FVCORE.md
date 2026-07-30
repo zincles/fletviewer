@@ -48,6 +48,7 @@ let core = runtime.handle();
 ```text
 fvcore run
 fvcore web
+fvcore web --quit-in-seconds 10
 ```
 
 独立程序读取并验证配置、获得存储实例锁、构造唯一 Runtime、恢复任务、按配置或参数决定是否监听集成 HTTP 控制面，并优雅关闭。HTTP handler 只能包装与嵌入者相同的 command、query、snapshot、event 和 resource 方法，不能反向污染 Provider、缓存或下载模块，也不能直接读写内部 registry、数据库或文件。
@@ -135,6 +136,8 @@ gelbooru/default
 每个 profile 共享连接池、认证、代理、限流和登录状态。Cookie、UA、代理或凭据配置变化时创建不可变 client generation：新请求使用新 generation，已运行请求继续持有旧 generation 至完成，旧 generation 无引用后释放。
 
 可执行模式只使用严格 JSON 配置，Runtime 配置来源固定为 executable 同目录的 `config.json`，暂不允许通过参数指定其他位置；文件缺失则拒绝启动并报告期望路径。`run` 不挂载 WebUI，HTTP listener 是否启动由配置决定；`web` 强制启用 listener 和 WebUI，监听地址仍只来自配置。Runtime 默认创建 `eh/default`、`pixiv/default`、`danbooru/default`、`gelbooru/default` 四个无 secret 会话；JSON 省略 `profiles` 时沿用这些默认值，显式提供 `profiles` 时由配置完整替换默认 profile map。配置中的相对存储路径以 executable/config 所在目录为基准。默认存在只表示会话和 origin 可用，不得把尚未实现的方法伪装为已完成。
+
+`run` 与 `web` 可选 `--quit-in-seconds <正整数>` 作为自动化和调试安全阀；计时从 Runtime ready 后开始，到期与 Ctrl+C 使用同一优雅关闭路径，不跳过 HTTP、operation、cache writer、数据库或存储锁清理。省略参数时继续无限等待中断信号。
 
 核心 executable 自主管理默认配置：`fvcore check-config` 检查 executable 同级的 `config.json`，缺失时报告完整路径并提示 `create-config`；也可用 `fvcore check-config <file.json>` 离线检查指定文件。`fvcore create-config` 默认在 executable 同级确定性生成完整 `config.json`，也可显式提供已存在目录；使用唯一临时文件安全发布并默认拒绝覆盖已有配置。显式 `--override` 会丢弃旧值并安全重置为完整默认配置，不做合并；配置管理由目录锁串行化，覆盖以同目录恢复副本保护，后续 `run`、`web`、`check-config` 或 `create-config` 会恢复中断事务。`run` 和 `web` 必须在分配 Runtime 或存储资源前严格解析并完整验证同一份 executable 同级配置，缺失或非法均拒绝启动。通过 Cargo 开发时四个无参数命令一致指向 `target/debug/config.json`，不因当前工作目录存在另一份配置而产生歧义。
 
@@ -425,4 +428,4 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 | 已完成 | 本地画廊导出语义 | `LocalGalleryExport` 以 64 KiB 有界块流式读取原 ZIP，同时最多两个导出并持有共享画廊占用；嵌入 API、HTTP 附件下载和 WebUI 已贯通，descriptor 与响应不暴露服务器 Path |
 | 已完成 | 本地数据盘点与配置展示 | `redb` 登记区分已导入和扫描候选；全量 ZIP/sidecar 健康检查、四类 inventory、按 gallery ID 显式导入、JSON API 和 WebUI 已贯通；配置 snapshot/API 脱敏，调试 HTML 页按 DANGER 例外明文编辑 Provider secret，并可配置默认开启的 LAN 访问 |
 | 已完成 | 图像缓存监管基础 | 网络 body 按真实 chunk 申请全局在途预算；Cache snapshot、非阻塞内容审计、显式清理无效 blob/stale alias、alias schema v1/旧格式迁移、受管 staging 启动清理及 JSON/WebUI 已贯通 |
-| 下一步 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 查询均支持 provider-scoped 收藏搜索；继续补 Pixiv 推荐/关注/收藏/排行和更多 Booru 协议族 |
+| 下一步 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 查询均支持 provider-scoped 收藏搜索；Pixiv 无游标推荐流、日/周/月排行、可选历史日期及登录前置的 public/private 关注分页已贯通 Provider/Core/API/WebUI；继续补从同一会话安全推导用户身份的 Pixiv 收藏，再补更多 Booru 协议族 |
