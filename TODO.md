@@ -53,7 +53,12 @@
 | 已完成 | 本地画廊导出语义 | `LocalGalleryExport` 固定 64 KiB 有界块、最多两个并发导出并持有共享画廊占用；嵌入 API、HTTP 附件与 WebUI 复用同一流，公开 descriptor 不含服务器 Path，平台嵌入者负责目标文件选择与写入 |
 | 已完成 | 本地数据盘点与配置 WebUI | inventory 分类已登记健康/损坏、未登记可导入、格式无效，检查全部 ZIP 页面与 sidecar；显式导入只收 gallery ID；当前生效配置 snapshot 和页面已脱敏 secret、代理值及 URL 凭据 |
 | 已完成 | 图像缓存监管基础 | 全局 chunk 级在途预算、Cache snapshot、非阻塞内容 MD5/shard/extension/magic 审计、显式维护无效 blob/stale alias、alias schema v1/旧格式迁移及受管 staging 启动清理已贯通 |
-| 进行中 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 的查询/翻页和 provider-scoped 收藏搜索已接入 redb schema v3、Core/API/WebUI；Python 已绑定的 17 个 Booru 均已贯通搜索/详情/original fetch，Booru original 与 Pixiv 指定页均已支持复用 `ImageService` 的持久单图下载、节流进度、终态重试、安全删除、调试 WebUI 管理及有界持久队列；EH Archive 与图片任务已提供统一前端安全 query/command facade、capability、稳定 action-not-allowed 错误及 server smoke。正式 transport 固定优先 HTTP/SSE/resource 和单 Runtime 存储 owner；下一步实现桌面 sidecar supervisor 的隔离 smoke，再做 Android 真机 spike |
+| 进行中 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 的查询/翻页和 provider-scoped 收藏搜索已接入 redb schema v3、Core/API/WebUI；Python 已绑定的 17 个 Booru 均已贯通搜索/详情/original fetch，Booru original 与 Pixiv 指定页均已支持复用 `ImageService` 的持久单图下载、节流进度、终态重试、安全删除、调试 WebUI 管理及有界持久队列；EH Archive 与图片任务已提供统一前端安全 query/command facade、capability、稳定 action-not-allowed 错误及 server smoke。正式 transport 固定优先 HTTP/SSE/resource 和单 Runtime 存储 owner；桌面隔离 supervisor 已验证真实 sidecar 的 ready/identity/四域、进程复用、退出责任和存储重启，下一步补非空持久任务恢复、错误 DTO/packaged binary 验收，再做 Android 真机 spike |
+| 下一步 | 桌面 transport 收口 | 用隔离 fixture 创建非空 Archive/图片任务并跨 sidecar 重启验证恢复；为 HTTP 稳定错误 DTO 建立 Python client 映射；确认 Windows/Linux packaged executable 布局、配置/端口发现、版本兼容和启动失败诊断；完成前不接正式 Flet 下载页 |
+| 下一步 | SSE 与客户端一致性 | 实现按 revision 合并的轻量客户端订阅；事件只触发按 ID query，lagged/断线后全量重拉统一下载列表；验证重复、乱序、漏事件和 Runtime 重启后客户端不自行重建权威 registry |
+| 下一步 | Runtime ownership 切换演练 | 在独立四域完成 Flet 全 Runtime 切换 smoke，覆盖查询、资源、下载、画廊和 graceful shutdown；明确停止 Python owner、启动 Rust owner、失败回滚及旧数据迁移步骤，禁止按 Provider/tab 局部双写 |
+| 下一步 | Android sidecar 真机 spike | 用隔离 APK 验证 arm64 Rust executable 打包、private storage 同级配置、loopback listener、后台/返回键/进程回收、应用重启和持久任务恢复；只有实测 sidecar 不可靠时才评估窄 JNI/FFI binding |
+| 后续 | Python Core 余量盘点 | 按 Provider、图像、缓存、下载、ZIP/CBZ、本地画廊、历史和存储逐项对照 Python fixture 与 Rust 契约，记录仍缺的正式行为并按纵向闭环迁移；不把当前已迁移范围误当最终范围 |
 | 进行中 | 只读 CLI 诊断 | `inspect` 已复用 Runtime 公开 query 和 JSON-safe snapshot/result；Runtime/Profile/Pixiv、12 个 Booru 搜索与详情、EH 主页与文本搜索均在正常 shutdown 后输出 JSON，Runtime 额外移除服务器路径；后续接入 EH 详情/缩略图、本地画廊和受限 resource stdout 流 |
 
 ## Core 独立化进度

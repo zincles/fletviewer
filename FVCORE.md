@@ -380,11 +380,12 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 ### 正式 transport 与所有权决策
 
 - 首套正式跨进程 transport 固定复用 executable 已有 HTTP command/query、SSE event 和二进制 resource/stream，不以 `inspect` stdout、Python module、C ABI 或 Provider-specific bridge 形成第二套协议。
-- server/Web/NAS 首先使用长期运行的单一 `fvcore` executable；桌面下一步验证由 Flet supervisor 发现或启动 localhost sidecar、等待 ready、连接同一 Runtime，并明确前端退出后 Runtime 是否继续后台任务。
+- server/Web/NAS 首先使用长期运行的单一 `fvcore` executable；桌面 supervisor 只接受带显式端口的明文 loopback origin，先通过 ready 和 Runtime snapshot 校验 `runtime_id`、`instance_name` 及四域规范路径，再发现或启动 sidecar。桌面前端退出时只向自己启动的进程发送中断并等待 graceful shutdown；发现的外部 Runtime 由其原 owner 管理，前端不得代为关闭。
 - 一组 Data、Cache、Downloads、Temp 在任一时刻只能由一个 Rust Runtime 或旧 Python Core 持有。正式切换按完整 Runtime ownership 进行，不按 EH/Booru/Pixiv tab 拆分，不允许 Python 管 EH 而 Rust 同时管理图片任务并写同一存储。
 - Flet 当前仍使用 Python Core；在 sidecar supervisor、配置/端口发现、错误映射和隔离存储 smoke 完成前，不把正式下载页部分接到 Rust。切换测试必须先使用独立存储根，确认后再停止 Python owner 并迁移所有权。
 - Android 不从桌面行为推断可行性：先用隔离测试 APK 验证多 ABI Rust 产物打包、loopback listener、后台存活、应用重启恢复和 private storage。只有 sidecar 被实测证明不可可靠使用时，才评估包装同一公开契约的窄 JNI/FFI binding，并先更新安全不变量；不预先引入 `unsafe`。
 - SSE 是 invalidation/revision 信号而非另一份任务权威状态。客户端收到 Archive 或 image task event 后按 task ID 查询统一 `DownloadTaskView`，丢事件或 lagged 时重新拉取列表；UI 可合并刷新，但不得只靠本地事件重建任务 registry。
+- `app/fvcore_sidecar.py` 是不接入正式 `app.backend` 的桌面隔离 supervisor；真实 executable smoke 使用临时同级 `config.json` 和独立四域，已验证 ready、统一下载 query、同 Runtime 复用、非 owner 退出不终止进程、owner SIGINT graceful shutdown 及同一存储重启。正式切换前仍需补带非空持久任务的重启恢复、错误 DTO 映射和 packaged executable 定位验收。
 
 ### 阶段 8：平台验证与所有权切换准备
 
