@@ -109,6 +109,8 @@ pub struct CoreConfig {
     pub network: NetworkConfig,
     /// Image fetch and cache limits. Defaults to [`ImageConfig::default`].
     pub images: ImageConfig,
+    /// Persistent single-image download limits.
+    pub image_downloads: ImageDownloadConfig,
     /// Configured Provider profiles. Defaults to EH, Pixiv, Danbooru and Gelbooru.
     pub profiles: BTreeMap<String, ProviderProfileConfig>,
 }
@@ -136,6 +138,8 @@ pub struct EffectiveConfigSnapshot {
     pub network: EffectiveNetworkConfig,
     /// Image and cache limits.
     pub images: ImageConfig,
+    /// Persistent single-image download limits.
+    pub image_downloads: ImageDownloadConfig,
     /// Provider profile inputs without secret values.
     pub profiles: Vec<EffectiveProviderProfileConfig>,
 }
@@ -230,6 +234,7 @@ impl CoreConfig {
                 proxy_configured: self.network.proxy_url.is_some(),
             },
             images: self.images.clone(),
+            image_downloads: self.image_downloads.clone(),
             profiles,
         }
     }
@@ -257,6 +262,7 @@ impl Default for CoreConfig {
             events: EventConfig::default(),
             network: NetworkConfig::default(),
             images: ImageConfig::default(),
+            image_downloads: ImageDownloadConfig::default(),
             profiles: default_profiles(),
         }
     }
@@ -335,6 +341,7 @@ impl CoreConfig {
         self.events.validate()?;
         self.network.validate()?;
         self.images.validate()?;
+        self.image_downloads.validate()?;
         let mut profile_keys = HashSet::new();
         for (key, profile) in &self.profiles {
             profile.validate(key)?;
@@ -390,6 +397,42 @@ impl ImageConfig {
             return Err(CoreError::new(
                 ErrorCode::InvalidConfig,
                 "image limits must be nonzero, max_inflight_bytes must cover one image, and byte permits must fit in u32",
+                false,
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Concurrency and queue limits for persistent single-image downloads.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ImageDownloadConfig {
+    /// Maximum concurrently running image download tasks. Defaults to `2`.
+    pub max_active: usize,
+    /// Maximum image download tasks waiting for a slot. Defaults to `64`.
+    pub max_queued: usize,
+}
+
+impl Default for ImageDownloadConfig {
+    fn default() -> Self {
+        Self {
+            max_active: 2,
+            max_queued: 64,
+        }
+    }
+}
+
+impl ImageDownloadConfig {
+    fn validate(&self) -> Result<(), CoreError> {
+        if self.max_active == 0
+            || self.max_active > 16
+            || self.max_queued == 0
+            || self.max_queued > 4096
+        {
+            return Err(CoreError::new(
+                ErrorCode::InvalidConfig,
+                "image download max_active must be 1..=16 and max_queued must be 1..=4096",
                 false,
             ));
         }
@@ -896,6 +939,20 @@ mod tests {
     }
 
     #[test]
+    fn validates_image_download_limits() {
+        let mut config = CoreConfig::default();
+        config.image_downloads.max_active = 0;
+        assert!(config.validate().is_err());
+        config.image_downloads.max_active = 17;
+        assert!(config.validate().is_err());
+        config.image_downloads.max_active = 2;
+        config.image_downloads.max_queued = 4097;
+        assert!(config.validate().is_err());
+        config.image_downloads.max_queued = 64;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
     fn effective_snapshot_redacts_proxy_and_credential_values() {
         let mut config = CoreConfig::default();
         config.network.proxy_url = Some(
@@ -920,6 +977,8 @@ mod tests {
             },
             &[],
         );
+        assert_eq!(snapshot.image_downloads.max_active, 2);
+        assert_eq!(snapshot.image_downloads.max_queued, 64);
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(json.contains("FV_EH_COOKIE"));
         assert!(json.contains("proxy_configured"));

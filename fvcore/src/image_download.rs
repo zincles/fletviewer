@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc};
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -20,6 +21,8 @@ use uuid::Uuid;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageDownloadState {
+    /// The durable task is waiting for a bounded worker slot.
+    Queued,
     /// Metadata resolution or shared image fetch is running.
     Running,
     /// Immutable image bytes were atomically published into Downloads.
@@ -28,6 +31,25 @@ pub enum ImageDownloadState {
     Failed,
     /// The caller cancelled this task subscription.
     Cancelled,
+}
+
+/// Runtime accounting for persistent single-image downloads.
+#[derive(Clone, Debug, Serialize)]
+pub struct ImageDownloadStats {
+    /// Configured maximum concurrently running tasks.
+    pub max_active: usize,
+    /// Configured maximum queued tasks.
+    pub max_queued: usize,
+    /// Tasks currently holding a worker slot.
+    pub active: usize,
+    /// Tasks waiting for a worker slot.
+    pub queued: usize,
+    /// Completed task records.
+    pub completed: usize,
+    /// Failed task records.
+    pub failed: usize,
+    /// Cancelled task records.
+    pub cancelled: usize,
 }
 
 /// Request for one durable Booru original image download.
@@ -124,6 +146,8 @@ pub(crate) struct ImageDownloadService {
     cancellations: Mutex<HashMap<Uuid, CancellationToken>>,
     shutdown: CancellationToken,
     message_tx: mpsc::Sender<OperationMessage>,
+    config: crate::ImageDownloadConfig,
+    permits: Arc<Semaphore>,
 }
 
 impl ImageDownloadService {
@@ -133,6 +157,7 @@ impl ImageDownloadService {
         images: Arc<ImageService>,
         shutdown: CancellationToken,
         message_tx: mpsc::Sender<OperationMessage>,
+        config: crate::ImageDownloadConfig,
     ) -> Result<Arc<Self>, CoreError> {
         let tasks_root = downloads.join("ImageTasks");
         let images_root = downloads.join("Images");
@@ -168,7 +193,8 @@ impl ImageDownloadService {
             }
             tasks.insert(task.snapshot.id, task);
         }
-        Ok(Arc::new(Self {
+        let permits = Arc::new(Semaphore::new(config.max_active));
+        let service = Arc::new(Self {
             tasks_root,
             images_root,
             sessions,
@@ -177,7 +203,21 @@ impl ImageDownloadService {
             cancellations: Mutex::new(HashMap::new()),
             shutdown,
             message_tx,
-        }))
+            config,
+            permits,
+        });
+        let queued = service
+            .tasks
+            .lock()
+            .await
+            .values()
+            .filter(|task| task.snapshot.state == ImageDownloadState::Queued)
+            .cloned()
+            .collect::<Vec<_>>();
+        for task in queued {
+            service.schedule(task).await;
+        }
+        Ok(service)
     }
 
     pub(crate) async fn start(
@@ -196,7 +236,7 @@ impl ImageDownloadService {
         let task = PersistedImageDownloadTask {
             snapshot: ImageDownloadTaskSnapshot {
                 id,
-                state: ImageDownloadState::Running,
+                state: ImageDownloadState::Queued,
                 revision: 1,
                 kind: ImageDownloadKind::BooruOriginal,
                 profile: request.profile,
@@ -236,7 +276,7 @@ impl ImageDownloadService {
         let task = PersistedImageDownloadTask {
             snapshot: ImageDownloadTaskSnapshot {
                 id,
-                state: ImageDownloadState::Running,
+                state: ImageDownloadState::Queued,
                 revision: 1,
                 kind: ImageDownloadKind::PixivOriginal,
                 profile: request.profile,
@@ -262,15 +302,41 @@ impl ImageDownloadService {
         task: PersistedImageDownloadTask,
     ) -> Result<ImageDownloadTaskSnapshot, CoreError> {
         let id = task.snapshot.id;
-        tokio::fs::create_dir_all(self.tasks_root.join(id.to_string()))
-            .await
-            .map_err(|error| io_error("create image task", &self.tasks_root, error))?;
-        persist(&self.tasks_root, &task).await?;
-        self.tasks.lock().await.insert(id, task.clone());
+        {
+            let mut tasks = self.tasks.lock().await;
+            let admitted = tasks
+                .values()
+                .filter(|task| {
+                    matches!(
+                        task.snapshot.state,
+                        ImageDownloadState::Queued | ImageDownloadState::Running
+                    )
+                })
+                .count();
+            if admitted >= self.config.max_active + self.config.max_queued {
+                return Err(CoreError::new(
+                    ErrorCode::Overloaded,
+                    "image download queue is full",
+                    true,
+                ));
+            }
+            tokio::fs::create_dir_all(self.tasks_root.join(id.to_string()))
+                .await
+                .map_err(|error| io_error("create image task", &self.tasks_root, error))?;
+            persist(&self.tasks_root, &task).await?;
+            tasks.insert(id, task.clone());
+        }
         let _ = self
             .message_tx
             .send(OperationMessage::ImageDownloadTask(task.snapshot.clone()))
             .await;
+        let snapshot = task.snapshot.clone();
+        self.schedule(task).await;
+        Ok(snapshot)
+    }
+
+    async fn schedule(self: &Arc<Self>, task: PersistedImageDownloadTask) {
+        let id = task.snapshot.id;
         let cancellation = self.shutdown.child_token();
         self.cancellations
             .lock()
@@ -278,7 +344,6 @@ impl ImageDownloadService {
             .insert(id, cancellation.clone());
         let service = self.clone();
         tokio::spawn(async move { service.run(task, cancellation).await });
-        Ok(self.tasks.lock().await[&id].snapshot.clone())
     }
 
     pub(crate) async fn list(&self) -> Vec<ImageDownloadTaskSnapshot> {
@@ -291,6 +356,25 @@ impl ImageDownloadService {
             .collect::<Vec<_>>();
         tasks.sort_by_key(|task| task.created_at);
         tasks
+    }
+
+    pub(crate) async fn stats(&self) -> ImageDownloadStats {
+        let tasks = self.tasks.lock().await;
+        let count = |state| {
+            tasks
+                .values()
+                .filter(|task| task.snapshot.state == state)
+                .count()
+        };
+        ImageDownloadStats {
+            max_active: self.config.max_active,
+            max_queued: self.config.max_queued,
+            active: count(ImageDownloadState::Running),
+            queued: count(ImageDownloadState::Queued),
+            completed: count(ImageDownloadState::Completed),
+            failed: count(ImageDownloadState::Failed),
+            cancelled: count(ImageDownloadState::Cancelled),
+        }
     }
 
     pub(crate) async fn get(&self, id: Uuid) -> Result<ImageDownloadTaskSnapshot, CoreError> {
@@ -327,14 +411,33 @@ impl ImageDownloadService {
         let task = {
             let mut tasks = self.tasks.lock().await;
             let mut task = tasks.get(&id).cloned().ok_or_else(task_not_found)?;
-            if task.snapshot.state == ImageDownloadState::Running {
+            if matches!(
+                task.snapshot.state,
+                ImageDownloadState::Queued | ImageDownloadState::Running
+            ) {
                 return Err(CoreError::new(
                     ErrorCode::InvalidInput,
                     "running image download task cannot be retried",
                     false,
                 ));
             }
-            task.snapshot.state = ImageDownloadState::Running;
+            let admitted = tasks
+                .values()
+                .filter(|candidate| {
+                    matches!(
+                        candidate.snapshot.state,
+                        ImageDownloadState::Queued | ImageDownloadState::Running
+                    )
+                })
+                .count();
+            if admitted >= self.config.max_active + self.config.max_queued {
+                return Err(CoreError::new(
+                    ErrorCode::Overloaded,
+                    "image download queue is full",
+                    true,
+                ));
+            }
+            task.snapshot.state = ImageDownloadState::Queued;
             task.snapshot.revision += 1;
             task.snapshot.byte_length = None;
             task.snapshot.content_md5 = None;
@@ -352,20 +455,18 @@ impl ImageDownloadService {
             .message_tx
             .send(OperationMessage::ImageDownloadTask(task.snapshot.clone()))
             .await;
-        let cancellation = self.shutdown.child_token();
-        self.cancellations
-            .lock()
-            .await
-            .insert(id, cancellation.clone());
-        let service = self.clone();
-        tokio::spawn(async move { service.run(task, cancellation).await });
-        Ok(self.tasks.lock().await[&id].snapshot.clone())
+        let snapshot = task.snapshot.clone();
+        self.schedule(task).await;
+        Ok(snapshot)
     }
 
     pub(crate) async fn delete(&self, id: Uuid) -> Result<(), CoreError> {
         let mut tasks = self.tasks.lock().await;
         let task = tasks.get(&id).ok_or_else(task_not_found)?;
-        if task.snapshot.state == ImageDownloadState::Running {
+        if matches!(
+            task.snapshot.state,
+            ImageDownloadState::Queued | ImageDownloadState::Running
+        ) {
             return Err(CoreError::new(
                 ErrorCode::InvalidInput,
                 "running image download task cannot be deleted",
@@ -405,6 +506,33 @@ impl ImageDownloadService {
         mut task: PersistedImageDownloadTask,
         cancellation: CancellationToken,
     ) {
+        let permit = tokio::select! {
+            permit = self.permits.clone().acquire_owned() => permit,
+            () = cancellation.cancelled() => {
+                self.finish_cancelled(task).await;
+                return;
+            }
+        };
+        let Ok(_permit) = permit else {
+            self.finish_cancelled(task).await;
+            return;
+        };
+        task.snapshot.state = ImageDownloadState::Running;
+        task.snapshot.revision += 1;
+        task.snapshot.updated_at = OffsetDateTime::now_utc();
+        if persist(&self.tasks_root, &task).await.is_err() {
+            self.finish_failed(task, "failed to persist running image task")
+                .await;
+            return;
+        }
+        self.tasks
+            .lock()
+            .await
+            .insert(task.snapshot.id, task.clone());
+        let _ = self
+            .message_tx
+            .send(OperationMessage::ImageDownloadTask(task.snapshot.clone()))
+            .await;
         let (progress_tx, progress_rx) = mpsc::channel(16);
         let progress_service = self.clone();
         let task_id = task.snapshot.id;
@@ -452,6 +580,35 @@ impl ImageDownloadService {
         let _ = self
             .message_tx
             .send(OperationMessage::ImageDownloadTask(task.snapshot.clone()))
+            .await;
+    }
+
+    async fn finish_cancelled(&self, mut task: PersistedImageDownloadTask) {
+        task.snapshot.state = ImageDownloadState::Cancelled;
+        task.snapshot.phase = "cancelled".to_owned();
+        task.snapshot.error = Some("image download was cancelled".to_owned());
+        self.finish_without_worker(task).await;
+    }
+
+    async fn finish_failed(&self, mut task: PersistedImageDownloadTask, message: &str) {
+        task.snapshot.state = ImageDownloadState::Failed;
+        task.snapshot.phase = "failed".to_owned();
+        task.snapshot.error = Some(message.to_owned());
+        self.finish_without_worker(task).await;
+    }
+
+    async fn finish_without_worker(&self, mut task: PersistedImageDownloadTask) {
+        task.snapshot.revision += 1;
+        task.snapshot.updated_at = OffsetDateTime::now_utc();
+        let _ = persist(&self.tasks_root, &task).await;
+        self.cancellations.lock().await.remove(&task.snapshot.id);
+        self.tasks
+            .lock()
+            .await
+            .insert(task.snapshot.id, task.clone());
+        let _ = self
+            .message_tx
+            .send(OperationMessage::ImageDownloadTask(task.snapshot))
             .await;
     }
 

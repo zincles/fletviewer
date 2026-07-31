@@ -1,6 +1,6 @@
 //! Immutable Runtime state exposed to embedded and HTTP callers.
 
-use crate::{ProfileSnapshot, RuntimeId};
+use crate::{ImageDownloadStats, ProfileSnapshot, RuntimeId};
 use serde::Serialize;
 
 /// Runtime lifecycle visible through every control adapter.
@@ -44,6 +44,8 @@ pub struct CoreSnapshot {
     pub queued_operations: usize,
     /// Number of terminal operation snapshots retained in memory.
     pub retained_operations: usize,
+    /// Persistent single-image download task accounting.
+    pub image_downloads: ImageDownloadStats,
     /// Latest Runtime event sequence.
     pub latest_event_sequence: u64,
     /// Immutable snapshots of configured Provider session generations.

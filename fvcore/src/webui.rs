@@ -437,7 +437,8 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
             "<dt>状态</dt><dd>{:?}</dd><dt>修订号</dt><dd>{}</dd><dt>运行时间</dt><dd>{} 秒</dd>",
             "<dt>排队命令</dt><dd>{}</dd><dt>最新事件</dt><dd>{}</dd></dl></section>",
             "<section class=\"card\"><h2>控制面</h2><dl><dt>HTTP</dt><dd>{}</dd>",
-            "<dt>监听地址</dt><dd><code>{}</code></dd><dt>操作</dt><dd>{} 运行中 / {} 排队 / {} 保留</dd></dl></section>",
+            "<dt>监听地址</dt><dd><code>{}</code></dd><dt>操作</dt><dd>{} 运行中 / {} 排队 / {} 保留</dd>",
+            "<dt>图片任务</dt><dd>{} / {} 运行中 · {} / {} 排队 · {} 完成 · {} 失败 · {} 取消</dd></dl></section>",
             "<section class=\"card wide\"><h2>存储</h2><table><tbody>",
             "<tr><th>Schema</th><td>{}</td><th>数据库</th><td>{} 字节</td></tr>",
             "<tr><th>数据</th><td colspan=\"3\"><code>{}</code></td></tr>",
@@ -469,6 +470,13 @@ async fn dashboard(State(state): State<ControlState>) -> Response {
         snapshot.active_operations,
         snapshot.queued_operations,
         snapshot.retained_operations,
+        snapshot.image_downloads.active,
+        snapshot.image_downloads.max_active,
+        snapshot.image_downloads.queued,
+        snapshot.image_downloads.max_queued,
+        snapshot.image_downloads.completed,
+        snapshot.image_downloads.failed,
+        snapshot.image_downloads.cancelled,
         snapshot.storage.schema_version,
         snapshot.storage.database_bytes,
         escape(&snapshot.storage.data),
@@ -967,9 +975,12 @@ async fn archive_tasks(State(state): State<ControlState>) -> Response {
 
 async fn image_downloads(State(state): State<ControlState>) -> Response {
     let tasks = state.core.image_download_tasks().await;
-    let active = tasks
-        .iter()
-        .any(|task| task.state == crate::ImageDownloadState::Running);
+    let active = tasks.iter().any(|task| {
+        matches!(
+            task.state,
+            crate::ImageDownloadState::Queued | crate::ImageDownloadState::Running
+        )
+    });
     let mut rows = String::new();
     for task in tasks.iter().rev() {
         let resource = match task.kind {
@@ -983,7 +994,10 @@ async fn image_downloads(State(state): State<ControlState>) -> Response {
                     .map_or_else(|| "?".to_owned(), |page| page.to_string())
             ),
         };
-        let action = if task.state == crate::ImageDownloadState::Running {
+        let action = if matches!(
+            task.state,
+            crate::ImageDownloadState::Queued | crate::ImageDownloadState::Running
+        ) {
             format!(
                 "<form method=\"post\" action=\"/ui/image-download/cancel\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button type=\"submit\">取消</button></form>",
                 task.id

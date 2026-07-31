@@ -124,6 +124,15 @@ impl RuntimeData {
             active_operations: active,
             queued_operations: queued,
             retained_operations: retained,
+            image_downloads: crate::ImageDownloadStats {
+                max_active: self.config.image_downloads.max_active,
+                max_queued: self.config.image_downloads.max_queued,
+                active: 0,
+                queued: 0,
+                completed: 0,
+                failed: 0,
+                cancelled: 0,
+            },
             latest_event_sequence: latest_sequence,
             profiles,
         }
@@ -182,6 +191,7 @@ impl CoreBuilder {
             images.clone(),
             shutdown.child_token(),
             message_tx.clone(),
+            self.config.image_downloads.clone(),
         )
         .await?;
         let archives = ArchiveService::open(
@@ -319,13 +329,15 @@ impl CoreHandle {
                     false,
                 ),
             })?;
-        response.await.map_err(|_| {
+        let mut snapshot = response.await.map_err(|_| {
             CoreError::new(
                 ErrorCode::Internal,
                 "runtime dropped the snapshot response",
                 false,
             )
-        })
+        })?;
+        snapshot.image_downloads = self.image_downloads.stats().await;
+        Ok(snapshot)
     }
 
     /// Returns the effective configuration without secret or proxy values.
@@ -1575,7 +1587,12 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let snapshot = handle.image_download_task(id).await.unwrap();
-                if snapshot.state != ImageDownloadState::Running {
+                if matches!(
+                    snapshot.state,
+                    ImageDownloadState::Completed
+                        | ImageDownloadState::Failed
+                        | ImageDownloadState::Cancelled
+                ) {
                     return snapshot;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -2231,6 +2248,8 @@ mod tests {
         assert!(response.contains("<h2>Booru 搜索</h2>"));
         assert!(response.contains("<h2>EH 主页</h2>"));
         assert!(response.contains("<h2>最近操作</h2>"));
+        assert!(response.contains("<dt>图片任务</dt>"));
+        assert!(response.contains("0 / 2 运行中 · 0 / 64 排队"));
         assert!(response.contains(&operation.id.to_string()));
         assert!(response.contains("<meta http-equiv=\"refresh\" content=\"5\">"));
         assert!(response.contains("每 5 秒自动刷新"));
@@ -3930,7 +3949,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(retried.id, recovered.id);
-        assert_eq!(retried.state, ImageDownloadState::Running);
+        assert_eq!(retried.state, ImageDownloadState::Queued);
         assert_eq!(retried.revision, recovered.revision + 1);
         let retried = wait_image_download(&restarted.handle(), retried.id).await;
         assert_eq!(retried.state, ImageDownloadState::Completed);
@@ -4177,6 +4196,78 @@ mod tests {
         }));
         assert_eq!(requests.load(Ordering::SeqCst), 1);
         restarted.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn image_download_queue_is_bounded_and_reported_in_runtime_snapshot() {
+        let image = Arc::new(test_jpeg());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let listen = pixiv_provider(image, requests.clone()).await;
+        let temp = TempDir::new().unwrap();
+        let mut core_config = config(&temp);
+        core_config
+            .profiles
+            .insert("pixiv".to_owned(), pixiv_profile(listen));
+        core_config.image_downloads.max_active = 1;
+        core_config.image_downloads.max_queued = 1;
+        let runtime = CoreBuilder::new(core_config).build().await.unwrap();
+        let handle = runtime.handle();
+        let request = |illust_id: &str| PixivImageDownloadRequest {
+            profile: ProfileKey::new("pixiv", "default"),
+            illust_id: illust_id.to_owned(),
+            page: 0,
+        };
+        let first = handle
+            .start_pixiv_image_download(request("12345678"))
+            .await
+            .unwrap();
+        let second = handle
+            .start_pixiv_image_download(request("12345679"))
+            .await
+            .unwrap();
+        let error = handle
+            .start_pixiv_image_download(request("12345680"))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::Overloaded);
+        let snapshot = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let snapshot = handle.snapshot().await.unwrap();
+                if snapshot.image_downloads.active == 1 && snapshot.image_downloads.queued == 1 {
+                    return snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(snapshot.image_downloads.max_active, 1);
+        assert_eq!(snapshot.image_downloads.max_queued, 1);
+        let queued = handle
+            .image_download_tasks()
+            .await
+            .into_iter()
+            .find(|task| task.state == ImageDownloadState::Queued)
+            .unwrap();
+        handle.cancel_image_download_task(queued.id).await.unwrap();
+        let queued = wait_image_download(&handle, queued.id).await;
+        assert_eq!(queued.state, ImageDownloadState::Cancelled);
+        let survivor = if first.id == queued.id {
+            second.id
+        } else {
+            first.id
+        };
+        assert_eq!(
+            wait_image_download(&handle, survivor).await.state,
+            ImageDownloadState::Completed
+        );
+        let snapshot = handle.snapshot().await.unwrap();
+        assert_eq!(snapshot.image_downloads.active, 0);
+        assert_eq!(snapshot.image_downloads.queued, 0);
+        assert_eq!(snapshot.image_downloads.completed, 1);
+        assert_eq!(snapshot.image_downloads.cancelled, 1);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        runtime.shutdown().await.unwrap();
     }
 
     #[tokio::test]

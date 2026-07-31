@@ -23,8 +23,8 @@ mod webui;
 pub use archive::{ArchiveTaskSnapshot, ArchiveTaskState, EhArchiveDownloadRequest};
 pub use config::{
     ControlConfig, CoreConfig, EffectiveConfigSnapshot, EffectiveNetworkConfig,
-    EffectiveProviderProfileConfig, EventConfig, ImageConfig, NetworkConfig, OperationConfig,
-    ProviderProfileConfig, StorageConfig,
+    EffectiveProviderProfileConfig, EventConfig, ImageConfig, ImageDownloadConfig, NetworkConfig,
+    OperationConfig, ProviderProfileConfig, StorageConfig,
 };
 pub use error::{CoreError, ErrorCode};
 pub use gallery::{
@@ -40,8 +40,8 @@ pub use image::{
     ImageResource, ImageResourceDescriptor, ResourceKey, ResourceSource,
 };
 pub use image_download::{
-    BooruImageDownloadRequest, ImageDownloadKind, ImageDownloadState, ImageDownloadTaskSnapshot,
-    PixivImageDownloadRequest,
+    BooruImageDownloadRequest, ImageDownloadKind, ImageDownloadState, ImageDownloadStats,
+    ImageDownloadTaskSnapshot, PixivImageDownloadRequest,
 };
 pub use operation::{
     BooruOriginalFetchRequest, CoreEvent, CoreEventSubject, EhPageFetchRequest, ErrorSnapshot,
