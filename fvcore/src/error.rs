@@ -32,6 +32,8 @@ pub enum ErrorCode {
     OperationNotFound,
     /// The requested operation has already reached a terminal state.
     OperationFinished,
+    /// A persistent download task exists but its family or current state rejects the action.
+    DownloadTaskActionNotAllowed,
     /// The requested Provider profile does not exist.
     ProfileNotFound,
     /// The requested Provider resource does not exist.
@@ -71,6 +73,7 @@ impl ErrorCode {
             Self::Internal => "internal",
             Self::OperationNotFound => "operation_not_found",
             Self::OperationFinished => "operation_finished",
+            Self::DownloadTaskActionNotAllowed => "download_task_action_not_allowed",
             Self::ProfileNotFound => "profile_not_found",
             Self::ResourceNotFound => "resource_not_found",
             Self::AuthenticationRequired => "authentication_required",

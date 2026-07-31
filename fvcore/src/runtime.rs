@@ -524,6 +524,59 @@ impl CoreHandle {
             .map(crate::DownloadTaskView::from_image)
     }
 
+    /// Cancels one persistent download task through its owning task family.
+    pub async fn cancel_download_task(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<crate::DownloadTaskView, CoreError> {
+        let task = self.download_task(id).await?;
+        if !task.can_cancel {
+            return Err(download_action_not_allowed("cancel", &task));
+        }
+        if task.kind == "eh_archive" {
+            self.archives
+                .cancel(id)
+                .await
+                .map(crate::DownloadTaskView::from_archive)
+        } else {
+            self.image_downloads
+                .cancel(id)
+                .await
+                .map(crate::DownloadTaskView::from_image)
+        }
+    }
+
+    /// Retries one persistent download task through its owning task family.
+    pub async fn retry_download_task(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<crate::DownloadTaskView, CoreError> {
+        let task = self.download_task(id).await?;
+        if !task.can_retry {
+            return Err(download_action_not_allowed("retry", &task));
+        }
+        if task.kind == "eh_archive" {
+            self.archives
+                .retry(id)
+                .await
+                .map(crate::DownloadTaskView::from_archive)
+        } else {
+            self.image_downloads
+                .retry(id)
+                .await
+                .map(crate::DownloadTaskView::from_image)
+        }
+    }
+
+    /// Deletes one task record only when its owning task family explicitly supports deletion.
+    pub async fn delete_download_task(&self, id: uuid::Uuid) -> Result<(), CoreError> {
+        let task = self.download_task(id).await?;
+        if !task.can_delete {
+            return Err(download_action_not_allowed("delete", &task));
+        }
+        self.image_downloads.delete(id).await
+    }
+
     /// Returns one persistent single-image download task.
     pub async fn image_download_task(
         &self,
@@ -1120,6 +1173,17 @@ impl CoreHandle {
             )
         })
     }
+}
+
+fn download_action_not_allowed(action: &str, task: &crate::DownloadTaskView) -> CoreError {
+    CoreError::new(
+        ErrorCode::DownloadTaskActionNotAllowed,
+        format!(
+            "download task kind {} in {:?} status does not allow {action}",
+            task.kind, task.status
+        ),
+        false,
+    )
 }
 
 /// Owner of all supervised Core services.
@@ -3282,6 +3346,23 @@ mod tests {
         assert!(unified.contains("\"can_delete\":false"));
         assert!(!unified.contains(temp.path().to_str().unwrap()));
         assert!(!unified.contains("final_path"));
+        for (method, suffix) in [("POST", "/retry"), ("DELETE", "")] {
+            let denied = String::from_utf8(
+                http_request(
+                    listen,
+                    format!(
+                        "{method} /api/v1/download-tasks/{}{suffix} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        runtime.handle().archive_tasks().await[0].id
+                    )
+                    .as_bytes(),
+                )
+                .await,
+            )
+            .unwrap();
+            assert!(denied.starts_with("HTTP/1.1 409 Conflict"));
+            assert!(denied.contains("\"code\":\"download_task_action_not_allowed\""));
+            assert!(denied.contains("\"retryable\":false"));
+        }
         let events = runtime.handle().events_after(0).await.unwrap();
         assert!(events.events.iter().any(|event| matches!(
             &event.subject,
@@ -4241,13 +4322,16 @@ mod tests {
         let retried = http_request(
             control_listen,
             format!(
-                "POST /api/v1/image-download-tasks/{}/retry HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                "POST /api/v1/download-tasks/{}/retry HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 http_task.id
             )
             .as_bytes(),
         )
         .await;
         assert!(retried.starts_with(b"HTTP/1.1 202 Accepted"));
+        let stale_retry = handle.retry_download_task(http_task.id).await.unwrap_err();
+        assert_eq!(stale_retry.code(), ErrorCode::DownloadTaskActionNotAllowed);
+        assert!(!stale_retry.retryable());
         let retried = wait_image_download(&handle, http_task.id).await;
         assert_eq!(retried.state, ImageDownloadState::Completed);
         assert!(retried.revision > http_task.revision + 1);
@@ -4257,7 +4341,7 @@ mod tests {
         let deleted = http_request(
             control_listen,
             format!(
-                "DELETE /api/v1/image-download-tasks/{} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                "DELETE /api/v1/download-tasks/{} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
                 http_task.id
             )
             .as_bytes(),

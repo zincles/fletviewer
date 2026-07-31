@@ -395,7 +395,7 @@ impl ImageDownloadService {
             .cloned()
             .ok_or_else(|| {
                 CoreError::new(
-                    ErrorCode::InvalidInput,
+                    ErrorCode::DownloadTaskActionNotAllowed,
                     "image download task is not running",
                     false,
                 )
@@ -416,7 +416,7 @@ impl ImageDownloadService {
                 ImageDownloadState::Queued | ImageDownloadState::Running
             ) {
                 return Err(CoreError::new(
-                    ErrorCode::InvalidInput,
+                    ErrorCode::DownloadTaskActionNotAllowed,
                     "running image download task cannot be retried",
                     false,
                 ));
@@ -468,7 +468,7 @@ impl ImageDownloadService {
             ImageDownloadState::Queued | ImageDownloadState::Running
         ) {
             return Err(CoreError::new(
-                ErrorCode::InvalidInput,
+                ErrorCode::DownloadTaskActionNotAllowed,
                 "running image download task cannot be deleted",
                 false,
             ));

@@ -111,10 +111,7 @@ impl DownloadTaskView {
                     | ArchiveTaskState::Ready
                     | ArchiveTaskState::Downloading
             ),
-            can_retry: matches!(
-                task.state,
-                ArchiveTaskState::Failed | ArchiveTaskState::Cancelled
-            ),
+            can_retry: task.retry_supported,
             can_delete: false,
             created_at: task.created_at,
             updated_at: task.updated_at,

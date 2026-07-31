@@ -2431,6 +2431,7 @@ mod tests {
             bytes_done: 0,
             bytes_total: None,
             resume_supported: true,
+            retry_supported: false,
             final_path: None,
             error: None,
             consume_error: None,

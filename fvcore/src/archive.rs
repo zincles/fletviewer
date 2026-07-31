@@ -94,6 +94,9 @@ pub struct ArchiveTaskSnapshot {
     pub bytes_total: Option<u64>,
     /// Whether the server supports ordinary HTTP Range resume.
     pub resume_supported: bool,
+    /// Whether retry can reuse a durable signed URL without replaying Archive cost.
+    #[serde(default)]
+    pub retry_supported: bool,
     /// Safe server-side final ZIP path after completion.
     pub final_path: Option<String>,
     /// Safe terminal or recovery error.
@@ -188,6 +191,10 @@ impl ArchiveService {
                 }
                 _ => {}
             }
+            task.snapshot.retry_supported = matches!(
+                task.snapshot.state,
+                ArchiveTaskState::Failed | ArchiveTaskState::Cancelled
+            ) && task.signed_url.is_some();
             task.snapshot.updated_at = OffsetDateTime::now_utc();
             persist(&task).await?;
             tasks.insert(task.snapshot.id, task);
@@ -241,6 +248,7 @@ impl ArchiveService {
                 bytes_done: 0,
                 bytes_total: None,
                 resume_supported: false,
+                retry_supported: false,
                 final_path: None,
                 error: None,
                 consume_error: None,
@@ -295,13 +303,14 @@ impl ArchiveService {
     }
 
     pub(crate) async fn cancel(&self, id: Uuid) -> Result<ArchiveTaskSnapshot, CoreError> {
+        let snapshot = self.get(id).await?;
         let token = self
             .cancellations
             .lock()
             .await
             .get(&id)
             .cloned()
-            .ok_or_else(task_not_found)?;
+            .ok_or_else(|| action_not_allowed("cancel", snapshot.state))?;
         token.cancel();
         self.get(id).await
     }
@@ -320,7 +329,7 @@ impl ArchiveService {
             ) || task.signed_url.is_none()
             {
                 return Err(CoreError::new(
-                    ErrorCode::InvalidInput,
+                    ErrorCode::DownloadTaskActionNotAllowed,
                     "only failed or cancelled tasks with a durable signed URL can be retried",
                     false,
                 ));
@@ -672,6 +681,10 @@ pub(crate) struct ArchiveConsumption {
 fn transition(task: &mut PersistedArchiveTask, state: ArchiveTaskState, error: Option<String>) {
     task.snapshot.state = state;
     task.snapshot.error = error;
+    task.snapshot.retry_supported = matches!(
+        state,
+        ArchiveTaskState::Failed | ArchiveTaskState::Cancelled
+    ) && task.signed_url.is_some();
     task.snapshot.revision += 1;
     task.snapshot.updated_at = OffsetDateTime::now_utc();
 }
@@ -755,6 +768,14 @@ fn task_not_found() -> CoreError {
     CoreError::new(
         ErrorCode::ResourceNotFound,
         "Archive task was not found",
+        false,
+    )
+}
+
+fn action_not_allowed(action: &str, state: ArchiveTaskState) -> CoreError {
+    CoreError::new(
+        ErrorCode::DownloadTaskActionNotAllowed,
+        format!("Archive task in {state:?} state does not allow {action}"),
         false,
     )
 }

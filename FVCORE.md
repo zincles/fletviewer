@@ -275,7 +275,8 @@ EH Archive 始终流式写磁盘，不将整个 ZIP 放入内存。
 - Booru/Pixiv 图片任务允许 terminal 状态原 ID 重试；删除只移除 terminal task 记录并默认保留 Downloads 产物，避免误删由其他任务共享的内容文件。
 - 图片任务公开 phase、bytes done/total 和递增 revision；共享 `ImageService` 进度按 phase/64 KiB/100 ms 有界采样到 event，task JSON 按 1 MiB/2 秒节流，terminal snapshot 始终强制持久化。
 - `image_downloads.max_active` 默认 2、硬上限 16，`max_queued` 默认 64、硬上限 4096；queued task 持久化、可取消并在重启后继续排队，Runtime snapshot/HTTP/WebUI 分别报告 active、queued、completed、failed、cancelled 和配置上限。
-- `DownloadTaskView` 将 EH Archive 与 Booru/Pixiv 图片任务映射为前端安全的统一列表/detail DTO，提供 provider/kind 过滤、共同状态、进度、文件名或受管相对输出和 `can_cancel/can_retry/can_delete`；不暴露 Archive 签名 URL 或服务器路径，也不伪造不同任务族不支持的 command。
+- `DownloadTaskView` 将 EH Archive 与 Booru/Pixiv 图片任务映射为前端安全的统一列表/detail DTO，提供 provider/kind 过滤、共同状态、进度、文件名或受管相对输出和 `can_cancel/can_retry/can_delete`；Archive owner 通过不泄漏 URL 的 `retry_supported` 安全布尔值表明是否存在可复用 durable signed URL，不由前端仅凭状态猜测；DTO 不暴露 Archive 签名 URL 或服务器路径，也不伪造不同任务族不支持的 command。
+- 统一 download command 按任务 owner 分派 cancel/retry/delete，并返回统一 view；任务存在但其 family 或当前状态拒绝动作时返回 Core domain error `download_task_action_not_allowed`（HTTP 409、不可盲重试）。该错误不是 UI 专用错误，CLI、HTTP 和嵌入者均使用同一语义；格式错误、任务不存在和队列满仍分别使用 `invalid_input`、`resource_not_found` 和 `overloaded`。
 - 第一版不做 Pixiv 整本批量、作者批量、ugoira、视频转换、Booru tag 批量或 CBZ 打包。
 - 用户明确下载的文件属于 Downloads，不因清理 Cache 消失；其命名策略和缓存 blob 名称相互独立。
 
@@ -375,6 +376,15 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 - 标准 executable 始终编译 HTTP 控制面；配置和参数只控制运行时是否监听、监听地址、认证和权限。
 - HTTP 提供 command/query/event/resource transport 和极简纯 HTML 状态页；它只包装 Core 方法，不产生第二套业务模型或业务状态。
 - executable 的 `web` 命令启用内嵌调试 WebUI：`/` 在单页汇总 Runtime、HTTP、存储、全部 profile session、Booru 搜索和最近 operation，详细页使用服务端渲染 HTML、内嵌少量 CSS、普通 GET/POST 表单和 operation 页面轮询；图片任务页显示 Booru/Pixiv 资源、阶段、进度、相对输出并提供取消、重试和仅删除记录操作，不依赖 Node.js/npm/外部静态资源。`control.allow_lan` 默认开启并将 loopback 配置映射到同端口 wildcard，关闭后强制 loopback；修改后重启生效。配置页按测试阶段决策明文回显并安全写回 Provider Cookie/API user/API key，保存后立即替换 profile generation；代码和页面必须带 DANGER 标记，脱敏 snapshot/API 和日志仍不得输出 secret。`run` 不挂载 HTML WebUI；WebUI 是调试与验收工具，不替代正式 Flet 产品前端，也不提供公网鉴权，只允许在可信 LAN 使用。
+
+### 正式 transport 与所有权决策
+
+- 首套正式跨进程 transport 固定复用 executable 已有 HTTP command/query、SSE event 和二进制 resource/stream，不以 `inspect` stdout、Python module、C ABI 或 Provider-specific bridge 形成第二套协议。
+- server/Web/NAS 首先使用长期运行的单一 `fvcore` executable；桌面下一步验证由 Flet supervisor 发现或启动 localhost sidecar、等待 ready、连接同一 Runtime，并明确前端退出后 Runtime 是否继续后台任务。
+- 一组 Data、Cache、Downloads、Temp 在任一时刻只能由一个 Rust Runtime 或旧 Python Core 持有。正式切换按完整 Runtime ownership 进行，不按 EH/Booru/Pixiv tab 拆分，不允许 Python 管 EH 而 Rust 同时管理图片任务并写同一存储。
+- Flet 当前仍使用 Python Core；在 sidecar supervisor、配置/端口发现、错误映射和隔离存储 smoke 完成前，不把正式下载页部分接到 Rust。切换测试必须先使用独立存储根，确认后再停止 Python owner 并迁移所有权。
+- Android 不从桌面行为推断可行性：先用隔离测试 APK 验证多 ABI Rust 产物打包、loopback listener、后台存活、应用重启恢复和 private storage。只有 sidecar 被实测证明不可可靠使用时，才评估包装同一公开契约的窄 JNI/FFI binding，并先更新安全不变量；不预先引入 `unsafe`。
+- SSE 是 invalidation/revision 信号而非另一份任务权威状态。客户端收到 Archive 或 image task event 后按 task ID 查询统一 `DownloadTaskView`，丢事件或 lagged 时重新拉取列表；UI 可合并刷新，但不得只靠本地事件重建任务 registry。
 
 ### 阶段 8：平台验证与所有权切换准备
 
