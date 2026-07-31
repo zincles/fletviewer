@@ -372,7 +372,7 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 - `fvcore run` / `fvcore web`、固定同级配置、signal、health、诊断和优雅关闭。
 - 标准 executable 始终编译 HTTP 控制面；配置和参数只控制运行时是否监听、监听地址、认证和权限。
 - HTTP 提供 command/query/event/resource transport 和极简纯 HTML 状态页；它只包装 Core 方法，不产生第二套业务模型或业务状态。
-- executable 的 `web` 命令启用内嵌调试 WebUI：`/` 在单页汇总 Runtime、HTTP、存储、全部 profile session、Booru 搜索和最近 operation，详细页使用服务端渲染 HTML、内嵌少量 CSS、普通 GET/POST 表单和 operation 页面轮询，不依赖 Node.js/npm/外部静态资源。`control.allow_lan` 默认开启并将 loopback 配置映射到同端口 wildcard，关闭后强制 loopback；修改后重启生效。配置页按测试阶段决策明文回显并安全写回 Provider Cookie/API user/API key，保存后立即替换 profile generation；代码和页面必须带 DANGER 标记，脱敏 snapshot/API 和日志仍不得输出 secret。`run` 不挂载 HTML WebUI；WebUI 是调试与验收工具，不替代正式 Flet 产品前端，也不提供公网鉴权，只允许在可信 LAN 使用。
+- executable 的 `web` 命令启用内嵌调试 WebUI：`/` 在单页汇总 Runtime、HTTP、存储、全部 profile session、Booru 搜索和最近 operation，详细页使用服务端渲染 HTML、内嵌少量 CSS、普通 GET/POST 表单和 operation 页面轮询；图片任务页显示 Booru/Pixiv 资源、阶段、进度、相对输出并提供取消、重试和仅删除记录操作，不依赖 Node.js/npm/外部静态资源。`control.allow_lan` 默认开启并将 loopback 配置映射到同端口 wildcard，关闭后强制 loopback；修改后重启生效。配置页按测试阶段决策明文回显并安全写回 Provider Cookie/API user/API key，保存后立即替换 profile generation；代码和页面必须带 DANGER 标记，脱敏 snapshot/API 和日志仍不得输出 secret。`run` 不挂载 HTML WebUI；WebUI 是调试与验收工具，不替代正式 Flet 产品前端，也不提供公网鉴权，只允许在可信 LAN 使用。
 
 ### 阶段 8：平台验证与所有权切换准备
 

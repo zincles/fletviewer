@@ -4120,6 +4120,22 @@ mod tests {
         let http_task = wait_image_download(&handle, http_task.id).await;
         assert_eq!(http_task.state, ImageDownloadState::Completed);
         assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let task_page = String::from_utf8(
+            http_request(
+                control_listen,
+                b"GET /ui/image-downloads HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(task_page.starts_with("HTTP/1.1 200 OK"));
+        assert!(task_page.contains("PixivOriginal"));
+        assert!(task_page.contains("illust 12345678 p0"));
+        assert!(task_page.contains("completed"));
+        assert!(task_page.contains("Images/pixiv/12345678-p0-"));
+        assert!(task_page.contains("/ui/image-download/retry"));
+        assert!(task_page.contains("/ui/image-download/delete"));
+        assert!(!task_page.contains(temp.path().to_str().unwrap()));
         let retried = http_request(
             control_listen,
             format!(

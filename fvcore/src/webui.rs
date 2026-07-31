@@ -183,6 +183,11 @@ struct ArchiveTaskForm {
     id: String,
 }
 
+#[derive(Deserialize)]
+struct ImageDownloadTaskForm {
+    id: String,
+}
+
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct LocalGalleryQuery {
@@ -262,6 +267,7 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/eh/reader/jump", post(jump_eh_reader))
         .route("/ui/eh/archive", post(start_eh_archive))
         .route("/ui/archive-tasks", get(archive_tasks))
+        .route("/ui/image-downloads", get(image_downloads))
         .route("/ui/local-galleries", get(local_galleries))
         .route("/ui/local-data", get(local_data))
         .route("/ui/local-data/import", post(import_local_gallery))
@@ -278,6 +284,9 @@ pub(crate) fn routes() -> Router<ControlState> {
         .route("/ui/local-gallery/delete", post(local_gallery_delete))
         .route("/ui/archive-task/cancel", post(cancel_archive))
         .route("/ui/archive-task/retry", post(retry_archive))
+        .route("/ui/image-download/cancel", post(cancel_image_download))
+        .route("/ui/image-download/retry", post(retry_image_download))
+        .route("/ui/image-download/delete", post(delete_image_download))
         .route("/ui/operations", get(operations))
         .route("/ui/operation", get(operation))
         .route("/ui/cancel", post(cancel_operation))
@@ -956,6 +965,64 @@ async fn archive_tasks(State(state): State<ControlState>) -> Response {
     )
 }
 
+async fn image_downloads(State(state): State<ControlState>) -> Response {
+    let tasks = state.core.image_download_tasks().await;
+    let active = tasks
+        .iter()
+        .any(|task| task.state == crate::ImageDownloadState::Running);
+    let mut rows = String::new();
+    for task in tasks.iter().rev() {
+        let resource = match task.kind {
+            crate::ImageDownloadKind::BooruOriginal => task
+                .post_id
+                .map_or_else(|| "?".to_owned(), |post_id| format!("post {post_id}")),
+            crate::ImageDownloadKind::PixivOriginal => format!(
+                "illust {} p{}",
+                task.illust_id.as_deref().unwrap_or("?"),
+                task.page
+                    .map_or_else(|| "?".to_owned(), |page| page.to_string())
+            ),
+        };
+        let action = if task.state == crate::ImageDownloadState::Running {
+            format!(
+                "<form method=\"post\" action=\"/ui/image-download/cancel\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button type=\"submit\">取消</button></form>",
+                task.id
+            )
+        } else {
+            format!(
+                "<div class=\"actions\"><form method=\"post\" action=\"/ui/image-download/retry\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button type=\"submit\">重试</button></form><form method=\"post\" action=\"/ui/image-download/delete\"><input type=\"hidden\" name=\"id\" value=\"{}\"><button type=\"submit\">删除记录</button></form></div>",
+                task.id, task.id
+            )
+        };
+        let _ = write!(
+            rows,
+            "<tr><td><code>{}</code></td><td>{:?}</td><td>{:?}</td><td>{}</td><td>{}</td><td>{} / {}</td><td><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+            task.id,
+            task.state,
+            task.kind,
+            escape(&resource),
+            escape(&task.phase),
+            task.bytes_done,
+            task.bytes_total
+                .map_or_else(|| "?".to_owned(), |value| value.to_string()),
+            escape(task.output.as_deref().unwrap_or("")),
+            escape(task.error.as_deref().unwrap_or("")),
+            action,
+        );
+    }
+    if rows.is_empty() {
+        rows.push_str("<tr><td colspan=\"9\" class=\"muted\">暂无图片下载任务。</td></tr>");
+    }
+    html_page(
+        StatusCode::OK,
+        "图片下载任务",
+        &format!(
+            "<h1>图片下载任务</h1><p class=\"muted\">删除只移除任务记录，受管 Downloads 中的文件会保留。</p><table><thead><tr><th>ID</th><th>状态</th><th>类型</th><th>资源</th><th>阶段</th><th>字节</th><th>输出</th><th>错误</th><th>操作</th></tr></thead><tbody>{rows}</tbody></table>"
+        ),
+        active.then_some(2),
+    )
+}
+
 async fn local_galleries(State(state): State<ControlState>) -> Response {
     let galleries = match state.core.local_galleries().await {
         Ok(galleries) => galleries,
@@ -1517,6 +1584,54 @@ async fn retry_archive(
         Ok(_) => Redirect::to("/ui/archive-tasks").into_response(),
         Err(error) => error_page(&error),
     }
+}
+
+async fn cancel_image_download(
+    State(state): State<ControlState>,
+    Form(form): Form<ImageDownloadTaskForm>,
+) -> Response {
+    let id = match image_download_task_id(&form.id) {
+        Ok(id) => id,
+        Err(error) => return error_page(&error),
+    };
+    match state.core.cancel_image_download_task(id).await {
+        Ok(_) => Redirect::to("/ui/image-downloads").into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
+async fn retry_image_download(
+    State(state): State<ControlState>,
+    Form(form): Form<ImageDownloadTaskForm>,
+) -> Response {
+    let id = match image_download_task_id(&form.id) {
+        Ok(id) => id,
+        Err(error) => return error_page(&error),
+    };
+    match state.core.retry_image_download_task(id).await {
+        Ok(_) => Redirect::to("/ui/image-downloads").into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
+async fn delete_image_download(
+    State(state): State<ControlState>,
+    Form(form): Form<ImageDownloadTaskForm>,
+) -> Response {
+    let id = match image_download_task_id(&form.id) {
+        Ok(id) => id,
+        Err(error) => return error_page(&error),
+    };
+    match state.core.delete_image_download_task(id).await {
+        Ok(()) => Redirect::to("/ui/image-downloads").into_response(),
+        Err(error) => error_page(&error),
+    }
+}
+
+fn image_download_task_id(input: &str) -> Result<uuid::Uuid, CoreError> {
+    input
+        .parse()
+        .map_err(|_| CoreError::new(ErrorCode::InvalidInput, "图片下载任务 ID 无效", false))
 }
 
 async fn start_eh_page_fetch(
@@ -2399,7 +2514,7 @@ fn html_page(status: StatusCode, title: &str, body: &str, refresh: Option<u64>) 
         "<a class=\"refresh-action\" href=\"\">立即刷新</a>".to_owned()
     });
     let html = format!(
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{refresh_meta}<title>{}</title><style>{STYLE}</style></head><body><nav><div class=\"nav-links\"><a href=\"/\">调试面板</a><a href=\"/ui/eh?profile=default\">EH 主页</a><a href=\"/ui/search\">搜索</a><a href=\"/ui/operations\">操作列表</a><a href=\"/ui/archive-tasks\">Archive 任务</a><a href=\"/ui/local-galleries\">本地画廊</a><a href=\"/ui/local-data\">本地数据</a><a href=\"/ui/cache\">图片缓存</a><a href=\"/ui/config\">配置</a></div><div class=\"refresh-control\">{refresh_status}{refresh_action}</div></nav><main>{body}</main></body></html>",
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">{refresh_meta}<title>{}</title><style>{STYLE}</style></head><body><nav><div class=\"nav-links\"><a href=\"/\">调试面板</a><a href=\"/ui/eh?profile=default\">EH 主页</a><a href=\"/ui/search\">搜索</a><a href=\"/ui/operations\">操作列表</a><a href=\"/ui/archive-tasks\">Archive 任务</a><a href=\"/ui/image-downloads\">图片任务</a><a href=\"/ui/local-galleries\">本地画廊</a><a href=\"/ui/local-data\">本地数据</a><a href=\"/ui/cache\">图片缓存</a><a href=\"/ui/config\">配置</a></div><div class=\"refresh-control\">{refresh_status}{refresh_action}</div></nav><main>{body}</main></body></html>",
         escape(title)
     );
     let mut response = (status, Html(html)).into_response();
