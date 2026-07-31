@@ -275,6 +275,7 @@ EH Archive 始终流式写磁盘，不将整个 ZIP 放入内存。
 - Booru/Pixiv 图片任务允许 terminal 状态原 ID 重试；删除只移除 terminal task 记录并默认保留 Downloads 产物，避免误删由其他任务共享的内容文件。
 - 图片任务公开 phase、bytes done/total 和递增 revision；共享 `ImageService` 进度按 phase/64 KiB/100 ms 有界采样到 event，task JSON 按 1 MiB/2 秒节流，terminal snapshot 始终强制持久化。
 - `image_downloads.max_active` 默认 2、硬上限 16，`max_queued` 默认 64、硬上限 4096；queued task 持久化、可取消并在重启后继续排队，Runtime snapshot/HTTP/WebUI 分别报告 active、queued、completed、failed、cancelled 和配置上限。
+- `DownloadTaskView` 将 EH Archive 与 Booru/Pixiv 图片任务映射为前端安全的统一列表/detail DTO，提供 provider/kind 过滤、共同状态、进度、文件名或受管相对输出和 `can_cancel/can_retry/can_delete`；不暴露 Archive 签名 URL 或服务器路径，也不伪造不同任务族不支持的 command。
 - 第一版不做 Pixiv 整本批量、作者批量、ugoira、视频转换、Booru tag 批量或 CBZ 打包。
 - 用户明确下载的文件属于 Downloads，不因清理 Cache 消失；其命名策略和缓存 blob 名称相互独立。
 

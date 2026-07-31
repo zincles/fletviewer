@@ -492,6 +492,38 @@ impl CoreHandle {
         self.image_downloads.list().await
     }
 
+    /// Returns frontend-safe persistent tasks across Archive and image download families.
+    pub async fn download_tasks(
+        &self,
+        provider: Option<&str>,
+        kind: Option<&str>,
+    ) -> Vec<crate::DownloadTaskView> {
+        let (archives, images) = tokio::join!(self.archives.list(), self.image_downloads.list());
+        let mut tasks = archives
+            .into_iter()
+            .map(crate::DownloadTaskView::from_archive)
+            .chain(images.into_iter().map(crate::DownloadTaskView::from_image))
+            .filter(|task| provider.is_none_or(|provider| task.provider == provider))
+            .filter(|task| kind.is_none_or(|kind| task.kind == kind))
+            .collect::<Vec<_>>();
+        tasks.sort_by_key(|task| std::cmp::Reverse(task.created_at));
+        tasks
+    }
+
+    /// Returns one frontend-safe persistent task across all download families.
+    pub async fn download_task(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<crate::DownloadTaskView, CoreError> {
+        if let Ok(task) = self.archives.get(id).await {
+            return Ok(crate::DownloadTaskView::from_archive(task));
+        }
+        self.image_downloads
+            .get(id)
+            .await
+            .map(crate::DownloadTaskView::from_image)
+    }
+
     /// Returns one persistent single-image download task.
     pub async fn image_download_task(
         &self,
@@ -3232,6 +3264,24 @@ mod tests {
         assert!(api.starts_with("HTTP/1.1 200 OK"));
         assert!(api.contains("\"state\":\"completed\""));
         assert!(!api.contains("signed/archive.zip"));
+        let unified = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/download-tasks?provider=eh&kind=eh_archive HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(unified.starts_with("HTTP/1.1 200 OK"));
+        assert!(unified.contains("\"provider\":\"eh\""));
+        assert!(unified.contains("\"kind\":\"eh_archive\""));
+        assert!(unified.contains("\"status\":\"completed\""));
+        assert!(unified.contains("\"filename\":\"archive.zip\""));
+        assert!(unified.contains("\"can_cancel\":false"));
+        assert!(unified.contains("\"can_retry\":false"));
+        assert!(unified.contains("\"can_delete\":false"));
+        assert!(!unified.contains(temp.path().to_str().unwrap()));
+        assert!(!unified.contains("final_path"));
         let events = runtime.handle().events_after(0).await.unwrap();
         assert!(events.events.iter().any(|event| matches!(
             &event.subject,
@@ -4155,6 +4205,39 @@ mod tests {
         assert!(task_page.contains("/ui/image-download/retry"));
         assert!(task_page.contains("/ui/image-download/delete"));
         assert!(!task_page.contains(temp.path().to_str().unwrap()));
+        let unified = String::from_utf8(
+            http_request(
+                control_listen,
+                b"GET /api/v1/download-tasks?provider=pixiv&kind=pixiv_original HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(unified.starts_with("HTTP/1.1 200 OK"));
+        assert!(unified.contains("\"provider\":\"pixiv\""));
+        assert!(unified.contains("\"kind\":\"pixiv_original\""));
+        assert!(unified.contains("\"status\":\"completed\""));
+        assert!(unified.contains("\"title\":\"Pixiv 12345678 p0\""));
+        assert!(unified.contains("\"progress\":1.0"));
+        assert!(unified.contains("Images/pixiv/12345678-p0-"));
+        assert!(unified.contains("\"can_retry\":true"));
+        assert!(unified.contains("\"can_delete\":true"));
+        assert!(!unified.contains(temp.path().to_str().unwrap()));
+        let detail = String::from_utf8(
+            http_request(
+                control_listen,
+                format!(
+                    "GET /api/v1/download-tasks/{} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                    http_task.id
+                )
+                .as_bytes(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(detail.starts_with("HTTP/1.1 200 OK"));
+        assert!(detail.contains(&format!("\"id\":\"{}\"", http_task.id)));
+        assert!(detail.contains("\"kind\":\"pixiv_original\""));
         let retried = http_request(
             control_listen,
             format!(

@@ -6,6 +6,7 @@
 mod archive;
 mod config;
 mod control;
+mod download_view;
 mod error;
 mod gallery;
 mod id;
@@ -26,6 +27,7 @@ pub use config::{
     EffectiveProviderProfileConfig, EventConfig, ImageConfig, ImageDownloadConfig, NetworkConfig,
     OperationConfig, ProviderProfileConfig, StorageConfig,
 };
+pub use download_view::{DownloadTaskStatus, DownloadTaskView};
 pub use error::{CoreError, ErrorCode};
 pub use gallery::{
     ComicInfoSnapshot, LocalGalleryDeleteConfirmation, LocalGalleryDeleteRequest,

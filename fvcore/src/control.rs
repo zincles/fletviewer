@@ -306,6 +306,8 @@ pub(crate) async fn start(
             "/api/v1/image-download-tasks",
             get(list_image_download_tasks),
         )
+        .route("/api/v1/download-tasks", get(list_download_tasks))
+        .route("/api/v1/download-tasks/{id}", get(get_download_task))
         .route("/api/v1/local-galleries", get(list_local_galleries))
         .route(
             "/api/v1/local-gallery-inventory",
@@ -835,6 +837,47 @@ async fn list_archive_tasks(State(state): State<ControlState>) -> Response {
 
 async fn list_image_download_tasks(State(state): State<ControlState>) -> Response {
     with_security_headers(Json(state.core.image_download_tasks().await).into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DownloadTaskQuery {
+    provider: Option<String>,
+    kind: Option<String>,
+}
+
+async fn list_download_tasks(
+    State(state): State<ControlState>,
+    Query(query): Query<DownloadTaskQuery>,
+) -> Response {
+    with_security_headers(
+        Json(
+            state
+                .core
+                .download_tasks(query.provider.as_deref(), query.kind.as_deref())
+                .await,
+        )
+        .into_response(),
+    )
+}
+
+async fn get_download_task(State(state): State<ControlState>, Path(id): Path<String>) -> Response {
+    let id = match uuid::Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return error_response(&invalid_download_task_id()),
+    };
+    match state.core.download_task(id).await {
+        Ok(task) => with_security_headers(Json(task).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+fn invalid_download_task_id() -> CoreError {
+    CoreError::new(
+        ErrorCode::InvalidInput,
+        "Download task ID must be a valid UUID",
+        false,
+    )
 }
 
 async fn list_local_galleries(State(state): State<ControlState>) -> Response {
