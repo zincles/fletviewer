@@ -15,6 +15,8 @@ from typing import Mapping
 from urllib.parse import urlsplit
 
 
+SUPPORTED_API_PROTOCOL_VERSION = 1
+
 class FvcoreSidecarError(RuntimeError):
     """Raised when a sidecar cannot be safely discovered or supervised."""
 
@@ -24,6 +26,8 @@ class FvcoreConnection:
     base_url: str
     runtime_id: str
     instance_name: str
+    api_protocol_version: int
+    core_version: str
     started_by_supervisor: bool
 
 
@@ -37,6 +41,7 @@ class FvcoreSidecarSupervisor:
         executable: Path | None = None,
         expected_instance_name: str | None = None,
         expected_storage: Mapping[str, Path] | None = None,
+        expected_api_protocol_version: int = SUPPORTED_API_PROTOCOL_VERSION,
         startup_timeout: float = 10.0,
         request_timeout: float = 0.5,
     ) -> None:
@@ -46,6 +51,9 @@ class FvcoreSidecarSupervisor:
         self._expected_storage = {
             key: str(Path(value).resolve()) for key, value in (expected_storage or {}).items()
         }
+        if expected_api_protocol_version <= 0:
+            raise ValueError("expected fvcore API protocol version must be positive")
+        self._expected_api_protocol_version = expected_api_protocol_version
         unknown = self._expected_storage.keys() - {"data", "cache", "downloads", "temp"}
         if unknown:
             raise ValueError(f"unknown fvcore storage domains: {', '.join(sorted(unknown))}")
@@ -82,6 +90,8 @@ class FvcoreSidecarSupervisor:
                 self.close()
             raise
         self._connection = FvcoreConnection(
+            api_protocol_version=int(snapshot["api_protocol_version"]),
+            core_version=str(snapshot["core_version"]),
             base_url=self._base_url,
             runtime_id=str(snapshot["runtime_id"]),
             instance_name=str(snapshot["instance_name"]),
@@ -147,6 +157,15 @@ class FvcoreSidecarSupervisor:
             raise FvcoreSidecarError("fvcore Runtime snapshot has no runtime_id")
         if not isinstance(instance_name, str) or not instance_name:
             raise FvcoreSidecarError("fvcore Runtime snapshot has no instance_name")
+        api_protocol_version = snapshot.get("api_protocol_version")
+        core_version = snapshot.get("core_version")
+        if api_protocol_version != self._expected_api_protocol_version:
+            raise FvcoreSidecarError(
+                f"fvcore API protocol mismatch: expected {self._expected_api_protocol_version}, "
+                f"received {api_protocol_version!r}"
+            )
+        if not isinstance(core_version, str) or not core_version:
+            raise FvcoreSidecarError("fvcore Runtime snapshot has no core_version")
         if self._expected_instance_name and instance_name != self._expected_instance_name:
             raise FvcoreSidecarError(
                 f"fvcore instance mismatch: expected {self._expected_instance_name!r}, "
@@ -241,4 +260,5 @@ __all__ = [
     "FvcoreSidecarError",
     "FvcoreSidecarSupervisor",
     "discover_fvcore_executable",
+    "SUPPORTED_API_PROTOCOL_VERSION",
 ]

@@ -112,6 +112,8 @@ impl RuntimeData {
         let (active, queued, retained, latest_sequence) = self.operations.counts();
         let profiles = self.sessions.snapshots().unwrap_or_default();
         CoreSnapshot {
+            api_protocol_version: crate::API_PROTOCOL_VERSION,
+            core_version: crate::VERSION.to_owned(),
             runtime_id: self.id,
             instance_name: self.config.instance_name.clone(),
             state: self.state,
@@ -1330,18 +1332,16 @@ async fn run_actor(
                 }
                 Some(CoreCommand::SubscribeEvents { cursor, reply }) => {
                     let batch = data.operations.events_after(cursor);
-                    let result = if batch.resync_required {
-                        Err(CoreError::new(
-                            ErrorCode::NotReady,
-                            "event cursor is no longer retained; resync from snapshots",
-                            true,
-                        ))
+                    let replay = if batch.resync_required {
+                        Vec::new()
                     } else {
-                        Ok(EventSubscription::new(
-                            batch.events,
-                            data.operations.subscribe(),
-                        ))
+                        batch.events
                     };
+                    let result = Ok(EventSubscription::new(
+                        replay,
+                        data.operations.subscribe(),
+                        batch.resync_required,
+                    ));
                     let _ = reply.send(result);
                 }
                 Some(CoreCommand::ReplaceProfile { config, reply }) => {
@@ -2224,6 +2224,8 @@ mod tests {
         let runtime = CoreBuilder::new(config(&temp)).build().await.unwrap();
         let handle = runtime.handle();
         let snapshot = handle.snapshot().await.unwrap();
+        assert_eq!(snapshot.api_protocol_version, crate::API_PROTOCOL_VERSION);
+        assert_eq!(snapshot.core_version, crate::VERSION);
         assert_eq!(snapshot.state, RuntimeState::Ready);
         runtime.shutdown().await.unwrap();
         assert_eq!(handle.state(), RuntimeState::Stopped);
@@ -4748,6 +4750,7 @@ mod tests {
                 .contains("content-type: image/jpeg")
         );
         assert!(headers.contains(&format!("etag: \"{digest}\"")));
+        assert!(headers.contains(&format!("content-length: {}", image.len())));
         assert_eq!(&response[separator + 4..], image.as_ref().as_slice());
         runtime.shutdown().await.unwrap();
     }
@@ -4944,13 +4947,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_event_cursor_requires_resync() {
+    async fn stale_event_cursor_emits_resync_and_http_contract_is_machine_readable() {
         let temp = TempDir::new().unwrap();
         let mut config = config(&temp);
         config.events = EventConfig {
             capacity: 4,
             retained: 1,
         };
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
         let runtime = CoreBuilder::new(config).build().await.unwrap();
         let handle = runtime.handle();
         let operation = handle
@@ -4964,6 +4969,57 @@ mod tests {
         let batch = handle.events_after(1).await.unwrap();
         assert!(batch.resync_required);
         assert!(batch.events.is_empty());
+        let mut subscription = handle.subscribe_events(1).await.unwrap();
+        assert!(matches!(
+            subscription.next().await,
+            crate::EventStreamItem::ResyncRequired
+        ));
+
+        let contract = String::from_utf8(
+            http_request(
+                runtime.control_listen().unwrap(),
+                b"GET /api/v1/contract HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(contract.starts_with("HTTP/1.1 200 OK"));
+        let body = contract.split("\r\n\r\n").nth(1).unwrap();
+        let contract: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(contract["api_protocol_version"], 1);
+        assert_eq!(contract["core_version"], crate::VERSION);
+        assert_eq!(
+            contract["error_fields"],
+            serde_json::json!(["code", "message", "retryable"])
+        );
+        assert_eq!(
+            contract["events"]["names"],
+            serde_json::json!([
+                "operation",
+                "archive_task",
+                "image_download_task",
+                "resync_required"
+            ])
+        );
+
+        let mut stream = tokio::net::TcpStream::connect(runtime.control_listen().unwrap())
+            .await
+            .unwrap();
+        stream
+            .write_all(
+                b"GET /api/v1/events?cursor=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), stream.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("content-type: text/event-stream"));
+        assert!(response.contains("event: resync_required"));
         runtime.shutdown().await.unwrap();
     }
 

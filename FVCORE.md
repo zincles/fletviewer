@@ -1,18 +1,19 @@
 # fvcore 架构决策与迁移基线
 
-本文是 `fvcore` 的权威架构记录，用于固定纯 Rust Core 的产品形态、状态所有权、公开接口和当前迁移范围。若其他根目录文档与本文冲突，以本文关于 `fvcore` 的决策为准。
+本文是 `fvcore` 的权威架构记录，用于固定纯 Rust Core 的产品形态、状态所有权、公开接口和当前迁移范围。目标产品前端是 Flutter；Python/Flet 仅是待退役迁移源。若其他根目录文档与本文冲突，以本文关于 `fvcore` 的决策为准。
 
 ## 结论
 
+- 目标产品是 Flutter 前端 + 纯 Rust `fvcore` 后端；Python/Flet 技术栈最终全部从正式产品和仓库中删除。
 - `fvcore` 是纯 Rust、可独立运行、也可被其他 Rust 程序嵌入的完整核心，不包含、不嵌入、不调用 Python、Dart、JavaScript 或其他语言的业务实现。
-- `fvcore` 只有一个 Cargo crate；同一 package 同时产出 library 和 `fvcore` executable，不预设 provider、server、CLI、C ABI 或前端子 crate。
+- `fvcore` 只有一个 Cargo crate；同一 package 同时产出 library 和 `fvcore` executable，不预设 Provider、server、CLI、C ABI 或前端子 crate。
 - library 实现配置、Runtime、Provider、共享会话、网络、图像、缓存、下载、任务和公开方法；executable 只负责装配并运行同一套 library，不复制业务。
-- Core 可像 sing-box/Xray 一样根据配置独立运行；第三方也可以直接构造 `CoreRuntime` 并通过 `CoreHandle` 使用相同能力。
+- Flutter 通过 executable 的 HTTP command/query、SSE event 和二进制 resource/stream 使用 Core；Dart 只包装公开 DTO 和平台机制，不复制业务状态机。
 - Core 对使用者提供 command、snapshot、event、resource 四类语义；控制数据结构化，图像和 Archive 等二进制资源不通过 base64 JSON 传输。
 - `fvcore` 正在全面重写现有 Python `core/` 的全部业务能力；完成并切换后，Provider、网络、会话、图像、缓存、下载、ZIP/CBZ、本地画廊、历史和存储均由 Rust Core 独占。
 - Booru 只使用站点公开 API，不实现 Camoufox、浏览器自动化、Cloudflare bypass、TLS impersonation 或 challenge backend。
-- 目标平台是 Windows、Linux、Android 和 server；本轮不支持 WASM。可以引入能覆盖这些目标的成熟 Rust 依赖，不追求零依赖。
-- 当前 Python `core/` 仅在重写期间作为只读行为参考和 fixture 来源，不是新架构约束、兼容目标或长期产品实现；迁移采用纵向能力，不逐行翻译，也不允许 Python/Rust 双写真实存储。
+- 目标平台是 Windows、Linux、Android 和 server；Flutter Web 作为远程客户端连接 server Core。本轮 Core 不支持 WASM。
+- 当前 Python `app/` / `core/` 仅作为只读行为参考、fixture 来源和临时基线；迁移采用纵向能力，不逐行翻译，也不允许 Python/Rust 双写真实存储。迁移完成后不保留 Python bridge、shim 或兼容运行路径。
 - HTTP 控制面是标准 `fvcore` executable 的集成组件，始终参与正式编译；是否监听及监听参数只由配置文件或命令行决定，不使用 Cargo feature 裁剪。
 
 ## 产品形态
@@ -315,9 +316,9 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 
 ## 不属于 Core 的能力
 
-- Flet、Flutter、Bevy、Web UI 或其他前端代码。
-- Python binding、C ABI、JNI、FFI 或平台 extension。
-- 多 crate workspace、provider plugin crate 或空 adapter crate。
+- Flutter widget、路由、主题、平台文件选择、分享、通知或其他前端代码；这些属于 `frontend/`。
+- Python binding、Serious Python bridge、C ABI、JNI/FFI 或平台 extension；Android sidecar 未经真机证伪前不预建 binding。
+- 多 crate workspace、Provider plugin crate 或空 adapter crate。
 - Camoufox、Playwright、浏览器 profile、Cloudflare bypass、Turnstile 和 challenge backend。
 - WASM 构建。
 - 在 Rust 未达到对应能力的验收标准前切换该能力的真实存储写所有权。
@@ -379,13 +380,14 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 
 ### 正式 transport 与所有权决策
 
-- 首套正式跨进程 transport 固定复用 executable 已有 HTTP command/query、SSE event 和二进制 resource/stream，不以 `inspect` stdout、Python module、C ABI 或 Provider-specific bridge 形成第二套协议。
-- server/Web/NAS 首先使用长期运行的单一 `fvcore` executable；桌面 supervisor 只接受带显式端口的明文 loopback origin，先通过 ready 和 Runtime snapshot 校验 `runtime_id`、`instance_name` 及四域规范路径，再发现或启动 sidecar。桌面前端退出时只向自己启动的进程发送中断并等待 graceful shutdown；发现的外部 Runtime 由其原 owner 管理，前端不得代为关闭。
-- 一组 Data、Cache、Downloads、Temp 在任一时刻只能由一个 Rust Runtime 或旧 Python Core 持有。正式切换按完整 Runtime ownership 进行，不按 EH/Booru/Pixiv tab 拆分，不允许 Python 管 EH 而 Rust 同时管理图片任务并写同一存储。
-- Flet 当前仍使用 Python Core；在 sidecar supervisor、配置/端口发现、错误映射和隔离存储 smoke 完成前，不把正式下载页部分接到 Rust。切换测试必须先使用独立存储根，确认后再停止 Python owner 并迁移所有权。
-- Android 不从桌面行为推断可行性：先用隔离测试 APK 验证多 ABI Rust 产物打包、loopback listener、后台存活、应用重启恢复和 private storage。只有 sidecar 被实测证明不可可靠使用时，才评估包装同一公开契约的窄 JNI/FFI binding，并先更新安全不变量；不预先引入 `unsafe`。
-- SSE 是 invalidation/revision 信号而非另一份任务权威状态。客户端收到 Archive 或 image task event 后按 task ID 查询统一 `DownloadTaskView`，丢事件或 lagged 时重新拉取列表；UI 可合并刷新，但不得只靠本地事件重建任务 registry。
-- `app/fvcore_sidecar.py` 是不接入正式 `app.backend` 的桌面隔离 supervisor；真实 executable smoke 使用临时同级 `config.json` 和独立四域，已验证 ready、统一下载 query、同 Runtime 复用、非 owner 退出不终止进程、owner SIGINT graceful shutdown 及同一存储重启。正式切换前仍需补带非空持久任务的重启恢复、错误 DTO 映射和 packaged executable 定位验收。
+- Flutter 首套正式 transport 固定复用 executable 已有 HTTP command/query、SSE event 和二进制 resource/stream，不以 `inspect` stdout、Python module、Python bridge、C ABI 或 Provider-specific adapter 形成第二套协议。
+- server/Web/NAS 使用长期运行的单一 `fvcore` executable；桌面 Flutter launcher 只接受带显式端口的明文 loopback origin，先通过 ready 和 Runtime snapshot 校验 protocol version、Core version、`runtime_id`、`instance_name` 及四域规范路径，再发现或启动 sidecar。
+- 桌面 Flutter 退出时只向自己启动的进程发送中断并等待 graceful shutdown；发现的外部 Runtime 由其原 owner 管理，前端不得代为关闭。packaged executable 的相对布局、同级配置、端口发现和脱敏启动诊断属于正式契约。
+- 一组 Data、Cache、Downloads、Temp 在任一时刻只能由一个 Rust Runtime 或旧 Python Core 持有。正式切换按完整 Runtime ownership 进行，不按 EH/Booru/Pixiv 页面拆分，不允许 Python 管 Provider 而 Rust 同时写图片或下载任务。
+- 当前 Python/Flet 产品仍使用 Python Core，但不再接入 Rust 形成过渡产品。`app/fvcore_sidecar.py` 只作为 executable 进程边界探针；协议和生命周期冻结后由 Dart launcher 原生实现同一契约。
+- Android 不从桌面行为推断可行性：用目标 Flutter 隔离 APK 验证 Rust sidecar 打包、loopback listener、后台存活、应用重启恢复和 private storage。只有 sidecar 被实测证明不可可靠使用时，才评估包装同一公开契约的窄 JNI/FFI binding，并先更新安全不变量。
+- SSE 是 invalidation/revision 信号而非任务权威状态。Flutter 收到 Archive 或 image task event 后按 task ID 查询统一 `DownloadTaskView`，重复/乱序按 revision 忽略，lagged、断线或 Runtime ID 变化后重新拉取列表。
+- 当前 Python sidecar smoke 已验证 ready、统一下载空列表、同 Runtime 复用、非 owner 不终止进程、owner SIGINT graceful shutdown 及同一存储重启。冻结 Flutter transport 前仍需补非空持久任务恢复、协议/版本握手、资源响应、错误 DTO 和 packaged executable 验收。
 
 ### 阶段 8：平台验证与所有权切换准备
 
@@ -394,11 +396,12 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 - server 长运行、断线、恢复、磁盘不足和压力测试。
 - 定义 Python 任务/缓存迁移或隔离策略；未完成前不切换产品路径。
 
-### 阶段 9：完整产品能力与 Python Core 退役
+### 阶段 9：Flutter 前端与 Python/Flet 退役
 
-- 迁移 ZIP/CBZ 索引与安全读取、本地画廊、历史、搜索/feed、详情以及各 Provider 的完整阅读和下载能力。
-- 每项能力以 fixture、错误、状态、持久化和恢复测试固定行为后，切换为 Rust 唯一 owner。
-- 全部验收完成后，`app/` 只通过嵌入 API 或 HTTP 控制面使用 `fvcore`，Python `core/` 不再进入正式运行路径并最终删除。
+- 在公开 transport、真实进程恢复和兼容握手冻结后创建 `frontend/` Flutter 工程；第一条纵向链路覆盖 Runtime 连接、统一下载列表/命令、SSE 刷新和二进制图片 resource。
+- 迁移 Provider 搜索/feed、详情、reader、配置、本地画廊、历史和平台文件交互；每项能力只使用公开 transport，不以 Python Core 作为运行时 fallback。
+- 对照 Python fixture 补齐 Rust 的全部正式业务能力，并完成真实数据迁移与完整 Runtime ownership 切换。
+- 全部验收完成后删除 Python `app/`、`core/`、入口、测试、依赖和 Flet 文档；不保留 shim、alias、deprecated bridge 或双实现运行路径。
 
 ## 验收标准
 
@@ -421,29 +424,30 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 - 所有队列和内存使用有上限；取消、deadline、overload、shutdown 和后台错误有确定行为。
 - 控制数据与二进制资源分离，不以 base64 传输正式图像/Archive。
 - 测试不读写现有 Python 产品真实 Data/Cache/Downloads，日志不泄漏凭据。
-- Rust Core 覆盖现有 Python `core/` 的全部正式业务能力；切换完成后 Python Core 不再承担运行时所有权。
+- Rust Core 覆盖现有 Python `core/` 的全部正式业务能力；Flutter 覆盖产品 UI 和平台交互；切换完成后删除 Python/Flet 技术栈。
 
-## 当前下一步
+## 当前状态与切换门槛
 
-| 状态 | 能力 | 当前产物或下一验收点 |
+`fvcore` 已完成首轮纵向业务闭环和 Flutter transport v1 冻结，当前进入阶段 9“Flutter desktop 最小纵向链路”。`frontend/` 已建立独立 Flutter 工程；Python/Flet 只作为待退役迁移基线。详细执行清单以根目录 `TODO.md` 为准。
+
+| 状态 | 能力 | 当前结果或验收门槛 |
 |---|---|---|
-| 已完成 | 单 crate library/executable | `lib.rs` 与 `main.rs` 共用同一 Runtime |
-| 已完成 | Foundation 依赖与工程检查 | Tokio、Axum、Serde、Clap、Tracing；format/check/test/clippy 已通过 |
-| 已完成 | 配置、错误、ID 与 Runtime snapshot | executable 同级必需 `config.json`、无自定义运行时配置路径、`run`/`web` 模式、`check-config`、默认不覆盖且可显式安全重置的 `create-config`、严格 JSON、稳定错误、UUID v7 Runtime ID、revision 和生命周期 |
-| 已完成 | Runtime/Handle 与集成 HTTP | 有界命令队列、协作关闭、health、JSON snapshot 和极简 HTML |
-| 已完成 | 存储 Foundation | 四域规范化、Data 实例锁、`redb` schema v3、旧 schema 原地迁移、本地画廊登记表、provider-scoped 收藏搜索和存储 snapshot |
-| 已完成 | Command/Event/Operation Foundation | Operation ID、状态机、有界 active/queue/retention、deadline、取消、event journal/cursor 和 SSE |
-| 已完成 | 共享 session 与网络 Foundation | Reqwest/Rustls、profile generation、代理、同 scheme/allowlist redirect、E-Hentai 专用图片 API origin、响应上限、取消和 Cookie 脱敏 |
-| 已完成 | Provider 限流与 Booru 查询闭环 | Generation 级并发/启动间隔；Danbooru、Gelbooru、5 个 Gelbooru-style XML、5 个 Moebooru、E621/E926、Philomena 的 Derpibooru/Furbooru，以及 Paheal legacy XML 搜索/详情、fixture、稳定错误和 HTTP 路由；前 12 个 Provider 支持四套协议标签补全；E621 完整 tag 分类另存 `provider_tags`；Philomena 支持 key-only 认证。共 17 个 Provider 全部支持 original fetch：有 Provider MD5 时按摘要去重并校验，无 MD5 时按 `ResourceKey(provider, post_id, 0, original)` 合并并持久化 alias，重启后按内容 MD5 从磁盘命中 |
-| 已完成 | EH 浏览、阅读页图片、持久 Archive 与本地画廊消费 | 主页/详情/缩略图、showkey/mpvkey 指定页网页阅读器图片共享 ImageService fetch，兼容 text/html JSON 且不承诺原始分辨率；Original/Resample 显式付费提交、签名 URL 隔离、单并发流式 ZIP、Range 续传、`cost_unknown` 防重放；Archive revision 接入统一 event journal；完成 ZIP 通过 staging 幂等提交为本地画廊并提取安全封面；原 ZIP 不改名不改字节，`ComicInfo.xml` 由 ZIP 与 `gallery.json` 确定性派生并可删除/重建；H@H 仅展示 |
-| 已完成 | 已知 MD5 的 Booru original Fetch 主链路 | Danbooru/Gelbooru metadata -> memory -> disk -> shared network -> length/magic/MD5 验证 -> immutable resource；operation 进度、独立取消和 HTTP bytes 已贯通 |
-| 已完成 | 可选内嵌调试 WebUI | 无 Node.js 的服务端渲染 Dashboard、EH 主页/详情/缩略图/单页阅读器、Booru 搜索/详情、Pixiv 详情、operation 列表/详情、Fetch/取消和结果图片；EH reader 的 GET 无副作用，按需 POST 获取当前页并通过 operation/resource 展示，提供边界校验、页码跳转和原生 access key 翻页；Dashboard 和活动 operation 页面按状态自动刷新，listener 与 WebUI 可分别开关 |
-| 已完成 | 未知 MD5 alias 与 Pixiv 详情主链路 | `ResourceKey -> ContentMd5` 持久 alias、有界异步 cache writer、关闭 drain、Pixiv AJAX 详情/多页 metadata、Referer 与 original page operation |
-| 已完成 | 本地 ZIP 画廊阅读 API | 安全 member 过滤、无整数溢出的自然排序、分页 snapshot、稳定 gallery/page ID、有界单页解压和 magic MIME；嵌入 API、JSON metadata、二进制 resource 与本地 WebUI 已贯通，公开模型不暴露服务器目录或 Archive 文件名 |
-| 已完成 | 本地画廊统一 resource | 封面与 ZIP 页面共用 `LocalGalleryResource` 和带 kind descriptor；大小、并发、magic MIME、安全响应头及 WebUI resource URL 已贯通，封面路径被限制在画廊目录内 |
-| 已完成 | 本地画廊显式确认删除 | 预检返回五分钟一次性令牌和文件/字节范围；提交重验 unchanged 文件清单，读写占用阻止 ZIP 阅读与删除竞争，持久清单支持中断恢复，先隐藏目录再清除 consumed Archive task 路径，JSON API 与 WebUI 二次确认已贯通 |
-| 已完成 | 本地画廊导出语义 | `LocalGalleryExport` 以 64 KiB 有界块流式读取原 ZIP，同时最多两个导出并持有共享画廊占用；嵌入 API、HTTP 附件下载和 WebUI 已贯通，descriptor 与响应不暴露服务器 Path |
-| 已完成 | 本地数据盘点与配置展示 | `redb` 登记区分已导入和扫描候选；全量 ZIP/sidecar 健康检查、四类 inventory、按 gallery ID 显式导入、JSON API 和 WebUI 已贯通；配置 snapshot/API 脱敏，调试 HTML 页按 DANGER 例外明文编辑 Provider secret，并可配置默认开启的 LAN 访问 |
-| 已完成 | 图像缓存监管基础 | 网络 body 按真实 chunk 申请全局在途预算；Cache snapshot、非阻塞内容审计、显式清理无效 blob/stale alias、alias schema v1/旧格式迁移、受管 staging 启动清理及 JSON/WebUI 已贯通 |
-| 进行中 | 只读 CLI 诊断 | `fvcore inspect` 已采用 provider 子命令结构：单次严格加载同级配置、创建 Runtime、调用已有 `CoreHandle` query、正常 shutdown 后 JSON stdout；Runtime/Profile/Pixiv、12 个 Booru 搜索与详情、EH 主页与文本搜索已完成，Runtime snapshot 额外移除服务器存储路径。后续 EH 详情/缩略图、本地画廊。CLI 不复制业务，不含下载、删除、配置修改或 Archive 提交；不输出 secret、代理/签名 URL、服务器 Path 或当前 Pixiv 用户 ID。图片/Archive 不使用 JSON/base64，图片仅按需提供独立受限 stdout resource 流 |
-| 下一步 | Provider 纵向迁移 | EH、Danbooru、Gelbooru、Pixiv 查询均支持 provider-scoped 收藏搜索；17 个 Python 已绑定 Booru 已完成搜索/详情与 original fetch，前 12 个支持标签补全；下一步实现 Pixiv/Booru 正式持久单图下载，必须复用 ImageService 结果而不重复 fetch |
+| 已完成 | Core Foundation | 单 crate library/executable、严格同级配置、四域存储与实例锁、Runtime/Handle、command/snapshot/event/resource、有界 operation、共享 session generation 和集成 HTTP 控制面 |
+| 已完成 | Provider 首轮纵向迁移 | EH 浏览/阅读/Archive；17 个现有 Booru 的搜索、详情和 original fetch；Pixiv feed、详情和指定页 original fetch；Provider-scoped 收藏搜索 |
+| 已完成 | 图像与持久产物 | 内容 MD5/alias、有界 memory/disk/network、共享 fetch、异步缓存监管；EH Archive、Booru original 和 Pixiv 指定页持久下载 |
+| 已完成 | 统一下载契约 | Archive 与图片任务映射为安全 `DownloadTaskView`，统一 list/get/cancel/retry/delete、capability 和稳定 action-not-allowed 错误 |
+| 已完成 | 本地画廊 | Archive 消费、登记与健康盘点、安全 ZIP 阅读、统一 resource、确定性 sidecar、确认删除和有界流式导出 |
+| 已完成 | Flutter transport v1 | Runtime 协议/Core 版本握手、机器可读 `/api/v1/contract`、稳定错误、统一下载 DTO、SSE invalidation/resync 和二进制 resource header 已有自动测试；隔离非空图片/Archive fixture 已跨真实 executable 重启验证 |
+| 已完成 | Flutter desktop 客户端起点 | `frontend/` 覆盖 Linux/Windows；纯 Dart client 已实现 Runtime、统一下载 query/command、SSE invalidation/reconnect、resource bytes；Material 3 页面已显示连接、任务、命令和图片，Linux desktop 已真实启动 smoke |
+| 下一步 | Flutter desktop launcher 与端到端任务 smoke | 用 Dart 实现 executable 发现/启动、instance/四域/protocol 校验和 owner shutdown；让真实 executable 驱动 UI 的非空任务操作与事件刷新 |
+| 下一步 | Flutter Web 与 Android | Web 复用同一 Dart client 连接 server Core；Android Flutter APK 真机验证 arm64 sidecar、private storage、loopback、生命周期和恢复 |
+| 进行中 | 只读 CLI 诊断 | `inspect` 已覆盖 Runtime/Profile/Pixiv、17 个现有 Booru 的搜索与详情、EH 主页和文本搜索；它只用于诊断，不是 Flutter transport |
+| 后续 | Python/Flet 完整退役 | 对照 fixture 补齐 Rust 余量，Flutter 覆盖产品能力并迁移数据后删除 `app/`、`core/`、Python/Flet 入口、依赖、测试和文档 |
+
+当前不可跨越的切换门槛：
+
+1. Flutter 只使用 HTTP command/query、SSE invalidation 和二进制 resource/stream；不得依赖 Python 或复制业务。
+2. transport v1 已冻结；新增 OPTIONAL 响应字段可保持 v1，删除、重命名、改变类型/语义或破坏路由必须提升 protocol version。
+3. 切换按完整 Runtime 进行；一组四域只能有一个 owner，禁止局部双写或 Python fallback。
+4. 桌面验收不能替代 Android Flutter APK 真机结论；只有 sidecar 实测不可靠时才讨论窄 JNI/FFI。
+5. 调试 WebUI 无内置认证且配置页明文处理 Provider secret，只适用于可信 LAN，不代表 Flutter 产品控制面可安全公网暴露。

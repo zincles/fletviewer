@@ -27,11 +27,73 @@ pub(crate) struct ControlState {
     pub(crate) core: CoreHandle,
 }
 
-#[derive(Serialize)]
-struct ErrorBody<'a> {
-    code: &'a str,
-    message: &'a str,
-    retryable: bool,
+/// Stable JSON error envelope returned by the HTTP control plane.
+#[derive(Clone, Debug, Serialize)]
+pub struct ErrorBody<'a> {
+    /// Stable machine-readable Core error code.
+    pub code: &'a str,
+    /// Safe human-readable diagnostic message.
+    pub message: &'a str,
+    /// Whether retrying without changing the request may succeed.
+    pub retryable: bool,
+}
+
+/// Machine-readable protocol-v1 contract advertised by the Runtime.
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiContract {
+    /// Stable protocol version governing this contract.
+    pub api_protocol_version: u32,
+    /// Core build that emitted this document.
+    pub core_version: &'static str,
+    /// Compatibility policy for JSON response DTOs.
+    pub compatibility: &'static str,
+    /// Stable control-plane routes used by the first Flutter vertical slice.
+    pub routes: Vec<ApiRouteContract>,
+    /// Stable Server-Sent Event envelope and recovery rules.
+    pub events: EventContract,
+    /// Stable binary resource response rules.
+    pub resources: Vec<ResourceContract>,
+    /// Stable JSON error envelope fields.
+    pub error_fields: [&'static str; 3],
+}
+
+/// One stable HTTP route required by the first Flutter vertical slice.
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiRouteContract {
+    /// HTTP method.
+    pub method: &'static str,
+    /// URI path template.
+    pub path: &'static str,
+    /// Success status codes.
+    pub success_statuses: &'static [u16],
+    /// Stable response shape identifier.
+    pub response: &'static str,
+}
+
+/// Server-Sent Event envelope and recovery contract.
+#[derive(Clone, Debug, Serialize)]
+pub struct EventContract {
+    /// SSE endpoint with cursor query support.
+    pub path: &'static str,
+    /// Event names emitted by protocol v1.
+    pub names: [&'static str; 4],
+    /// Required fields in each ordinary event JSON payload.
+    pub event_fields: [&'static str; 5],
+    /// Client recovery rule.
+    pub recovery: &'static str,
+}
+
+/// Binary resource response contract.
+#[derive(Clone, Debug, Serialize)]
+pub struct ResourceContract {
+    /// Resource path template.
+    pub path: &'static str,
+    /// MIME behavior.
+    pub content_type: &'static str,
+    /// Exact length behavior.
+    pub content_length: &'static str,
+    /// Content-Disposition behavior.
+    pub content_disposition: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -190,6 +252,7 @@ pub(crate) async fn start(
         .route("/health/live", get(liveness))
         .route("/health/ready", get(readiness))
         .route("/api/v1/runtime", get(runtime_snapshot))
+        .route("/api/v1/contract", get(api_contract))
         .route("/api/v1/config", get(effective_config))
         .route("/api/v1/profiles", get(list_profiles))
         .route(
@@ -428,6 +491,56 @@ async fn runtime_snapshot(State(state): State<ControlState>) -> Response {
         Ok(snapshot) => with_security_headers(Json(snapshot).into_response()),
         Err(error) => error_response(&error),
     }
+}
+
+async fn api_contract() -> Response {
+    with_security_headers(Json(ApiContract {
+        api_protocol_version: crate::API_PROTOCOL_VERSION,
+        core_version: crate::VERSION,
+        compatibility: "response DTO fields are stable for protocol v1; clients must ignore unknown fields; removing, renaming, changing a field type or meaning, or breaking a route requires a new protocol version",
+        routes: vec![
+            ApiRouteContract { method: "GET", path: "/api/v1/runtime", success_statuses: &[200], response: "core_snapshot" },
+            ApiRouteContract { method: "GET", path: "/api/v1/download-tasks", success_statuses: &[200], response: "download_task_view[]" },
+            ApiRouteContract { method: "GET", path: "/api/v1/download-tasks/{id}", success_statuses: &[200], response: "download_task_view" },
+            ApiRouteContract { method: "POST", path: "/api/v1/download-tasks/{id}/cancel", success_statuses: &[200], response: "download_task_view" },
+            ApiRouteContract { method: "POST", path: "/api/v1/download-tasks/{id}/retry", success_statuses: &[202], response: "download_task_view" },
+            ApiRouteContract { method: "DELETE", path: "/api/v1/download-tasks/{id}", success_statuses: &[204], response: "empty" },
+            ApiRouteContract { method: "GET", path: "/api/v1/events?cursor={sequence}", success_statuses: &[200], response: "text/event-stream" },
+        ],
+        events: EventContract {
+            path: "/api/v1/events?cursor={sequence}",
+            names: ["operation", "archive_task", "image_download_task", "resync_required"],
+            event_fields: ["sequence", "runtime_id", "revision", "kind", "subject"],
+            recovery: "events are invalidations only; query authoritative snapshots by ID; ignore duplicate or older revisions; on resync_required, disconnect, cursor loss, or runtime_id change, reload the full list",
+        },
+        resources: vec![
+            ResourceContract {
+                path: "/api/v1/resources/images/{content_md5}/{extension}",
+                content_type: "detected image MIME",
+                content_length: "exact bytes",
+                content_disposition: "inline (header omitted)",
+            },
+            ResourceContract {
+                path: "/api/v1/local-galleries/{id}/cover",
+                content_type: "detected image MIME",
+                content_length: "exact bytes",
+                content_disposition: "inline (header omitted)",
+            },
+            ResourceContract {
+                path: "/api/v1/local-galleries/{id}/pages/{page_id}",
+                content_type: "detected image MIME",
+                content_length: "exact bytes",
+                content_disposition: "inline (header omitted)",
+            },
+            ResourceContract {
+                path: "/api/v1/local-galleries/{id}/export",
+                content_type: "application/zip",
+                content_length: "exact archive bytes",
+                content_disposition: "attachment with ASCII fallback and RFC 5987 UTF-8 filename",
+            },
+        ],
+        error_fields: ["code", "message", "retryable"],
+    }).into_response())
 }
 
 async fn effective_config(State(state): State<ControlState>) -> Response {
@@ -784,6 +897,11 @@ async fn get_image_resource(
                 .headers_mut()
                 .insert(header::CONTENT_TYPE, content_type);
             response.headers_mut().insert(
+                header::CONTENT_LENGTH,
+                HeaderValue::from_str(&resource.descriptor().byte_length.to_string())
+                    .expect("image byte length is valid"),
+            );
+            response.headers_mut().insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("public, max-age=31536000, immutable"),
             );
@@ -1064,6 +1182,11 @@ fn local_gallery_resource_response(resource: crate::LocalGalleryResource) -> Res
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, content_type);
+    response.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&resource.descriptor().byte_length.to_string())
+            .expect("local gallery resource byte length is valid"),
+    );
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=86400"),

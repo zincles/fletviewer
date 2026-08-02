@@ -51,6 +51,8 @@ class FvcoreSidecarTests(unittest.TestCase):
             "temp": root / "Temp",
         }
         _RuntimeHandler.snapshot = {
+            "api_protocol_version": 1,
+            "core_version": "0.1.0-test",
             "runtime_id": "runtime-test",
             "instance_name": "desktop-smoke",
             "state": "ready",
@@ -77,6 +79,8 @@ class FvcoreSidecarTests(unittest.TestCase):
             connection = supervisor.connect()
         self.assertEqual(connection.runtime_id, "runtime-test")
         self.assertFalse(connection.started_by_supervisor)
+        self.assertEqual(connection.api_protocol_version, 1)
+        self.assertEqual(connection.core_version, "0.1.0-test")
         start.assert_not_called()
         supervisor.close()
 
@@ -86,6 +90,12 @@ class FvcoreSidecarTests(unittest.TestCase):
             expected_storage={"data": Path(self.temp.name) / "OtherData"},
         )
         with self.assertRaisesRegex(FvcoreSidecarError, "data storage mismatch"):
+            supervisor.connect()
+
+    def test_rejects_runtime_with_incompatible_api_protocol(self):
+        _RuntimeHandler.snapshot["api_protocol_version"] = 2
+        supervisor = FvcoreSidecarSupervisor(self.url)
+        with self.assertRaisesRegex(FvcoreSidecarError, "API protocol mismatch"):
             supervisor.connect()
 
     def test_starts_waits_for_and_stops_owned_process(self):
@@ -205,6 +215,147 @@ class FvcoreSidecarTests(unittest.TestCase):
             if restarted is not None:
                 restarted.close()
 
+
+    @unittest.skipUnless(
+        (Path(__file__).parents[1] / "fvcore" / "target" / "debug" / ("fvcore.exe" if os.name == "nt" else "fvcore")).is_file(),
+        "requires a built fvcore debug executable",
+    )
+    def test_real_sidecar_recovers_nonempty_persistent_tasks(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        root = Path(self.temp.name)
+        source = Path(__file__).parents[1] / "fvcore" / "target" / "debug" / ("fvcore.exe" if os.name == "nt" else "fvcore")
+        executable = root / source.name
+        shutil.copy2(source, executable)
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        url = f"http://127.0.0.1:{port}"
+        config = {
+            "instance_name": "persistent-task-smoke",
+            "control": {
+                "enabled": True,
+                "listen": f"127.0.0.1:{port}",
+                "allow_lan": False,
+                "webui_enabled": False,
+            },
+            "storage": {key: str(value) for key, value in self.storage.items()},
+        }
+        (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        now = "2026-08-01T00:00:00Z"
+        image_id = "01989abc-def0-7000-8000-000000000001"
+        archive_download_id = "01989abc-def0-7000-8000-000000000002"
+        archive_submit_id = "01989abc-def0-7000-8000-000000000003"
+        image_dir = self.storage["downloads"] / "ImageTasks" / image_id
+        image_dir.mkdir(parents=True)
+        (image_dir / "task.json").write_text(
+            json.dumps({
+                "snapshot": {
+                    "id": image_id,
+                    "state": "running",
+                    "revision": 4,
+                    "kind": "booru_original",
+                    "profile": {"provider": "danbooru", "profile": "default"},
+                    "post_id": 123,
+                    "phase": "network",
+                    "bytes_done": 4096,
+                    "bytes_total": 8192,
+                    "byte_length": None,
+                    "content_md5": None,
+                    "output": None,
+                    "error": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        def archive_task(task_id, state, signed_url):
+            directory = self.storage["downloads"] / "Downloading" / task_id
+            directory.mkdir(parents=True)
+            (directory / "task.json").write_text(
+                json.dumps({
+                    "snapshot": {
+                        "id": task_id,
+                        "state": state,
+                        "revision": 7,
+                        "profile": {"provider": "eh", "profile": "default"},
+                        "gallery": {"gid": 123456, "token": "abcdef1234"},
+                        "variant": "resample",
+                        "title": "Recovery fixture",
+                        "bytes_done": 1024,
+                        "bytes_total": 4096,
+                        "resume_supported": True,
+                        "retry_supported": False,
+                        "final_path": None,
+                        "error": None,
+                        "consume_error": None,
+                        "created_at": now,
+                        "updated_at": now,
+                        "url_acquired_at": now if signed_url else None,
+                        "url_valid_seconds": 86400,
+                        "max_ip_count": 2,
+                    },
+                    "signed_url": signed_url,
+                    "referer": "https://e-hentai.org/g/123456/abcdef1234/",
+                    "part_path": str(directory / "payload.part"),
+                    "final_path": str(directory / "payload.zip"),
+                    "etag": "fixture-etag" if signed_url else None,
+                    "last_modified": None,
+                }),
+                encoding="utf-8",
+            )
+
+        archive_task(archive_download_id, "downloading", "https://e-hentai.org/archive.zip")
+        archive_task(archive_submit_id, "submitting", None)
+        owner = FvcoreSidecarSupervisor(
+            url,
+            executable=executable,
+            expected_instance_name="persistent-task-smoke",
+            expected_storage=self.storage,
+            startup_timeout=10,
+        )
+        restarted = None
+        try:
+            first = owner.connect()
+            with urllib.request.urlopen(url + "/api/v1/download-tasks", timeout=2) as response:
+                tasks = {task["id"]: task for task in json.load(response)}
+            self.assertEqual(tasks[image_id]["status"], "failed")
+            self.assertEqual(tasks[image_id]["kind"], "booru_original")
+            self.assertTrue(tasks[image_id]["can_retry"])
+            self.assertTrue(tasks[image_id]["can_delete"])
+            self.assertEqual(tasks[archive_download_id]["status"], "failed")
+            self.assertTrue(tasks[archive_download_id]["can_retry"])
+            self.assertFalse(tasks[archive_download_id]["can_delete"])
+            self.assertEqual(tasks[archive_submit_id]["status"], "failed")
+            self.assertFalse(tasks[archive_submit_id]["can_retry"])
+            self.assertEqual(tasks[archive_submit_id]["metadata"]["archive_state"], "costunknown")
+            self.assertNotIn(str(self.storage["downloads"]), json.dumps(tasks))
+            owner.close()
+
+            restarted = FvcoreSidecarSupervisor(
+                url,
+                executable=executable,
+                expected_instance_name="persistent-task-smoke",
+                expected_storage=self.storage,
+                startup_timeout=10,
+            )
+            second = restarted.connect()
+            self.assertNotEqual(second.runtime_id, first.runtime_id)
+            with urllib.request.urlopen(url + "/api/v1/download-tasks", timeout=2) as response:
+                recovered = {task["id"]: task for task in json.load(response)}
+            self.assertEqual(set(recovered), set(tasks))
+            for task_id in tasks:
+                self.assertEqual(recovered[task_id]["provider"], tasks[task_id]["provider"])
+                self.assertEqual(recovered[task_id]["kind"], tasks[task_id]["kind"])
+                self.assertEqual(recovered[task_id]["status"], tasks[task_id]["status"])
+                self.assertEqual(recovered[task_id]["created_at"], tasks[task_id]["created_at"])
+        finally:
+            owner.close()
+            if restarted is not None:
+                restarted.close()
 
 if __name__ == "__main__":
     unittest.main()

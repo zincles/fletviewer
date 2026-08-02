@@ -2,21 +2,27 @@
 
 ## 项目目标
 
-FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Windows / Linux / Android / Web / Server；核心能力包括 provider 抓取、登录/API/Cookie、标签检索、图片缓存、批量下载、本地画廊管理。
+FletViewer 是跨平台 Anime Provider 浏览、阅读和下载工具，目标平台为 Windows、Linux、Android、Web 和 Server；核心能力包括 Provider 查询与认证、标签检索、图片缓存、持久下载、本地画廊和历史。
 
-当前产品使用 Python + Flet，Flet 同时承担桌面、Android 和 Web UI，Web/NAS 是一等部署目标。项目不再推进 Flutter + Serious Python bridge；Flet 是当前前端，但不是未来不可替换的架构约束。
+目标产品架构固定为 **Flutter 前端 + 纯 Rust `fvcore` 后端**，最终彻底删除 Python/Flet 正式运行路径：
 
-未来唯一业务核心是纯 Rust `fvcore`：同一 Cargo crate 同时提供可嵌入 library 和可独立运行的 executable，并全面替代当前 Python `core/`。Python 实现仅作为重写期间的只读行为和 fixture 参考，不打包为 Python `fvcore`；迁移决策、并发模型和顺序以根目录 `FVCORE.md` 为准。
+```text
+Flutter UI -> HTTP command/query + SSE event + binary resource/stream -> fvcore Runtime
+```
 
-参考方向：Pix-Ez Viewer、Imgur Grabber、EHViewer、Venera、Mihon/Tachiyomi、Emby。
+- Flutter 负责 UI、路由、主题、展示状态、平台生命周期、文件选择、分享和通知。
+- `fvcore` 负责全部 Provider、网络会话、认证、配置、operation、图片、缓存、下载、ZIP/CBZ、本地画廊、历史和存储。
+- 当前 Python `app/` 与 `core/` 只是迁移源、fixture 来源和临时可运行基线，不再继续产品化；迁移完成后连同 Flet 依赖、入口和文档副本一起删除。
+- `fvcore` 同一 Cargo crate 同时提供可嵌入 library 和可独立运行的 executable；标准产品 transport 由 executable 的 HTTP/SSE/resource 控制面提供。
+- 参考方向：Pix-Ez Viewer、Imgur Grabber、EHViewer、Venera、Mihon/Tachiyomi、Emby。
 
 ## 协作风格
 
 - 默认 TLDR：先结论、改了什么、还差什么；除非用户要求，不写长背景。
 - 无论用户使用英文、中文或混合语言输入，默认使用中文回复；只有用户明确要求其他输出语言时才切换。
-- Markdown 单行尽量承载完整意思，避免把短句拆成很多行导致屏幕右侧空白；列表项可以稍长。
-- TODO 文档只保留“决策、约束、下一步”；长期规则写进 `AGENTS.md`，实验流水账写进 `tmp/` 或 commit message。
-- 不要随意重构。优先小改、可验证、低风险；不要为了“统一”抹掉 provider 差异。
+- Markdown 单行尽量承载完整意思，避免把短句拆成很多行；列表项可以较长。
+- `TODO.md` 只保留当前决策、约束和下一步；长期规则写入本文件，历史流水由 Git 保存，隔离实验放 `tmp/`。
+- 优先小改、可验证、低风险；不要为“统一”抹掉 Provider 差异。
 
 ## 禁止使用子代理
 
@@ -24,186 +30,121 @@ FletViewer 是跨平台 Anime Provider 浏览/下载工具，目标平台为 Win
 - 禁止创建、调用、委派或等待任何 subagent（子代理）。
 - 禁止使用 `spawn_agent`、`followup_task`、`send_message`、`wait_agent`、`interrupt_agent`、`list_agents`，以及其他任何多代理协作功能。
 - 所有分析、检索、文件修改、测试和答复都必须由当前主代理独立完成。
-- 即使子代理可能提升速度或质量，也不得启用；如果单一代理确实无法继续，应直接向用户说明限制。
+- 即使子代理可能提升速度或质量，也不得启用；单一代理确实无法继续时直接说明限制。
 
-## 架构边界
+## 目录职责与迁移边界
 
-- `core/` 是与 UI 框架无关的业务核心；Provider、网络协议、缓存、数据库、下载、图片获取等能力优先放入 `core/`。
-- `app/` 是 Flet 前端和应用装配层；负责页面、控件、主题、导航、展示状态，以及把配置、路径、日志和平台能力注入 `core/` 服务。
-- 依赖方向固定为 `app -> core`；`core/` 不得 import `app`、`flet` 或其他具体前端，也不得通过 fallback import 绕过该边界。
-- `core/` 的公开输入输出使用普通 Python 类型、dataclass、枚举、dict、bytes 和 Path；不得返回或持有 Flet 控件。
-- 平台相关能力由 `core/` 定义小接口/回调并由 `app/` 注入；不要让核心业务直接调用 Toast、Dialog、页面导航或 UI 更新。
+- `fvcore/`：当前唯一新增业务实现位置；纯 Rust Core、executable、HTTP 控制面和服务端调试 WebUI。
+- `frontend/`：目标 Flutter 工程位置（创建后）；只包含 UI、平台机制和 `fvcore` transport client，不包含业务副本。
+- `app/`、`core/`、根 `main.py`、`pyproject.toml`：待退役 Python/Flet 实现；只允许迁移 fixture、行为对照、严重数据安全修复或删除工作，不新增产品能力。
+- `docs/flet/`：只供维护遗留实现时查证锁定版本 API，不作为目标 Flutter 技术文档；退役时删除。
+- `tmp/`：隔离历史实验，不得被 `fvcore` 或 Flutter 正式代码 import/依赖，不得提交 Cookie/profile/cache secret。
 
-## fvcore
+## 目标架构边界
 
-- `fvcore/` 必须保持纯 Rust，不嵌入或调用 Python、Dart、JavaScript 等语言的业务实现。
-- `fvcore` 长期保持一个 Cargo crate；同一 package 的 library 实现完整核心方法，executable 负责读取配置和运行同一 Runtime，不预设 provider/server/CLI/C ABI/前端子 crate。
-- `fvcore` 可独立运行，也可被第三方 Rust 程序嵌入；对外统一使用 command、不可变 snapshot、带 revision 的 event 和二进制 resource 语义。
-- 当前 Python `core/` 是 Rust 迁移的 executable specification。先固定 fixture、输入输出、错误和状态，再实现 Rust；不要逐行翻译。
-- 默认禁止 `unsafe`；本轮不为假设中的 C ABI、JNI 或平台 binding 预留 unsafe。未来确有不可替代需求时先更新 `FVCORE.md` 并记录安全不变量。
-- 不允许 Python 与 Rust 实现同时写同一份 SQLite、Cache、Downloads 或本地画廊；对比测试使用只读 fixture或隔离临时目录。
-- Rust 并发设计必须异步、可取消、有 deadline、有界队列和不可变 task snapshot；不得把现有 Python 线程/锁结构机械翻译过去。
-- JSON 只承载控制数据；图片和 Archive 等大资源使用 bytes/stream/resource handle，不以 base64 作为正式跨组件接口。
-- 最终范围覆盖 Python Core 的全部正式能力，包括 Provider、网络、图像、缓存、下载、ZIP/CBZ、本地画廊、历史和存储；迁移按纵向能力分批验收，不把早期批次范围视为永久裁剪。
-- 标准 `fvcore` executable 必须始终编译 HTTP 控制面；是否监听只由 args/配置决定，不通过 Cargo feature 形成缺少控制面的正式内核变体。
-- Runtime 是配置、Provider profile/session、operation、图像缓存和下载任务的唯一 owner；通常一进程一个 Runtime，外部使用可克隆 handle，不使用 Rust `static` 全局可变单例或 Core-wide 大锁。
-- 同一 Provider profile 共用连接池、认证、代理、限流和 session generation；EH 搜索/详情/图片/Archive 必须复用同一逻辑会话，配置变化创建新 generation，旧请求自然持有旧 generation 至完成。标准 E-Hentai 页面 origin 为 `e-hentai.org`，阅读器私有图片 API 为 `api.e-hentai.org/api.php`；ExHentai 使用其 origin 下的 `/api.php`。该私有 API 可能以 `text/html` 返回 JSON，必须按有界 body 解析而不能仅凭 Content-Type 拒绝。
-- 图片链路按 memory -> disk -> network；网络未命中优先 fetch 到有界内存、发布共享不可变 bytes，再可选异步落盘。所有内存、在途 bytes、队列和并发必须有硬上限。
-- 图像磁盘缓存使用真实内容的 128-bit MD5，即 32 位小写十六进制文件名加规范化后缀，并按前四位两级分片；Booru original 的 Provider MD5 用于 fetch 前去重及 fetch 后校验。
-- 本地画廊 Archive 导出使用不暴露服务器 `Path` 的有界异步 stream handle；句柄生命周期持有画廊共享占用，HTTP 直接流式返回附件，桌面/Android 嵌入者把同一流写入平台选择的目标，不允许 Core 接受任意外部绝对输出路径。
-- `redb` 的本地画廊登记表是“已导入”的权威状态，只保存 gallery ID 到受管根目录直接子目录名；WebUI inventory 扫描可报告已登记健康、已登记损坏、未登记可导入和格式无效，导入只接受已完整校验的 gallery ID，不接受调用方路径。
-- 当前生效配置的公开 snapshot/API 必须保持只读脱敏；允许显示环境变量名和凭据是否已加载，不得显示 Cookie/API secret、API user 值、代理 URL/凭据或带 userinfo/query 的 Provider URL。唯一例外是当前测试阶段带醒目 DANGER 标记的无认证调试配置页，它按明确产品决策明文回显并持久化 Provider secret；不得把该例外扩散到 snapshot、JSON API 或日志。
-- `fvcore` 可以引入支持 Windows、Linux、Android 和 server 的成熟 Rust 依赖；WASM 不在本轮目标。依赖引入前检查目标构建、feature、维护状态、许可证和安全公告。
+- 依赖方向固定为 `Flutter frontend -> fvcore transport -> fvcore Runtime`；Flutter 不直接读取 Core 数据库、缓存索引、下载任务文件或服务器 `Path`。
+- Flutter 只维护展示状态和短生命周期交互状态；Provider session、operation、download、cache、gallery 和 history 的权威状态全部属于 `fvcore`。
+- Dart client 只包装公开 command/query/event/resource 契约，使用与公开 DTO 一一对应的不可变模型；不得复制 Provider parser、重试/恢复状态机、缓存键、下载调度或存储业务。
+- 控制数据使用 JSON；图片和 Archive 使用二进制 resource/stream，不以 base64 作为正式接口。
+- SSE 只是 invalidation/revision 信号。客户端收到事件后按 ID 查询权威 snapshot；重复/乱序事件按 revision 丢弃，lagged、断线或 Runtime ID 变化后全量重拉。
+- 同一组 Data、Cache、Downloads、Temp 在任一时刻只能有一个 Runtime owner；禁止 Python/Rust 双写，也禁止按 Provider、页面或任务族局部切换。
+- 平台文件选择器返回的路径/URI 由 Flutter 平台层消费；Core 只暴露或接受受管 resource/stream 和类型化 command，不接受任意外部绝对路径或把 `content://` 冒充 `Path`。
 
-## fvcore executable 与配置
+## fvcore 核心约束
 
-- Runtime 配置固定为 `fvcore` executable 同目录的 `config.json`，暂不允许通过参数指定其他运行时配置路径；相对存储路径以该目录为基准。
-- `fvcore run` 不挂载 WebUI，HTTP listener 是否启用由配置决定；`fvcore web` 强制启用 HTTP listener 和 WebUI，监听地址仍来自配置。
-- `fvcore run` 与 `fvcore web` 支持 `--quit-in-seconds <正整数>`，用于自动化 smoke test 防止终端阻塞；计时从 Runtime ready 后开始，到期必须走正常 graceful shutdown。
-- `run` 和 `web` 必须在创建 Runtime、数据库、锁或存储目录前严格解析并完整验证 `config.json`；文件缺失、JSON 错误、未知字段或约束失败均拒绝启动。
-- `fvcore check-config` 默认检查 executable 同级的 `config.json`，也可接受一个显式文件用于离线检查；缺失时报告完整期望路径、目录和 `create-config` 命令。
-- `fvcore create-config` 默认在 executable 同级生成完整 `config.json`，也可接受一个已存在目录；固定 pretty JSON 和结尾换行，使用唯一临时文件安全发布，默认拒绝覆盖已有配置。只有显式 `--override` 才将已有配置安全重置为完整默认值，不做字段合并；覆盖使用目录锁、同目录恢复副本和启动时事务恢复，不得先删旧文件。
-- `fvcore help` 与 `fvcore --help` 显示同一份中文根帮助；稳定命令名和参数名保持英文。
-- 通过 Cargo 开发运行时，实际 executable 位于 `fvcore/target/debug/`，因此无参数 `cargo run -- create-config`、`check-config`、`run` 和 `web` 均使用 `fvcore/target/debug/config.json`。
+- `fvcore/` 必须保持纯 Rust，不嵌入或调用 Python、Dart、JavaScript 或其他语言的业务实现。
+- 长期保持一个 Cargo crate；同一 package 的 library 实现完整 Core，executable 装配并运行同一 Runtime，不预建 Provider/server/CLI/C ABI 子 crate。
+- 对外统一使用 command、不可变 snapshot、带 revision 的 event 和二进制 resource；不得暴露 HTTP client、Cookie jar、锁、数据库连接、Future、Tokio task 或服务器绝对路径。
+- 当前 Python `core/` 仅是 executable specification 和 fixture 来源；先固定输入输出、错误、状态与持久化语义，再在 Rust 实现，不逐行翻译 Python 线程/锁模型。
+- 默认 `#![forbid(unsafe_code)]`；不为假设中的 C ABI、JNI/FFI 预留 `unsafe`。未来确有不可替代需求时先更新 `FVCORE.md` 并记录安全不变量。
+- Runtime 是配置、Profile/session、operation、图像缓存、下载和存储的唯一 owner；通常一进程一个 Runtime，外部使用可克隆 handle，不使用全局可变单例或 Core-wide 大锁。
+- 并发必须异步、可取消、有 deadline、有界队列和不可变 task snapshot；所有内存、在途 bytes、队列与并发有硬上限。
+- HTTP 控制面始终编译进标准 executable；配置只决定是否监听，不产生缺少控制面的正式变体。
+- 公开错误使用稳定 `code`、安全 `message`、`retryable` 和适用的 Provider 信息；客户端不得解析自然语言 message 决定业务。
 
-## fvcore 控制面
+## executable、配置与控制面
 
-- HTTP API、SSE、resource 和 WebUI 复用同一 Runtime；WebUI 由 Axum 服务端渲染，CSS 编译进 executable，不依赖 Node.js、npm、外部 CDN 或 base64 图片。
-- `control.enabled = false` 不监听 HTTP；`control.enabled = true` 且 WebUI 关闭时为 API-only；`web` 命令强制同时启用 listener 与 WebUI。
-- 当前控制面没有内置认证；`control.allow_lan` 默认开启，loopback 配置会映射为同端口 wildcard 监听，关闭后强制仅监听 loopback。调试配置页按当前测试阶段要求明文显示并持久化 Provider Cookie/API 凭据，因此只允许在可信 LAN 使用；暴露到不可信网络时必须由可信反向代理提供 TLS、认证和访问控制。
-- Provider transport 只接受配置 origin 下的请求及 allowlist redirect host，限制 redirect 和响应体大小；Cookie/API secret 只通过配置指向的环境变量注入，不进入 snapshot、缓存键、任务、配置输出或日志。
+- Runtime 配置固定为 `fvcore` executable 同目录的 `config.json`，暂不允许运行命令指定其他配置；相对存储路径以该目录为基准。
+- `run` 不挂载 WebUI，listener 是否启用由配置决定；`web` 强制启用 listener 和 WebUI；二者支持 `--quit-in-seconds <正整数>` 并从 ready 后计时走正常 graceful shutdown。
+- `run` / `web` 在创建 Runtime、数据库、锁或存储目录前严格解析并完整验证配置；缺失、未知字段或约束失败均拒绝启动。
+- `check-config` 默认检查 executable 同级配置，也可离线检查显式文件；`create-config` 默认安全生成且拒绝覆盖，只有 `--override` 才通过锁和恢复副本重置完整默认值。
+- 通过 Cargo 开发时，无参数命令统一使用 `fvcore/target/debug/config.json`，不能因当前工作目录存在其他配置产生歧义。
+- HTTP API、SSE、resource 和服务端调试 WebUI 复用同一 Runtime；handler 只能包装 Core 方法，不能直接读写 registry、数据库或文件。
+- 当前控制面无内置认证；调试 WebUI 的配置页按测试阶段例外明文处理 Provider secret，只允许可信 LAN。公网必须由可信反向代理提供 TLS、认证和访问控制。
+- 正式配置 snapshot/API/event/log 必须脱敏；不得输出 Cookie/API secret、代理 URL/凭据、签名 URL、当前 Pixiv 用户 ID或服务器绝对路径。
 
-## 标准验证
+## Provider 与网络
 
-- Python 改动至少按影响范围运行 `python -m compileall -q app core tests` 和相关 `python -m unittest`；图像链路基线为 `python -m unittest -v tests.test_async_image tests.test_image_fetcher`。
-- Rust 改动的完整门禁为 `cargo fmt --all -- --check`、`cargo check --all-targets`、`cargo test --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo doc --no-deps`，均在 `fvcore/` 内运行。
-- 文档或代码修改完成后从仓库根运行 `git diff --check`；CRLF 提示本身不是失败，但不得留下 whitespace error。
-
-## Flet 与 Flutter 扩展
-
-- `app/` 是当前正式产品前端，不是等待独立 Flutter UI 替换的兼容层；已完成的 Python Core/Facade 解耦用于控制业务边界、测试，并为纯 Rust `fvcore` 提供迁移基线。
-- 不为独立 Flutter UI 创建 Serious Python bridge、JSON-RPC/FFI 通道或第二套 Dart 业务模型；未来任何前端/控制传输只能包装 `fvcore` 的公开方法，不复制业务。
-- 优先使用 Flet 内建跨平台能力。只有 Flet API 经实测无法可靠满足具体平台需求时，才增加小型 Flutter extension。
-- Flutter extension 必须提供 Python wrapper，以窄接口接入 `app/`；`core/` 不得 import extension、Flutter/Dart 包或 Flet 控件。
-- 每个 extension 在引入前必须确认 Windows、Linux、Android 和 Web 的支持矩阵。Web 无法使用时必须有 fallback、明确禁用状态或服务器侧替代，不能阻断 Web 应用启动。
-- Dart 端只实现平台机制，不复制 Provider、网络会话、Cookie、缓存、数据库、下载任务或画廊业务。
-
-## Web / NAS
-
-- Web/NAS 是正式运行模式，不是只用于调试的附属目标；桌面、Android 和 Web 应复用同一 Core/Facade 与主要页面结构。
-- Web 模式的 Data、Cache、Downloads、Temp、Cookie 和下载任务属于服务器。浏览器本地文件只能通过上传、下载或文件选择能力交换，不得伪装为服务器 `Path`。
-- 当前优先支持可信环境中的单用户或共享实例。在实现用户隔离前，不得假定 Cookie、历史、任务和本地画廊按浏览器用户隔离。
-- 暴露到不可信网络前必须考虑反向代理 TLS、认证、访问控制、上传限制和敏感日志；应用文档不得暗示当前实例天然适合公网多用户部署。
-
-## Shell / 环境
-
-- Windows 默认 `bash` 会被 WSL2 劫持且当前 WSL 不可用；需要类 Unix shell 时用 `sh -c "..."`。
-- 中文/日文输出用 UTF-8：`sh -c "export PYTHONIOENCODING=utf-8 LANG=zh_CN.UTF-8; python script.py"`。
-- 不要在工具里启动 Flet Web：`flet run --web --recursive` 会阻塞；Web 模式由用户手动测试。
-- Flet Web 异常缓存可能来自 `~/.flet`；必要时用户手动删：`Remove-Item -LiteralPath "$env:USERPROFILE\.flet" -Recurse -Force`。
-
-## Flet API 坑
-
-- 查询 Flet 控件、方法、属性、类型、CLI 或平台行为时，优先检索 `docs/index.md` 的项目索引和 `docs/flet/` 的本地官方文档副本，不要凭记忆猜测 API；项目锁定 `flet==0.85.3`，采用副本中较新 API 前必须确认版本并实测。
-- 不用 `ft.alignment.center`；居中写 `ft.Alignment(0, 0)`。
-- `ft.Image` 必须有有效 `src`；占位统一用 `app.controls.async_image.image_placeholder()` 或 `Container + Icon`，不要 `ft.Image(src=None)`，不要 1x1 base64 空图。
-- 图片展示统一走 `app.controls.async_image.image_src_for_page(page, data, mime)`，不要直接把 bytes 或本地文件路径塞给 `ft.Image(src=...)`；Web 端读不了服务器本地路径。
-- 当前 `ft.Tab` 用 `ft.Tab(label=...)`；内容放 `ft.TabBarView`，不要传 `text=` / `tab_content=`。
-- Dialog 用 `dialog.open = True; page.show_dialog(dialog); page.pop_dialog()`，不要用 `page.open()` / `page.close()`。
-- `ft.TextField` 不支持 `suffix_text=`；需要单位后缀时用 `ft.Row([field, ft.Text("px")])`。
-
-## UI 线程 / 更新
-
-- 事件 handler 之外只要修改 Flet 控件属性或控件树，必须触发 `page.update()`；项目辅助为 `from app.ui_update import request_update; request_update(page)`。
-- 会修改 UI 的后台任务用 `page.run_thread(worker)`，不要用裸 `threading.Thread(...)` 直接改控件。
-- 不要把 `page.schedule_update()` 当后台完成后的主 flush；已实测会出现控件树已变但前端不刷新的问题。
-- 纯 IO 后台服务可以保留线程池，但不能直接改 UI；UI 通过轮询状态或 `page.run_thread()` worker 刷新。
+- 同一 Provider profile 共用连接池、认证、代理、限流和 session generation；配置变化创建新 generation，旧请求自然持有旧 generation 至完成，不持锁跨网络 `.await`。
+- Provider transport 只接受配置 origin 及 allowlist redirect host，限制 redirect 和响应体大小；Cookie/API secret 不进入缓存键、任务、公开 DTO 或日志。
+- EH 搜索、详情、图片和 Archive 共用同一逻辑会话。标准 E-Hentai 页面 origin 为 `e-hentai.org`，reader 私有 API 为 `api.e-hentai.org/api.php`；ExHentai 使用其 origin 下 `/api.php`。私有 API 即使以 `text/html` 返回也应按有界 body 尝试解析 JSON。
+- EH 逐页 reader 图片可能重采样，只用于阅读；只有 Original Archive 承诺原始文件，批量下载不伪装为逐页原图。
+- Danbooru、Gelbooru 和其他 Booru 只使用公开 API 与正式凭据；401/403/429、HTML 非预期响应和阻断返回稳定错误，不实现网页 fallback 或绕过。
+- Booru 协议差异必须保留：Danbooru JSON、Gelbooru JSON DAPI、Gelbooru-style XML、Moebooru、E621、Philomena 和 Paheal 不强行共用 parser。
+- Pixiv 使用用户导入 Cookie 和 Web AJAX，不实现浏览器登录、自动 Cookie 导出或 challenge bypass。
+- Rust 正式代码不实现 Camoufox、Playwright、Turnstile、浏览器 profile、Cloudflare bypass、TLS impersonation 或 transport fingerprint 伪装。
 
 ## 图像与缓存
 
-- 不要恢复本地 HTTP 图片代理，不要恢复 `/thumb?url=...`；当前链路是 `UI -> async_image/image_viewer -> ImageFetcherService -> JSON index -> HatH-style disk cache -> bytes -> ft.Image`。
-- `app/image_cache.py` 是 provider-agnostic；index 为 `url -> filename`，文件位于 Cache 域的 `files/<hash[0:2]>/<hash[2:4]>/<filename>`。
-- 文件名当前为 `sha256(normalized_url) + ext`；index 指向文件不存在时按 stale repair 删除映射后重拉。
-- EH sprite crop URL 形如 `https://...webp@x=1800-2000&y=0-282`，`@x/y` 是本地裁剪指令，不是真实远端 URL；`app/image_fetcher.py` 先拉原 sprite，再用 Pillow 裁剪并按完整 crop URL 缓存。
-- 设置页“是否加载图像”关闭后，`async_image()` 和图像查看器不得读缓存、不得请求远端，只显示占位；该开关只影响图片资源，不影响列表 HTML/JSON 请求。
+- 图像链路固定为 memory -> disk -> network；网络未命中优先 fetch 到有界内存、发布共享不可变 bytes，再可选异步落盘。
+- 缓存使用真实内容的 128-bit MD5：32 位小写十六进制文件名加规范化后缀，并按前四位两级分片。Booru original 的 Provider MD5 用于 fetch 前去重和 fetch 后校验。
+- 已知 MD5 按摘要合并，未知 MD5 按稳定 `ResourceKey` 合并；相同内容在内存和磁盘各只保留一份。
+- 单个调用者取消只取消订阅；最后一个消费者离开才取消底层 transfer。内存缓存按 byte budget 淘汰，不按条目数假装有界。
+- 响应进入缓存前检查状态、长度、Content-Type/magic、大小和 checksum；磁盘写使用同域 staging、flush 和原子发布，索引缺失执行 stale repair。
 
-## 浏览器会话 / 网络
+## 下载与本地画廊
 
-- EH 请求尽量复用 `app/browser_session.py` 的 `browser_session` 单例，共享 `requests.Session`、cookie jar、UA、Accept、Accept-Language 和连接。
-- 页面里不要随意新建 `EHentaiClient()`；用 `browser_session.get_eh_client(require_login=False)` 或 `browser_session.get_eh_client(require_login=True)`。
-- 登录必需页面用 `require_login=True`，公开页面用 `False`；登录验证有 TTL 缓存，保存 EH 凭据后要让相关 view cache 失效。
-- 图片 fetch 也走 `browser_session.get(...)`，不要手拼 Cookie header。
+- EH Archive 保留服务器原始 ZIP，不解压、不重压、不改名；Original/Resample 显式提交，H@H 只展示。
+- Archive 获得并发槽后才取得签名 URL；记录 acquired time、有效期和 IP 限制。过期不自动重新消耗 GP；提交中断恢复为 `cost_unknown`，不得自动重放。
+- 通用下载使用普通 HTTP Range，不做多线程分片；严格处理 200/206/416、If-Range、Content-Range、长度变化和断线。
+- Booru/Pixiv 持久单图下载必须复用 `ImageService`，不得重复 fetch；用户产物属于 Downloads，不因清理 Cache 消失。
+- `DownloadTaskView` 是 Flutter 下载列表/detail 的统一安全 DTO；Archive 与图片任务共享状态和 capability，但不伪造不支持的 command。
+- 统一 download cancel/retry/delete 由 Runtime 按 owner 分派；非法 family/state 返回 `download_task_action_not_allowed`，任务不存在和队列满分别返回稳定错误。
+- `redb` 本地画廊登记表是“已导入”权威状态，只保存 gallery ID 到受管根直接子目录名；导入只接受完整健康检查后的 gallery ID，不接受调用方路径。
+- ZIP 阅读限制 member 数、单页和总声明大小、重复/隐藏/逃逸路径、加密和损坏；公开资源不暴露 Archive Path 或原文件名。
+- 删除本地画廊必须预检并使用短期一次性确认令牌；导出使用有界异步 stream handle，句柄存活期间持有共享画廊占用。
 
-## 页面 / 视图
+## Flutter 前端
 
-- `app/main.py` 对导航页做 view cache；切页复用控件树，刷新由页面自己的“刷新”按钮负责。
-- 子页面导航使用“入栈/出栈”语义封装，例如 `push_view(...)` / `pop_view()`；业务页面不要散落直接 `page.views.append(...)` / `page.views.pop()`。
-- 底层实现必须保持 `page.route`、浏览器/系统 history 和 `page.views` 同步；优先在统一 route/view helper 或 `page.on_route_change` 中维护 View 栈。
-- 保存设置若影响已有页面渲染，必须调用 `page.fletviewer_invalidate_views(...)` 清理缓存；卡片/JSON 列表设置在 view 创建时读取。
-- 画廊列表统一入口：`app/views/gallery_debug.py:create_gallery_view(...)`；主页、热门、排行榜、收藏、订阅、搜索都应遵循同一卡片/JSON 设置。
-- 详情页：`app/views/gallery_detail.py`；图像查看器：`app/views/image_viewer.py`。
-- 图像查看器 provider-agnostic：输入 `ImageViewerItem(url, title, detail)`；EH 通过 `resolve_image_url(item, index)` 解析原图，Booru 直接传图片 URL。
-- 查看器模式：`paged` / `vertical`；默认值写在 `AppConfig.json` 的 `image_viewer_mode`。
-- 垂直模式必须窗口化加载，不得一次性创建整本真实图片；窗口外恢复 `Container + Icon` 以释放 UI 对 bytes 的引用。
-- EH `ThumbnailsResult` 新代码优先用 `items`，保留旧字段 `thumbnails` / `urls` 兼容调试。
+- Flutter 是目标正式前端，不经过 Flet、Python wrapper 或 Serious Python bridge；目标工程放在 `frontend/`。
+- 第一条纵向验收链固定为：启动或连接 Runtime -> 校验协议/Runtime/四域身份 -> 查询统一下载列表 -> SSE 驱动按 ID 刷新 -> 读取二进制图片 resource -> 按 owner 责任 graceful shutdown。
+- 桌面 Flutter 负责发现、启动或复用 packaged `fvcore` executable；只关闭自己启动的进程，并显示有界脱敏启动诊断。
+- Server/Web 使用长期运行的 `fvcore`；Flutter Web 复用相同 Dart client model，经同源反向代理或明确受控的跨源策略连接，不能默认开放任意 CORS。
+- Android 先用隔离 APK 验证 Rust sidecar 打包、private storage、loopback、后台、返回键、进程回收和恢复；只有实测不可靠才评估窄 JNI/FFI。
+- Dart DTO 保留 provider-specific metadata；不得创建可变任务 registry、复制 retry/recovery 规则或通过本地状态猜测 capability。
+- Flutter 平台层负责 FilePicker/SAF、分享、通知和把 Core resource stream 写到用户选择目标；不得把 `content://` 或浏览器文件伪装为服务器 `Path`。
 
-## 下载系统
+## Web / NAS
 
-- EH 批量下载默认只支持 Archive Download；逐页 fetch 获取的是网页阅读器图片，可能经过重采样，只可用于预览/少量图片，不称为原图，也不作为批量下载方案。只有 Original Archive 语义明确承诺归档原始文件。
-- `DownloadManager` 负责大文件任务、状态、断点续传、进度、重试/取消、完成事件；`LocalGalleryManager` 负责消费完成任务、创建本地画廊、移动 ZIP、写 metadata、提取封面、扫描本地画廊。
-- EH Archive 保留远端 ZIP，不解压、不重命名；同目录写 `gallery.json` 和 `thumb.<ext>`；目录名为 `[<GID>][<TOKEN>] <SanitizedGalleryTitle>`，按 Windows 最严格规则清洗并限制长度。
-- 目录约定：下载中 `FletViewer/Downloads/Downloading/<task_id>/`，本地归档 `FletViewer/Downloads/EHArchieve/[gid][token] title/`，任务索引 `FletViewer/Data/Downloads/tasks.json`。
-- 下载网络必须复用 `browser_session` 的 cookie、UA、Referer 和连接状态；不要为 EH 下载单独新建裸 `requests.Session`。
-- 断点续传用普通 HTTP Range，不做多线程分片；EH Archive 有 GP/IP/URL 时效限制，默认并发 1，最多 2。
-- 进度持久化要节流，建议每 1MB 或每 2 秒写一次；UI 轮询任务状态刷新。
-- 启动恢复：`running` 任务改为 `failed`；`completed` 但未 `consumed` 的任务可重新通知 `LocalGalleryManager`。
-- Archive URL 通常 86400 秒有效且限制 IP；`task.json` / `gallery.json` 必须记录获取时间、有效期、最大 IP 数；URL 过期第一版标 failed，不自动重新消耗 GP。
+- Web/NAS 是一等运行模式。Data、Cache、Downloads、Cookie、任务和本地画廊属于服务器，不代表浏览器设备本地状态。
+- 当前首先面向可信网络中的单用户或共享实例；实现用户隔离前，不得假定凭据、历史和任务按浏览器用户隔离。
+- 暴露到不可信网络前必须提供 TLS、认证、访问控制、上传限制和敏感日志治理；文档不得暗示当前实例天然适合公网多用户。
 
-## Provider 设计
+## 平台与依赖准入
 
-- 可以共享工程层抽象，但不要强行统一协议层；Danbooru、Gelbooru、Moebooru、EH、Pixiv 的分页、认证、tag、文件 URL、rate limit、Cloudflare 状态都可能不同。
-- 共享数据模型只能是最小公共字段，并允许 provider-specific metadata；不要丢弃 tags、rating、score、source、md5、page_url、archive 等关键字段。
-- Booru 协议族：`DanbooruClient` 走现代 JSON API；`GelbooruClient` 走 gelbooru.com JSON DAPI；`GelbooruAlikeClient` / `SafebooruClient` / `Rule34Client` 走旧 Gelbooru-style XML DAPI；`MoebooruClient` 走 Moebooru XML API。
-- Booru adapter 可输出 `BooruPost`、`ImageVariant`、`BooruSearchResult`、`TagSuggestion`，但不能抹平 provider-specific 字段。
+- Rust 依赖引入前检查 Windows、Linux、Android 和 server target、feature、维护状态、许可证、安全公告、阻塞/分配行为；WASM 不是本轮 Core 目标。
+- 优先 Rustls 等不依赖不可控系统运行时的实现；不得把 Python、Node、浏览器或实验工具带入 `fvcore` 运行时。
+- Flutter package 必须确认 Windows、Linux、Android 和 Web 支持矩阵；平台插件只能实现平台机制，不复制业务，并为不支持平台提供明确禁用或 server fallback。
+- 不因 Flet 旧版本、旧 APK 布局或 Python wheel 约束塑造新 Flutter/Rust 架构。
+- Windows/Linux packaged executable 布局、配置邻接、版本握手和启动失败诊断必须自动验收；Android 行为只以目标 Flutter APK 真机结果为准。
 
-## Challenge / 浏览器实验
+## Legacy Python/Flet
 
-- Rust `fvcore` 当前不实现 challenge backend、Camoufox、Playwright、Turnstile、浏览器 profile、Cloudflare bypass 或 transport fingerprint 伪装。
-- Danbooru、Gelbooru 和其他 Booru 只使用公开 API 与正式 API 凭据；401/403/429、HTML 非预期响应和访问阻断返回稳定错误，不尝试绕过。
-- Pixiv 使用用户导入 Cookie 和现有 Web AJAX；EH 使用用户提供 Cookie 和普通共享会话。遇到必须交互的 challenge 时明确失败，不启动浏览器。
-- `tmp/` 既有 Camoufox/curl_cffi 实验仅作为历史研究保留，暂停扩展，不得进入 Rust workspace 或正式 Core 依赖。
+- 不再为 Flet 重做页面、导航、主题、Web/NAS UX、分页或 Flutter extension，也不把 Rust 部分接回 Flet 形成过渡产品架构。
+- 不给 Python Core 增加 Provider、下载、缓存、存储或平台依赖；需要的正式行为直接迁移到 Rust。
+- 只有迁移 fixture、行为对照、严重数据安全修复或删除工作可以修改 `app/` / `core/`；修改时继续遵守其既有 `app -> core` 边界，不引入反向依赖。
+- 查询遗留 Flet API 时使用 `docs/index.md` 和 `docs/flet/` 的本地锁定文档，不凭记忆升级 API。
+- Python 与 Rust 对比测试只读 fixture或使用隔离临时四域，绝不同时写真实产品 SQLite、Cache、Downloads 或画廊。
+- 迁移完成后删除 Python `app/`、`core/`、tests、`main.py`、Python/Flet 依赖和 Flet 文档，而不是保留兼容层、shim 或 deprecated 路径。
 
-## 依赖准入
+## 验证
 
-- 默认优先纯 Python 依赖；引入 native/binary/Rust/C 扩展前，必须确认 Windows、Linux、Android 的 wheel 或源码构建路径。
-- 正式核心依赖不要轻易加入 Android 不可构建包；`curl_cffi`、`camoufox`、`playwright` 只保留在 `tmp/` 历史实验中，不能进入正式 Python Core 或 Rust `fvcore`。
-- `lxml` 优先替换：HTML 用 `BeautifulSoup(..., "html.parser")`，XML 用 `xml.etree.ElementTree`；替换后跑 EH 搜索、详情、缩略图、归档 smoke test。
-- `Pillow` 用于 EH sprite crop 和封面处理，是 Android build 风险；先实测，失败时 Android 降级/禁用相关功能，不要引入更大的 native 图像依赖。
-- `flet-web` 不应默认进入 Android target；Server 若引入 `fastapi`、`uvicorn` 等依赖，必须拆到 optional dependencies 或 server-only 入口。
-- 平台相关能力通过小接口注入，例如文件选择器、WebView、系统下载目录；核心 provider、缓存、下载、数据模型尽量纯 Python。
+- Rust 改动在 `fvcore/` 运行：`cargo fmt --all -- --check`、`cargo check --all-targets`、`cargo test --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo doc --no-deps`。
+- Flutter 工程创建后运行 `flutter analyze`、`flutter test`，行为变更还需真实桌面或目标平台 smoke；UI 改动必须实际驱动应用确认。
+- 遗留 Python 改动按影响范围运行 `python -m compileall -q app core tests` 和相关 `python -m unittest`；不因退役方向降低数据安全修复的验证标准。
+- 所有文档或代码修改后从仓库根运行 `git diff --check`；不得留下 whitespace error。
 
-## tmp 实验区
+## 日志与敏感信息
 
-- `tmp/` 是隔离实验区，不是正式应用；可放 Camoufox、curl_cffi、Playwright、notebook 等实验依赖。
-- `app/` 或正式 provider 不能直接 import `tmp/` 代码；迁移前必须检查 Android 依赖、敏感信息、协议边界、现有 `browser_session` / `image_cache` / `download_manager` 职责边界。
-- `tmp/.cache/` 存放真实 cookies/profile，必须 gitignore，不能提交。
-- Flet 打包必须排除 `tmp/`、`.cache/`、`*.ipynb` 和实验产物。
-
-## Android 构建
-
-- 平台存储拆分尚未完成验收：Data、Cache、Downloads、Temp 四域和桌面迁移代码已落地，但 Android 覆盖升级与“清除缓存”真机验证仍待完成；详细决策和验收矩阵以 `TODO.md` 为准。验收完成前不要把 Android 实际路径当成稳定接口，也不要新增依赖旧 `FletViewer/` 相对根目录的业务代码。
-- Flet 0.85.3 配套 Flutter 3.41.7；不要用 scoop/winget 装 Flutter，版本不匹配或源不存在。
-- 不要用 Puro；Flet CLI 调用的 `flutter` 子进程不会自动拿到 Puro 环境。
-- 推荐让 `flet build apk` 自动下载配套 Flutter 到 `C:\Users\<用户名>\flutter\3.41.7\`；PATH 上不要有其他 Flutter 干扰。
-- Android 返回键行为以正式 APK 为准；Flet 官方 Debug App 连接 Web/server 地址时返回键可能被 Debug App 外壳拦截，不能作为正式 APK 返回行为依据。
-- Android SDK 需手动安装；推荐 SDK 36 + BuildTools 36.0.0，并执行 `flutter doctor --android-licenses` 接受许可。
-- Windows 必须开启开发者模式，否则插件构建会卡在 symlink support。
-- `ANDROID_HOME` / `ANDROID_SDK_ROOT` 必须指向真实 SDK 路径，Android Studio 默认通常是 `%LOCALAPPDATA%\Android\Sdk`。
-- APK 产物在 `build/apk/app-release.apk`；默认 debug key 只适合本地测试，上架需配置 `[tool.flet.android.signing]`。
-- 根目录 `main.py` 是 thin shim，转发到 `app/main.py`；改入口逻辑只改 `app/main.py`，不要动 shim。
-- `pyproject.toml` 待修正：`requires-python >=3.10`；`[tool.flet.app].exclude` 必须包含 `tmp`、`.cache`、`*.ipynb`，并继续排除 `FletViewer`、`build`、`.git` 等产物。
-
-## 日志
-
-- 异步 worker 捕获异常时用 `app.debug_log.log_exception(...)`，不要只吞异常或只显示 UI 文本；终端需要 traceback。
-- 网络和耗时路径用 `Timer(...)` / `log_debug(...)`；不要记录 cookie value、token、完整敏感 header。
+- 日志记录 Runtime/operation/task ID、Provider、phase、耗时、队列和取消原因；不得记录 Cookie、API key、完整签名 URL、敏感 query/header 或服务器绝对路径。
+- 后台 task panic/error 必须由 supervisor 回收并反映到 snapshot/event；Flutter transport 错误与 Core domain error 必须区分。

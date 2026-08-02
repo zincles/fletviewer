@@ -1,27 +1,39 @@
 # FletViewer
 
-FletViewer 是使用 Python 和 Flet 构建的 Anime Provider 浏览、阅读和下载工具。需要 Python 3.10 或更高版本。
+FletViewer 是跨平台 Anime Provider 浏览、阅读和下载工具。
 
-## 桌面运行
+## 目标架构
 
-```bash
-python -m pip install -e .
-python main.py
+项目正在迁移为：
+
+```text
+Flutter UI -> HTTP/SSE/resource -> fvcore Runtime
 ```
 
-## Web 运行
+- `fvcore/`：纯 Rust 业务核心和独立 executable，负责 Provider、认证、网络、图片、缓存、下载、本地画廊、历史和存储。
+- `frontend/`：目标 Flutter 前端目录；尚未创建，待公开 transport 契约冻结后开始。
+- `app/`、`core/`、根 `main.py`：待退役 Python/Flet 迁移源，仅用于 fixture、行为对照和临时基线，不再继续产品化。
+
+当前进度与下一步见 `TODO.md`，Rust Core 架构与迁移不变量见 `FVCORE.md`。
+
+## Rust Core 开发
 
 ```bash
-python -m pip install -e ".[web]"
-flet run --web --recursive
+cd fvcore
+cargo build
+cargo run -- create-config
+cargo run -- check-config
+cargo run -- run
 ```
 
-Web 服务默认适用于可信网络；公开部署前请配置反向代理、TLS 和认证。
-
-## Android 构建
+调试 HTTP 控制面与服务端 WebUI：
 
 ```bash
-flet build apk
+cargo run -- web
 ```
 
-APK 位于 `build/apk/app-release.apk`。
+调试 WebUI 没有内置认证，只允许在可信网络使用；公开部署前必须由反向代理提供 TLS、认证和访问控制。
+
+## 遗留 Python/Flet 基线
+
+遗留产品仍可按 `pyproject.toml` 运行，但它不是目标架构，也不再新增产品能力。迁移完成后将删除 Python/Flet 入口、依赖和代码。

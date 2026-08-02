@@ -27,6 +27,7 @@ pub use config::{
     EffectiveProviderProfileConfig, EventConfig, ImageConfig, ImageDownloadConfig, NetworkConfig,
     OperationConfig, ProviderProfileConfig, StorageConfig,
 };
+pub use control::{ApiContract, ApiRouteContract, ErrorBody, EventContract, ResourceContract};
 pub use download_view::{DownloadTaskStatus, DownloadTaskView};
 pub use error::{CoreError, ErrorCode};
 pub use gallery::{
@@ -70,6 +71,12 @@ pub use storage::FavoriteSearch;
 
 /// Crate version compiled into the current artifact.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Stable HTTP/SSE/resource protocol implemented by this build.
+///
+/// Additive optional response fields do not change this value. Breaking route,
+/// field type, or semantic changes require a new protocol version.
+pub const API_PROTOCOL_VERSION: u32 = 1;
 
 /// Returns the semantic version of this `fvcore` build.
 #[must_use]

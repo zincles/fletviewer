@@ -20,6 +20,10 @@ pub enum RuntimeState {
 /// Immutable summary of one Runtime instance.
 #[derive(Clone, Debug, Serialize)]
 pub struct CoreSnapshot {
+    /// Stable HTTP/SSE/resource protocol version implemented by this Runtime.
+    pub api_protocol_version: u32,
+    /// Semantic version of the running Core build.
+    pub core_version: String,
     /// Runtime identifier.
     pub runtime_id: RuntimeId,
     /// Human-readable instance name.

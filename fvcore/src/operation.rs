@@ -236,18 +236,27 @@ pub enum EventStreamItem {
 pub struct EventSubscription {
     replay: VecDeque<CoreEvent>,
     receiver: broadcast::Receiver<CoreEvent>,
+    resync_required: bool,
 }
 
 impl EventSubscription {
-    pub(crate) fn new(replay: Vec<CoreEvent>, receiver: broadcast::Receiver<CoreEvent>) -> Self {
+    pub(crate) fn new(
+        replay: Vec<CoreEvent>,
+        receiver: broadcast::Receiver<CoreEvent>,
+        resync_required: bool,
+    ) -> Self {
         Self {
             replay: replay.into(),
             receiver,
+            resync_required,
         }
     }
 
     /// Waits for the next replayed or live event.
     pub async fn next(&mut self) -> EventStreamItem {
+        if std::mem::take(&mut self.resync_required) {
+            return EventStreamItem::ResyncRequired;
+        }
         if let Some(event) = self.replay.pop_front() {
             return EventStreamItem::Event(Box::new(event));
         }
