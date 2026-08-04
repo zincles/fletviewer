@@ -11,7 +11,7 @@ Flutter UI -> HTTP/SSE/resource -> fvcore Runtime
 ```
 
 - `fvcore/`：纯 Rust 业务核心和独立 executable，负责 Provider、认证、网络、图片、缓存、下载、本地画廊、历史和存储。
-- `frontend/`：实验性的 Flutter 前端；当前仅覆盖最小纵向客户端，浏览、本地画廊和部分设置能力仍有占位内容。
+- `frontend/`：实验性的 Flutter 前端；已接入 EH 搜索、详情、页面索引和 reader 的第一条真实纵向链路，本地画廊、Web、Android 和部分设置能力仍有占位内容。
 - `app/`、`core/`、根 `main.py`：待退役 Python/Flet 迁移源，仅用于 fixture、行为对照和临时基线，不再继续产品化。
 
 当前进度与下一步见 `TODO.md`，Rust Core 架构与迁移不变量见 `FVCORE.md`。

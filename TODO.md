@@ -87,7 +87,7 @@ Flutter Web / NAS / CLI -> HTTP + SSE + binary resource/stream -> fvcore executa
 - [x] 第一条 UI 链路已显示 Runtime 连接状态、统一下载列表、cancel/retry/delete 和内容 MD5 图片 resource；Flutter GUI 已标记为实验性。
 - [x] 接入 FRB build/codegen，在 Linux desktop 启动进程内 `CoreRuntime` 并显示真实 snapshot。
 - [x] 将统一下载列表、cancel/retry/delete、event invalidation 和图片 bytes 切到 FRB；本地 loopback client 与 executable launcher 不再是 Linux desktop 默认路径。
-- [ ] 把浏览页的第一个 Provider 搜索、详情和 reader 从占位内容替换为真实 Rust 调用。
+- [x] 把浏览页的第一个 Provider 搜索、详情和 reader 从占位内容替换为真实 Rust 调用；详情、缩略索引、operation 轮询和 content-addressed image resource 已覆盖。
 - [ ] 把本地画廊 inventory/detail/page 从占位内容替换为真实 Rust 调用。
 - [x] `flutter analyze`、`flutter test`、Rust gate、Python sidecar probe 和真实 Linux desktop smoke 全部通过。
 - [ ] Flutter Web 复用同一 Dart domain model 连接 server `fvcore`；明确服务器存储、反向代理和文件下载语义。

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'app_navigation.dart';
 import 'core_client.dart';
+import 'eh_gallery_pages.dart';
 import 'runtime_launcher.dart';
 
 const experimentalGuiLabel = '实验性 GUI';
@@ -876,8 +877,11 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
                     childAspectRatio: 0.72,
                   ),
                   itemCount: page.galleries.length,
-                  itemBuilder: (context, index) =>
-                      _EhGalleryCard(gallery: page.galleries[index]),
+                  itemBuilder: (context, index) => _EhGalleryCard(
+                    client: widget.client,
+                    profile: page.profile,
+                    gallery: page.galleries[index],
+                  ),
                 ),
               ),
               SliverPadding(
@@ -977,8 +981,14 @@ class _EhBrowseToolbar extends StatelessWidget {
 }
 
 class _EhGalleryCard extends StatelessWidget {
-  const _EhGalleryCard({required this.gallery});
+  const _EhGalleryCard({
+    required this.client,
+    required this.profile,
+    required this.gallery,
+  });
 
+  final CoreClient client;
+  final String profile;
   final EhGallerySummary gallery;
 
   @override
@@ -989,7 +999,15 @@ class _EhGalleryCard extends StatelessWidget {
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () {},
+        onTap: () => Navigator.of(context).push<void>(
+          MaterialPageRoute(
+            builder: (_) => EhGalleryPage(
+              client: client,
+              profile: profile,
+              summary: gallery,
+            ),
+          ),
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
