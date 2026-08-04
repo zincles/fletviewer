@@ -113,10 +113,10 @@ impl StorageService {
             .len();
         Ok(StorageSnapshot {
             schema_version: STORAGE_SCHEMA_VERSION as u32,
-            data: display_path(&self.paths.data),
-            cache: display_path(&self.paths.cache),
-            downloads: display_path(&self.paths.downloads),
-            temp: display_path(&self.paths.temp),
+            data_identity: storage_identity("data", &self.paths.data),
+            cache_identity: storage_identity("cache", &self.paths.cache),
+            downloads_identity: storage_identity("downloads", &self.paths.downloads),
+            temp_identity: storage_identity("temp", &self.paths.temp),
             database_bytes,
         })
     }
@@ -444,8 +444,14 @@ fn io_error(action: &str, path: &Path, error: std::io::Error) -> CoreError {
     )
 }
 
-fn display_path(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+fn storage_identity(domain: &str, path: &Path) -> String {
+    let input = format!("fvcore-storage-v1:{domain}:{}", path.to_string_lossy());
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3_u64);
+    }
+    format!("v1-{hash:016x}")
 }
 
 #[cfg(test)]
@@ -565,5 +571,32 @@ mod tests {
         assert_eq!(error.code(), ErrorCode::AlreadyRunning);
         drop(first);
         StorageService::open(&config).unwrap();
+    }
+
+    #[test]
+    fn storage_snapshot_uses_stable_opaque_domain_identities() {
+        let temp = TempDir::new().unwrap();
+        let first = StorageService::open(&config(&temp)).unwrap();
+        let first_snapshot = first.snapshot().unwrap();
+        drop(first);
+        let second = StorageService::open(&config(&temp)).unwrap();
+        let second_snapshot = second.snapshot().unwrap();
+
+        assert_eq!(first_snapshot.data_identity, second_snapshot.data_identity);
+        assert_eq!(
+            first_snapshot.cache_identity,
+            second_snapshot.cache_identity
+        );
+        assert_eq!(
+            first_snapshot.downloads_identity,
+            second_snapshot.downloads_identity
+        );
+        assert_eq!(first_snapshot.temp_identity, second_snapshot.temp_identity);
+        assert!(first_snapshot.data_identity.starts_with("v1-"));
+        assert!(
+            !first_snapshot
+                .data_identity
+                .contains(temp.path().to_str().unwrap())
+        );
     }
 }

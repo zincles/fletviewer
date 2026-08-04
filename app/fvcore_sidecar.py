@@ -13,9 +13,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit
-
-
 SUPPORTED_API_PROTOCOL_VERSION = 1
+
+_STORAGE_DOMAINS = ("data", "cache", "downloads", "temp")
+
+
+def storage_identity(domain: str, path: Path) -> str:
+    if domain not in _STORAGE_DOMAINS:
+        raise ValueError(f"unknown storage domain: {domain}")
+    value = f"fvcore-storage-v1:{domain}:{Path(path).resolve()}".encode("utf-8")
+    hash_value = 0xCBF29CE484222325
+    for byte in value:
+        hash_value ^= byte
+        hash_value = (hash_value * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"v1-{hash_value:016x}"
 
 class FvcoreSidecarError(RuntimeError):
     """Raised when a sidecar cannot be safely discovered or supervised."""
@@ -48,15 +59,17 @@ class FvcoreSidecarSupervisor:
         self._base_url = _loopback_base_url(base_url)
         self._executable = Path(executable).resolve() if executable else None
         self._expected_instance_name = expected_instance_name
+        configured_storage = expected_storage or {}
+        unknown = set(configured_storage) - set(_STORAGE_DOMAINS)
+        if unknown:
+            raise ValueError(f"unknown fvcore storage domains: {', '.join(sorted(unknown))}")
         self._expected_storage = {
-            key: str(Path(value).resolve()) for key, value in (expected_storage or {}).items()
+            key: storage_identity(key, Path(value))
+            for key, value in configured_storage.items()
         }
         if expected_api_protocol_version <= 0:
             raise ValueError("expected fvcore API protocol version must be positive")
         self._expected_api_protocol_version = expected_api_protocol_version
-        unknown = self._expected_storage.keys() - {"data", "cache", "downloads", "temp"}
-        if unknown:
-            raise ValueError(f"unknown fvcore storage domains: {', '.join(sorted(unknown))}")
         if startup_timeout <= 0 or request_timeout <= 0:
             raise ValueError("sidecar timeouts must be positive")
         self._startup_timeout = startup_timeout
@@ -175,12 +188,12 @@ class FvcoreSidecarSupervisor:
         if self._expected_storage and not isinstance(storage, dict):
             raise FvcoreSidecarError("fvcore Runtime snapshot has no storage identity")
         for domain, expected in self._expected_storage.items():
-            actual = storage.get(domain) if isinstance(storage, dict) else None
-            if not isinstance(actual, str) or str(Path(actual).resolve()) != expected:
+            actual = storage.get(f"{domain}_identity") if isinstance(storage, dict) else None
+            if not isinstance(actual, str) or actual != expected:
                 raise FvcoreSidecarError(
-                    f"fvcore {domain} storage mismatch: expected {expected!r}, received {actual!r}"
+                    f"fvcore {domain} storage identity mismatch: "
+                    f"expected {expected!r}, received {actual!r}"
                 )
-
 
 def discover_fvcore_executable(
     environ: Mapping[str, str] | None = None,
@@ -254,11 +267,11 @@ def _start_process(executable: Path) -> subprocess.Popen[bytes]:
     except OSError as error:
         raise FvcoreSidecarError(f"failed to start fvcore executable {executable}: {error}") from error
 
-
 __all__ = [
     "FvcoreConnection",
     "FvcoreSidecarError",
     "FvcoreSidecarSupervisor",
     "discover_fvcore_executable",
+    "storage_identity",
     "SUPPORTED_API_PROTOCOL_VERSION",
 ]

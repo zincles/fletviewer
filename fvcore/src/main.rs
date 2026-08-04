@@ -471,16 +471,7 @@ fn inspect_booru_provider_error(provider: &str) -> CoreError {
     )
 }
 
-fn sanitize_inspect_json(mut value: serde_json::Value) -> serde_json::Value {
-    if let Some(storage) = value
-        .get_mut("storage")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        storage.remove("data");
-        storage.remove("cache");
-        storage.remove("downloads");
-        storage.remove("temp");
-    }
+fn sanitize_inspect_json(value: serde_json::Value) -> serde_json::Value {
     value
 }
 

@@ -1,17 +1,11 @@
-# fletviewer_frontend
+# FletViewer Experimental GUI
 
-A new Flutter project.
+这是 FletViewer 的实验性 Flutter GUI，当前用于验证 `fvcore` 进程内 Runtime 和最小纵向客户端链路。
 
-## Getting Started
+当前仍未完成：
 
-This project is a starting point for a Flutter application.
+- 浏览页的真实 Provider 搜索、详情和 reader
+- 本地画廊 inventory、详情和阅读
+- Web、Android 以及完整平台生命周期验收
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Rust Core 的正式能力和迁移状态见仓库根目录的 `README.md`、`TODO.md` 和 `FVCORE.md`。

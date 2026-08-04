@@ -14,6 +14,7 @@ from app.fvcore_sidecar import (
     FvcoreSidecarError,
     FvcoreSidecarSupervisor,
     discover_fvcore_executable,
+    storage_identity,
 )
 
 
@@ -56,7 +57,10 @@ class FvcoreSidecarTests(unittest.TestCase):
             "runtime_id": "runtime-test",
             "instance_name": "desktop-smoke",
             "state": "ready",
-            "storage": {key: str(value.resolve()) for key, value in self.storage.items()},
+            "storage": {
+                f"{key}_identity": storage_identity(key, value)
+                for key, value in self.storage.items()
+            },
         }
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _RuntimeHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -89,7 +93,7 @@ class FvcoreSidecarTests(unittest.TestCase):
             self.url,
             expected_storage={"data": Path(self.temp.name) / "OtherData"},
         )
-        with self.assertRaisesRegex(FvcoreSidecarError, "data storage mismatch"):
+        with self.assertRaisesRegex(FvcoreSidecarError, "data storage identity mismatch"):
             supervisor.connect()
 
     def test_rejects_runtime_with_incompatible_api_protocol(self):
@@ -206,8 +210,8 @@ class FvcoreSidecarTests(unittest.TestCase):
             with urllib.request.urlopen(url + "/api/v1/runtime", timeout=2) as response:
                 snapshot = json.load(response)
             self.assertEqual(
-                snapshot["storage"]["data"],
-                str(self.storage["data"].resolve()),
+                snapshot["storage"]["data_identity"],
+                storage_identity("data", self.storage["data"]),
             )
         finally:
             follower.close()

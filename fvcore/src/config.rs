@@ -969,10 +969,10 @@ mod tests {
         let snapshot = config.effective_snapshot(
             crate::StorageSnapshot {
                 schema_version: 2,
-                data: "data".to_owned(),
-                cache: "cache".to_owned(),
-                downloads: "downloads".to_owned(),
-                temp: "temp".to_owned(),
+                data_identity: "v1-data".to_owned(),
+                cache_identity: "v1-cache".to_owned(),
+                downloads_identity: "v1-downloads".to_owned(),
+                temp_identity: "v1-temp".to_owned(),
                 database_bytes: 1,
             },
             &[],

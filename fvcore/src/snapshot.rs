@@ -56,19 +56,19 @@ pub struct CoreSnapshot {
     pub profiles: Vec<ProfileSnapshot>,
 }
 
-/// Immutable summary of the four storage domains.
+/// Immutable summary of the four storage domains without exposing server paths.
 #[derive(Clone, Debug, Serialize)]
 pub struct StorageSnapshot {
     /// Internal storage schema version.
     pub schema_version: u32,
-    /// Canonical durable Data directory.
-    pub data: String,
-    /// Canonical disposable Cache directory.
-    pub cache: String,
-    /// Canonical durable Downloads directory.
-    pub downloads: String,
-    /// Canonical disposable Temp directory.
-    pub temp: String,
+    /// Opaque identity of the canonical durable Data directory.
+    pub data_identity: String,
+    /// Opaque identity of the canonical disposable Cache directory.
+    pub cache_identity: String,
+    /// Opaque identity of the canonical durable Downloads directory.
+    pub downloads_identity: String,
+    /// Opaque identity of the canonical disposable Temp directory.
+    pub temp_identity: String,
     /// Core state database size in bytes.
     pub database_bytes: u64,
 }

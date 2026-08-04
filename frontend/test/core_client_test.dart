@@ -27,15 +27,7 @@ void main() {
         requests.add('${request.method} ${request.uri.path}');
         request.response.headers.contentType = ContentType.json;
         if (request.uri.path == '/api/v1/runtime') {
-          request.response.write(
-            jsonEncode({
-              'api_protocol_version': 1,
-              'core_version': '0.1.0-test',
-              'runtime_id': 'runtime-1',
-              'instance_name': 'desktop-test',
-              'state': 'ready',
-            }),
-          );
+          request.response.write(jsonEncode(_runtimeJson()));
         } else if (request.uri.path == '/api/v1/download-tasks') {
           request.response.write(jsonEncode([task]));
         } else if (request.uri.path.endsWith('/retry')) {
@@ -65,15 +57,7 @@ void main() {
     unawaited(
       server.forEach((request) async {
         request.response.headers.contentType = ContentType.json;
-        request.response.write(
-          jsonEncode({
-            'api_protocol_version': 2,
-            'core_version': '0.2.0',
-            'runtime_id': 'runtime-2',
-            'instance_name': 'wrong',
-            'state': 'ready',
-          }),
-        );
+        request.response.write(jsonEncode(_runtimeJson(apiProtocolVersion: 2)));
         await request.response.close();
       }),
     );
@@ -117,6 +101,22 @@ void main() {
     expect(await client.events(cursor: 9).first, isA<CoreResyncRequired>());
   });
 }
+
+Map<String, Object?> _runtimeJson({int apiProtocolVersion = 1}) => {
+  'api_protocol_version': apiProtocolVersion,
+  'core_version': '0.1.0-test',
+  'runtime_id': 'runtime-1',
+  'instance_name': 'fvcore',
+  'state': 'ready',
+  'storage': {
+    'schema_version': 3,
+    'data_identity': 'v1-data',
+    'cache_identity': 'v1-cache',
+    'downloads_identity': 'v1-downloads',
+    'temp_identity': 'v1-temp',
+    'database_bytes': 4096,
+  },
+};
 
 Map<String, Object?> _taskJson() => {
   'id': '01989abc-def0-7000-8000-000000000001',

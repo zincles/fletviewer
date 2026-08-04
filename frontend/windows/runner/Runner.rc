@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "fletviewer_frontend" "\0"
+            VALUE "FileDescription", "FletViewer - Experimental GUI" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "fletviewer_frontend" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
             VALUE "OriginalFilename", "fletviewer_frontend.exe" "\0"
-            VALUE "ProductName", "fletviewer_frontend" "\0"
+            VALUE "ProductName", "FletViewer - Experimental GUI" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

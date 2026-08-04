@@ -1,13 +1,18 @@
 //! Pure Rust application core for FletViewer and other frontends.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Narrow flutter_rust_bridge API exposed to Flutter desktop and Android.
+pub mod api;
 mod archive;
 mod config;
 mod control;
 mod download_view;
 mod error;
+#[allow(unsafe_code)]
+#[allow(missing_docs)]
+mod frb_generated;
 mod gallery;
 mod id;
 mod image;
