@@ -326,11 +326,12 @@ final class _FakeCoreClient implements CoreClient {
   }
 
   @override
-  Future<EhToplistPage> ehToplist({String profile = 'default'}) async {
-    return const EhToplistPage(
+  Future<EhToplistPage> ehToplist({String profile = 'default', int? tl}) async {
+    return EhToplistPage(
       profile: 'default',
       generation: 1,
-      items: [
+      tl: tl,
+      items: const [
         EhToplistItem(
           rank: 1,
           gallery: EhGalleryRef(gid: 111111, token: 'aaaa1111'),

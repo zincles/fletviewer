@@ -917,6 +917,7 @@ final class EhToplistPage {
   const EhToplistPage({
     required this.profile,
     required this.generation,
+    required this.tl,
     required this.items,
   });
 
@@ -924,6 +925,7 @@ final class EhToplistPage {
     return EhToplistPage(
       profile: _string(json, 'profile'),
       generation: _integer(json, 'generation'),
+      tl: _optionalInteger(json, 'tl'),
       items: List<EhToplistItem>.unmodifiable(
         _list(
           json,
@@ -935,6 +937,7 @@ final class EhToplistPage {
 
   final String profile;
   final int generation;
+  final int? tl;
   final List<EhToplistItem> items;
 }
 
@@ -1416,7 +1419,7 @@ abstract interface class CoreClient {
 
   Future<EhHomePage> ehWatched({String profile = 'default'});
 
-  Future<EhToplistPage> ehToplist({String profile = 'default'});
+  Future<EhToplistPage> ehToplist({String profile = 'default', int? tl});
 
   Future<List<HistoryEntry>> history();
 
@@ -1721,10 +1724,11 @@ final class HttpCoreClient implements CoreClient {
   }
 
   @override
-  Future<EhToplistPage> ehToplist({String profile = 'default'}) async {
+  Future<EhToplistPage> ehToplist({String profile = 'default', int? tl}) async {
     final value = await _jsonRequest(
       'GET',
       '/api/v1/providers/eh/${Uri.encodeComponent(profile)}/toplist',
+      {if (tl != null) 'tl': '$tl'},
     );
     return EhToplistPage.fromJson(_object(value, 'EH toplist'));
   }
@@ -2184,8 +2188,10 @@ final class NativeCoreClient implements CoreClient {
   }
 
   @override
-  Future<EhToplistPage> ehToplist({String profile = 'default'}) async {
-    final value = await _jsonCall(() => _core.ehToplistJson(profile: profile));
+  Future<EhToplistPage> ehToplist({String profile = 'default', int? tl}) async {
+    final value = await _jsonCall(
+      () => _core.ehToplistJson(profile: profile, tl: tl),
+    );
     return EhToplistPage.fromJson(_object(value, 'EH toplist'));
   }
 

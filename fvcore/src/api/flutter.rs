@@ -144,11 +144,15 @@ impl NativeCore {
     }
 
     /// Returns the EH gallery toplist for one profile as JSON.
-    pub async fn eh_toplist_json(&self, profile: String) -> Result<String, String> {
+    pub async fn eh_toplist_json(
+        &self,
+        profile: String,
+        tl: Option<u32>,
+    ) -> Result<String, String> {
         self.ensure_running().await?;
         to_json(
             self.handle
-                .eh_toplist(&ProfileKey::new("eh", profile))
+                .eh_toplist(&ProfileKey::new("eh", profile), tl)
                 .await,
         )
     }

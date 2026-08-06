@@ -19,7 +19,14 @@ class EhToplistView extends StatefulWidget {
 }
 
 class _EhToplistViewState extends State<EhToplistView> {
+  static const _periods = <(String, int)>[
+    ('全部', 11),
+    ('年度', 12),
+    ('月度', 13),
+    ('昨日', 15),
+  ];
   List<EhToplistItem> _items = const [];
+  int _tl = 11;
   bool _loading = true;
   String? _error;
 
@@ -35,7 +42,10 @@ class _EhToplistViewState extends State<EhToplistView> {
       _error = null;
     });
     try {
-      final page = await widget.client.ehToplist(profile: widget.profile);
+      final page = await widget.client.ehToplist(
+        profile: widget.profile,
+        tl: _tl,
+      );
       if (!mounted) return;
       setState(() {
         _items = page.items;
@@ -89,6 +99,23 @@ class _EhToplistViewState extends State<EhToplistView> {
                     : const Icon(Icons.refresh),
               ),
             ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 0, 18, 4),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: SegmentedButton<int>(
+              segments: [
+                for (final (label, value) in _EhToplistViewState._periods)
+                  ButtonSegment(value: value, label: Text(label)),
+              ],
+              selected: {_tl},
+              onSelectionChanged: (selection) {
+                setState(() => _tl = selection.first);
+                unawaited(_load());
+              },
+            ),
           ),
         ),
         Expanded(

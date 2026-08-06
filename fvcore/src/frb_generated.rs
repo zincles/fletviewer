@@ -875,6 +875,7 @@ fn wire__crate__api__flutter__NativeCore_eh_toplist_json_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NativeCore>,
             >>::sse_decode(&mut deserializer);
             let api_profile = <String>::sse_decode(&mut deserializer);
+            let api_tl = <Option<u32>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, String>(
@@ -899,6 +900,7 @@ fn wire__crate__api__flutter__NativeCore_eh_toplist_json_impl(
                         let output_ok = crate::api::flutter::NativeCore::eh_toplist_json(
                             &*api_that_guard,
                             api_profile,
+                            api_tl,
                         )
                         .await?;
                         Ok(output_ok)
@@ -2487,6 +2489,17 @@ impl SseDecode for Option<String> {
     }
 }
 
+impl SseDecode for Option<u32> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<u32>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<u64> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2849,6 +2862,16 @@ impl SseEncode for Option<String> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <String>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<u32> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <u32>::sse_encode(value, serializer);
         }
     }
 }

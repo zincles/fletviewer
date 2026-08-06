@@ -137,6 +137,12 @@ struct EhThumbnailFetchInput {
     image_url: String,
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EhToplistQuery {
+    tl: Option<u32>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PixivSearchQuery {
@@ -1642,9 +1648,10 @@ async fn clear_history(State(state): State<ControlState>) -> Response {
 async fn get_eh_toplist(
     State(state): State<ControlState>,
     Path(profile): Path<String>,
+    Query(query): Query<EhToplistQuery>,
 ) -> Response {
     let key = crate::ProfileKey::new("eh", profile);
-    match state.core.eh_toplist(&key).await {
+    match state.core.eh_toplist(&key, query.tl).await {
         Ok(page) => with_security_headers(Json(page).into_response()),
         Err(error) => error_response(&error),
     }

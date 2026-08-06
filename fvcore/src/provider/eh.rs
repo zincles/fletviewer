@@ -181,6 +181,9 @@ pub struct EhToplistPage {
     pub profile: String,
     /// Session generation used for the complete response body.
     pub generation: u64,
+    /// Toplist period selector echoed back; gallery periods are 11 (all-time),
+    /// 12 (past year), 13 (past month) and 15 (yesterday).
+    pub tl: Option<u32>,
     /// Ranked galleries in page order.
     pub items: Vec<EhToplistItem>,
 }
@@ -455,10 +458,21 @@ impl EhService {
     pub(crate) async fn toplist(
         &self,
         key: &ProfileKey,
+        tl: Option<u32>,
         cancellation: CancellationToken,
     ) -> Result<EhToplistPage, CoreError> {
         ensure_eh(key)?;
-        let response = self.sessions.get(key, "toplist.php", cancellation).await?;
+        let query = tl.map(|value| vec![("tl".to_owned(), value.to_string())]);
+        let response = self
+            .sessions
+            .get_with_query(
+                key,
+                "toplist.php",
+                query.as_deref().unwrap_or_default(),
+                crate::session::ApiAuth::None,
+                cancellation,
+            )
+            .await?;
         ensure_html(&response.content_type, "EH toplist page")?;
         let generation = response.generation;
         let final_url = response.final_url;
@@ -468,6 +482,7 @@ impl EhService {
         Ok(EhToplistPage {
             profile: key.profile.clone(),
             generation,
+            tl,
             items,
         })
     }
@@ -1313,6 +1328,8 @@ fn parse_toplist(html: &str, base_url: &Url) -> Result<Vec<EhToplistItem>, CoreE
             .or_insert(thumbnail);
     }
     let mut items: Vec<EhToplistItem> = Vec::new();
+    let rank_pattern =
+        Regex::new(r"^\s*#?\s*(\d+)").expect("static EH toplist rank regex is valid");
     for row in dom
         .query_selector("tr")
         .into_iter()
@@ -1338,10 +1355,9 @@ fn parse_toplist(html: &str, base_url: &Url) -> Result<Vec<EhToplistItem>, CoreE
         }
         let title = clean_text(&title_link.inner_text(parser));
         let text = clean_text(&row.inner_text(parser));
-        let rank = text
-            .split_whitespace()
-            .next()
-            .and_then(|token| token.trim_start_matches(['#', '.']).parse::<u32>().ok());
+        let rank = rank_pattern
+            .captures(&text)
+            .and_then(|captures| captures[1].parse::<u32>().ok());
         let thumbnail_url = thumbnails
             .get(&(gallery.gid, gallery.token.clone()))
             .cloned();
@@ -1892,10 +1908,8 @@ mod tests {
         assert_eq!(items[0].rank, Some(1));
         assert_eq!(items[0].gallery.gid, 111111);
         assert_eq!(items[0].title, "Top Gallery One");
-        assert_eq!(
-            items[0].thumbnail_url.as_deref(),
-            Some("https://ehgt.org/top-one.webp")
-        );
+        // 真实画廊榜行不含缩略图；缩略图字段保持可选。
+        assert_eq!(items[0].thumbnail_url, None);
         assert_eq!(items[1].rank, Some(2));
         assert_eq!(items[1].title, "Top Gallery Two");
     }
