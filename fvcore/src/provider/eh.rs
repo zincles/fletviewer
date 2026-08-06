@@ -380,6 +380,28 @@ impl EhService {
         })
     }
 
+    pub(crate) async fn popular(
+        &self,
+        key: &ProfileKey,
+        cancellation: CancellationToken,
+    ) -> Result<EhHomePage, CoreError> {
+        ensure_eh(key)?;
+        let response = self.sessions.get(key, "popular", cancellation).await?;
+        ensure_html(&response.content_type, "EH popular page")?;
+        let generation = response.generation;
+        let final_url = response.final_url;
+        let html = std::str::from_utf8(&response.body)
+            .map_err(|_| unexpected("EH popular page returned invalid UTF-8"))?;
+        let (galleries, previous, next) = parse_home(html, &final_url)?;
+        Ok(EhHomePage {
+            profile: key.profile.clone(),
+            generation,
+            galleries,
+            previous,
+            next,
+        })
+    }
+
     pub(crate) async fn archive_options(
         &self,
         key: &ProfileKey,
@@ -1763,6 +1785,45 @@ mod tests {
             .unwrap();
         assert_eq!(result.generation, 1);
         assert_eq!(result.options.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn popular_uses_the_configured_shared_profile() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let fixture = HOME_COMPACT.replace("https://e-hentai.org/", &format!("http://{listen}/"));
+        let router = Router::new().route(
+            "/popular",
+            get(move || {
+                let fixture = fixture.clone();
+                async move {
+                    (
+                        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                        fixture,
+                    )
+                }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let profile = ProviderProfileConfig {
+            provider: "eh".to_owned(),
+            profile: "default".to_owned(),
+            base_url: Url::parse(&format!("http://{listen}/")).unwrap(),
+            ..ProviderProfileConfig::default()
+        };
+        let sessions = Arc::new(
+            SessionRegistry::new(
+                &BTreeMap::from([("eh".to_owned(), profile)]),
+                &NetworkConfig::default(),
+            )
+            .unwrap(),
+        );
+        let result = EhService::new(sessions)
+            .popular(&ProfileKey::new("eh", "default"), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.generation, 1);
+        assert_eq!(result.galleries.len(), 2);
     }
 
     #[tokio::test]

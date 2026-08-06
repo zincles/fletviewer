@@ -5,7 +5,8 @@ use crate::{
     EhCoverFetchRequest, EhPageFetchRequest, EhThumbnailFetchRequest, ErrorCode, ErrorSnapshot,
     EventBatch, EventConfig, FakeOperationRequest, FakeOutcome, ImageDownloadTaskSnapshot,
     ImageResourceDescriptor, OperationConfig, OperationId, OperationKind, OperationSnapshot,
-    OperationState, PixivPageFetchRequest, ProfileKey, ResourceKey, RuntimeId,
+    OperationState, PixivPageFetchRequest, PixivThumbnailFetchRequest, ProfileKey, ResourceKey,
+    RuntimeId,
     image::{ContentMd5, ImageFetchAuthority, ImageFetchSpec, ImageProgress, ImageService},
     provider::booru::BooruService,
     provider::eh::EhService,
@@ -41,6 +42,7 @@ pub(crate) enum OperationRequest {
     Fake(FakeOperationRequest),
     BooruOriginal(BooruOriginalFetchRequest),
     PixivPage(PixivPageFetchRequest),
+    PixivThumbnail(PixivThumbnailFetchRequest),
     EhPage(EhPageFetchRequest),
     EhCover(EhCoverFetchRequest),
     EhThumbnail(EhThumbnailFetchRequest),
@@ -274,6 +276,37 @@ impl OperationService {
         self.start(
             OperationKind::ImageFetch,
             OperationRequest::PixivPage(request),
+            runtime_shutdown,
+        )
+    }
+
+    pub(crate) fn start_pixiv_thumbnail(
+        &mut self,
+        request: PixivThumbnailFetchRequest,
+        runtime_shutdown: &CancellationToken,
+    ) -> Result<OperationSnapshot, CoreError> {
+        if request.profile.provider != "pixiv"
+            || request.illust_id.is_empty()
+            || !request.illust_id.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Pixiv profile and numeric illustration ID are required",
+                false,
+            ));
+        }
+        if !matches!(request.image_url.scheme(), "http" | "https")
+            || request.image_url.host_str().is_none()
+        {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Pixiv thumbnail URL must be an absolute HTTP(S) URL",
+                false,
+            ));
+        }
+        self.start(
+            OperationKind::ImageFetch,
+            OperationRequest::PixivThumbnail(request),
             runtime_shutdown,
         )
     }
@@ -592,6 +625,28 @@ impl OperationService {
                             }),
                         }
                     }
+                    OperationRequest::PixivThumbnail(request) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(default_deadline),
+                            run_pixiv_thumbnail(
+                                id,
+                                request,
+                                cancellation,
+                                sessions,
+                                images,
+                                message_tx.clone(),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => WorkerResult::Failed(ErrorSnapshot {
+                                code: ErrorCode::DeadlineExceeded,
+                                message: "operation deadline exceeded".to_owned(),
+                                retryable: true,
+                            }),
+                        }
+                    }
                     OperationRequest::EhPage(request) => {
                         match tokio::time::timeout(
                             Duration::from_secs(default_deadline),
@@ -680,6 +735,9 @@ fn operation_resource_key(request: &OperationRequest) -> Result<Option<ResourceK
     match request {
         OperationRequest::PixivPage(request) => {
             ResourceKey::new("pixiv", &request.illust_id, request.page, "original").map(Some)
+        }
+        OperationRequest::PixivThumbnail(request) => {
+            ResourceKey::new("pixiv", &request.illust_id, request.page, "thumb").map(Some)
         }
         OperationRequest::EhPage(request) => ResourceKey::new(
             "eh",
@@ -930,6 +988,53 @@ async fn run_pixiv_page(
     }
 }
 
+async fn run_pixiv_thumbnail(
+    id: OperationId,
+    request: PixivThumbnailFetchRequest,
+    cancellation: CancellationToken,
+    _sessions: Arc<SessionRegistry>,
+    images: Arc<ImageService>,
+    messages: mpsc::Sender<OperationMessage>,
+) -> WorkerResult {
+    let resource_key = match ResourceKey::new("pixiv", &request.illust_id, request.page, "thumb") {
+        Ok(key) => key,
+        Err(error) => return worker_error(error),
+    };
+    let mut last_phase = "";
+    let mut last_bytes = 0_u64;
+    let mut last_update = std::time::Instant::now();
+    let result = images
+        .fetch(
+            ImageFetchSpec {
+                profile: request.profile,
+                url: request.image_url,
+                authority: ImageFetchAuthority::PixivThumbnail,
+                expected_md5: None,
+                resource_key: Some(resource_key),
+                expected_bytes: None,
+                referer: None,
+                cdn_referer_path: None,
+            },
+            cancellation,
+            |progress| {
+                let publish = progress.phase != last_phase
+                    || progress.bytes_done.saturating_sub(last_bytes) >= 64 * 1024
+                    || last_update.elapsed() >= Duration::from_millis(100);
+                if publish {
+                    last_phase = progress.phase;
+                    last_bytes = progress.bytes_done;
+                    last_update = std::time::Instant::now();
+                    let _ = messages.try_send(OperationMessage::Progress { id, progress });
+                }
+            },
+        )
+        .await;
+    match result {
+        Ok(resource) => WorkerResult::Completed(Some(resource.descriptor().clone())),
+        Err(error) => worker_error(error),
+    }
+}
+
 async fn run_eh_page(
     id: OperationId,
     request: EhPageFetchRequest,
@@ -1125,6 +1230,7 @@ fn request_profile(request: &OperationRequest) -> Option<&ProfileKey> {
         OperationRequest::Fake(_) => None,
         OperationRequest::BooruOriginal(request) => Some(&request.profile),
         OperationRequest::PixivPage(request) => Some(&request.profile),
+        OperationRequest::PixivThumbnail(request) => Some(&request.profile),
         OperationRequest::EhPage(request) => Some(&request.profile),
         OperationRequest::EhCover(request) => Some(&request.profile),
         OperationRequest::EhThumbnail(request) => Some(&request.profile),

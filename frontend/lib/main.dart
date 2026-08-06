@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'app_navigation.dart';
 import 'core_client.dart';
 import 'eh_gallery_pages.dart';
+import 'history_page.dart';
+import 'pixiv_pages.dart';
 import 'runtime_launcher.dart';
 
 const experimentalGuiLabel = '实验性 GUI';
@@ -217,6 +219,7 @@ class _FletViewerShellState extends State<FletViewerShell> {
           AppSection.local => const _LocalGalleryPage(),
           AppSection.downloads => DownloadPage(client: _client),
           AppSection.settings => _SettingsPage(
+            client: _client,
             provider: _provider,
             onProviderSelected: _selectProvider,
           ),
@@ -615,6 +618,7 @@ class _BrowsePage extends StatelessWidget {
             client: client,
             provider: provider,
             tab: provider.tabs[selectedTab.clamp(0, provider.tabs.length - 1)],
+            profile: 'default',
           ),
         ),
       ],
@@ -730,11 +734,13 @@ class _GalleryBrowser extends StatefulWidget {
     required this.client,
     required this.provider,
     required this.tab,
+    this.profile = 'default',
   });
 
   final CoreClient client;
   final ProviderFamily provider;
   final String tab;
+  final String profile;
 
   @override
   State<_GalleryBrowser> createState() => _GalleryBrowserState();
@@ -747,13 +753,19 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
   String? _error;
   String _activeSearch = '';
 
-  bool get _supportsEhHome =>
-      widget.provider == ProviderFamily.ehentai && widget.tab == '主页';
+  bool get _isEhHome =>
+      widget.provider == ProviderFamily.ehentai &&
+      (widget.tab == '主页' || widget.tab == '热门');
+
+  bool get _isEhHistory =>
+      widget.provider == ProviderFamily.ehentai && widget.tab == '历史';
+
+  bool get _isPixiv => widget.provider == ProviderFamily.pixiv;
 
   @override
   void initState() {
     super.initState();
-    if (_supportsEhHome) unawaited(_load());
+    if (_isEhHome) unawaited(_load());
   }
 
   @override
@@ -764,7 +776,7 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
       _error = null;
       _activeSearch = '';
       _searchController.clear();
-      if (_supportsEhHome) unawaited(_load());
+      if (_isEhHome) unawaited(_load());
     }
   }
 
@@ -775,14 +787,16 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
   }
 
   Future<void> _load({String? search, EhPageCursor? cursor}) async {
-    if (!_supportsEhHome) return;
+    if (!_isEhHome) return;
     setState(() {
       _loading = true;
       _error = null;
     });
     final query = search ?? _activeSearch;
     try {
-      final page = await widget.client.ehSearch(search: query, cursor: cursor);
+      final page = widget.tab == '热门'
+          ? await widget.client.ehPopular(profile: widget.profile)
+          : await widget.client.ehSearch(search: query, cursor: cursor);
       if (!mounted) return;
       setState(() {
         _page = page;
@@ -800,11 +814,31 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_supportsEhHome) {
+    if (_isPixiv) {
+      return PixivFeedPage(
+        client: widget.client,
+        profile: widget.profile,
+        kind: switch (widget.tab) {
+          '推荐' => PixivFeedKind.recommendations,
+          '关注' => PixivFeedKind.following,
+          '排行' => PixivFeedKind.ranking,
+          '搜索' => PixivFeedKind.search,
+          '收藏' => PixivFeedKind.bookmarks,
+          _ => PixivFeedKind.recommendations,
+        },
+      );
+    }
+    if (_isEhHistory) {
+      return HistoryPage(client: widget.client);
+    }
+    if (!_isEhHome) {
+      final ehentaiUnwired = const ['订阅', '排行榜', '收藏'].contains(widget.tab);
       return _EmptySection(
         icon: Icons.construction_outlined,
         title: '${widget.provider.label} · ${widget.tab}',
-        message: '此页尚未接入 Rust 查询接口；当前只启用 E-Hentai 主页/搜索作为第一条浏览链路。',
+        message: ehentaiUnwired
+            ? '该数据源尚未接入后端；当前已接通 E-Hentai 主页、热门与本地历史。订阅/排行榜依赖 EH 账号体系，收藏页后端未接入。'
+            : '此页尚未接入 Rust 查询接口；当前只启用 E-Hentai 主页/热门与 Pixiv 浏览作为浏览链路。',
         actionLabel: '等待接入',
       );
     }
@@ -1242,14 +1276,58 @@ class _LocalGalleryPage extends StatelessWidget {
   }
 }
 
-class _SettingsPage extends StatelessWidget {
+class _SettingsPage extends StatefulWidget {
   const _SettingsPage({
+    required this.client,
     required this.provider,
     required this.onProviderSelected,
   });
 
+  final CoreClient client;
   final ProviderFamily provider;
   final ValueChanged<ProviderFamily> onProviderSelected;
+
+  @override
+  State<_SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<_SettingsPage> {
+  final TextEditingController _cookieController = TextEditingController();
+  bool _savingCookie = false;
+  String? _cookieStatus;
+
+  @override
+  void dispose() {
+    _cookieController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveCookie(String? cookie) async {
+    setState(() {
+      _savingCookie = true;
+      _cookieStatus = null;
+    });
+    try {
+      final snapshot = await widget.client.updateProfileCookie(
+        provider: 'pixiv',
+        profile: 'default',
+        cookie: cookie,
+      );
+      if (!mounted) return;
+      setState(() {
+        _savingCookie = false;
+        _cookieStatus = snapshot.hasCookie
+            ? 'Cookie 已保存并生效；当前会话已重新创建。'
+            : 'Cookie 已清除。';
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _savingCookie = false;
+        _cookieStatus = '保存失败：$error';
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1278,10 +1356,10 @@ class _SettingsPage extends StatelessWidget {
                 leading: const Icon(Icons.public),
                 title: const Text('默认浏览来源'),
                 trailing: DropdownButton<ProviderFamily>(
-                  value: provider,
+                  value: widget.provider,
                   underline: const SizedBox.shrink(),
                   onChanged: (value) {
-                    if (value != null) onProviderSelected(value);
+                    if (value != null) widget.onProviderSelected(value);
                   },
                   items: [
                     for (final family in ProviderFamily.values)
@@ -1299,6 +1377,79 @@ class _SettingsPage extends StatelessWidget {
                 subtitle: Text('跟随系统；后续接入 fvcore 脱敏配置和本地 UI 偏好'),
               ),
             ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.key_outlined),
+                  title: Text('Pixiv Cookie'),
+                  subtitle: Text(
+                    '从浏览器复制登录后的 Cookie（如 PHPSESSID=...）。保存到本机 Runtime 会话，重启后需重新配置；桌面进程不会写入磁盘。',
+                  ),
+                ),
+                TextField(
+                  controller: _cookieController,
+                  obscureText: true,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: 'Pixiv Cookie',
+                    hintText: 'PHPSESSID=...; other=...',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    FilledButton.icon(
+                      onPressed: _savingCookie
+                          ? null
+                          : () => _saveCookie(
+                              _cookieController.text.trim().isEmpty
+                                  ? null
+                                  : _cookieController.text.trim(),
+                            ),
+                      icon: const Icon(Icons.save_outlined),
+                      label: const Text('保存'),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton(
+                      onPressed: _savingCookie
+                          ? null
+                          : () {
+                              _cookieController.clear();
+                              _saveCookie(null);
+                            },
+                      child: const Text('清除'),
+                    ),
+                    if (_savingCookie) ...[
+                      const SizedBox(width: 12),
+                      const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ],
+                  ],
+                ),
+                if (_cookieStatus != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    _cookieStatus!,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: _cookieStatus!.contains('失败')
+                          ? Theme.of(context).colorScheme.error
+                          : Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
         ),
       ],

@@ -255,6 +255,147 @@ final class _FakeCoreClient implements CoreClient {
   }
 
   @override
+  Future<EhHomePage> ehPopular({String profile = 'default'}) async {
+    final page = await ehSearch(profile: profile);
+    return page;
+  }
+
+  @override
+  Future<List<HistoryEntry>> history() async => const [];
+
+  @override
+  Future<void> clearHistory() async {}
+
+  @override
+  Future<PixivSearchResult> pixivSearch({
+    String profile = 'default',
+    required String query,
+    int page = 1,
+  }) async {
+    return const PixivSearchResult(
+      profile: 'default',
+      generation: 1,
+      query: '',
+      page: 1,
+      lastPage: 1,
+      nextPage: null,
+      items: [],
+    );
+  }
+
+  @override
+  Future<PixivRankingResult> pixivRanking({
+    String profile = 'default',
+    String mode = 'day',
+    String date = '',
+    int page = 1,
+  }) async {
+    return const PixivRankingResult(
+      profile: 'default',
+      generation: 1,
+      mode: 'day',
+      date: '',
+      page: 1,
+      nextPage: null,
+      items: [],
+    );
+  }
+
+  @override
+  Future<PixivRecommendationResult> pixivRecommendations({
+    String profile = 'default',
+  }) async {
+    return const PixivRecommendationResult(
+      profile: 'default',
+      generation: 1,
+      items: [],
+    );
+  }
+
+  @override
+  Future<PixivFollowingResult> pixivFollowing({
+    String profile = 'default',
+    PixivFollowingVisibility visibility = PixivFollowingVisibility.public,
+    int page = 1,
+  }) async {
+    return PixivFollowingResult(
+      profile: 'default',
+      generation: 1,
+      visibility: visibility,
+      page: page,
+      nextPage: null,
+      items: const [],
+    );
+  }
+
+  @override
+  Future<PixivBookmarksResult> pixivBookmarks({
+    String profile = 'default',
+    PixivBookmarkVisibility visibility = PixivBookmarkVisibility.public,
+    int offset = 0,
+  }) async {
+    return PixivBookmarksResult(
+      profile: 'default',
+      generation: 1,
+      visibility: visibility,
+      offset: offset,
+      limit: 20,
+      total: 0,
+      nextOffset: null,
+      items: const [],
+    );
+  }
+
+  @override
+  Future<PixivIllust> pixivIllust({
+    String profile = 'default',
+    required String illustId,
+  }) async {
+    throw CoreApiException(
+      statusCode: 401,
+      code: 'authentication_required',
+      message: 'Pixiv requires a logged-in browser Cookie for this request',
+      retryable: false,
+    );
+  }
+
+  @override
+  Future<CoreOperation> startPixivPageFetch({
+    String profile = 'default',
+    required String illustId,
+    required int page,
+  }) async {
+    return _operation(CoreOperationState.completed, page);
+  }
+
+  @override
+  Future<CoreOperation> startPixivThumbnailFetch({
+    String profile = 'default',
+    required String illustId,
+    required int page,
+    required String imageUrl,
+  }) async {
+    thumbnailRequests++;
+    return _operation(CoreOperationState.completed, page);
+  }
+
+  @override
+  Future<ProfileSnapshot> updateProfileCookie({
+    required String provider,
+    required String profile,
+    required String? cookie,
+  }) async {
+    return const ProfileSnapshot(
+      provider: 'pixiv',
+      profile: 'default',
+      generation: 2,
+      baseUrl: 'https://www.pixiv.net/',
+      hasCookie: false,
+      hasApiCredentials: false,
+    );
+  }
+
+  @override
   Future<CoreOperation> operation(String id) async {
     return _operation(CoreOperationState.completed, startedPage ?? 0);
   }

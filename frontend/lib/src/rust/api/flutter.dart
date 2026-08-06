@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bridge_error`, `ensure_running`, `parse_eh_cursor`, `parse_operation_id`, `parse_uuid`, `serialization_error`, `to_json`
+// These functions are ignored because they are not marked as `pub`: `bridge_error`, `ensure_running`, `parse_eh_cursor`, `parse_operation_id`, `parse_pixiv_bookmark_visibility`, `parse_pixiv_following_visibility`, `parse_uuid`, `serialization_error`, `to_json`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeError`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `fmt`
 
@@ -28,6 +28,9 @@ abstract class NativeCore implements RustOpaqueInterface {
   /// Cancels one persistent download task and returns its updated JSON view.
   Future<String> cancelDownloadTaskJson({required String id});
 
+  /// Clears all recorded browse history.
+  Future<void> clearHistory();
+
   /// Deletes one terminal download task record when the owning family allows it.
   Future<void> deleteDownloadTask({required String id});
 
@@ -43,6 +46,9 @@ abstract class NativeCore implements RustOpaqueInterface {
     required BigInt gid,
     required String token,
   });
+
+  /// Returns the EH popular listing for one profile as JSON.
+  Future<String> ehPopularJson({required String profile});
 
   /// Searches one EH profile and returns a listing page as JSON.
   Future<String> ehSearchJson({
@@ -63,6 +69,9 @@ abstract class NativeCore implements RustOpaqueInterface {
   /// Replays retained Runtime events after a cursor as JSON.
   Future<String> eventsAfterJson({required BigInt cursor});
 
+  /// Returns recent browse history as JSON.
+  Future<String> historyJson();
+
   /// Reads content-addressed image bytes.
   Future<Uint8List> imageResourceBytes({
     required String contentMd5,
@@ -74,6 +83,44 @@ abstract class NativeCore implements RustOpaqueInterface {
 
   /// Returns one operation snapshot as JSON.
   Future<String> operationJson({required String id});
+
+  /// Returns one authenticated Pixiv bookmark slice as JSON.
+  Future<String> pixivBookmarksJson({
+    required String profile,
+    required String visibility,
+    required int offset,
+  });
+
+  /// Returns one authenticated Pixiv following feed page as JSON.
+  Future<String> pixivFollowingJson({
+    required String profile,
+    required String visibility,
+    required int page,
+  });
+
+  /// Returns parsed metadata for one Pixiv illustration as JSON.
+  Future<String> pixivIllustJson({
+    required String profile,
+    required String illustId,
+  });
+
+  /// Returns one Pixiv ranking page as JSON.
+  Future<String> pixivRankingJson({
+    required String profile,
+    required String mode,
+    required String date,
+    required int page,
+  });
+
+  /// Returns the current Pixiv discovery recommendations as JSON.
+  Future<String> pixivRecommendationsJson({required String profile});
+
+  /// Searches one Pixiv profile and returns a result page as JSON.
+  Future<String> pixivSearchJson({
+    required String profile,
+    required String query,
+    required int page,
+  });
 
   /// Retries one persistent download task and returns its updated JSON view.
   Future<String> retryDownloadTaskJson({required String id});
@@ -106,5 +153,27 @@ abstract class NativeCore implements RustOpaqueInterface {
     required String token,
     required int page,
     required String imageUrl,
+  });
+
+  /// Starts one Pixiv original page fetch and returns the operation as JSON.
+  Future<String> startPixivPageFetchJson({
+    required String profile,
+    required String illustId,
+    required int page,
+  });
+
+  /// Starts one Pixiv thumbnail fetch and returns the operation as JSON.
+  Future<String> startPixivThumbnailFetchJson({
+    required String profile,
+    required String illustId,
+    required int page,
+    required String imageUrl,
+  });
+
+  /// Replaces one profile Cookie (or clears it) and returns the profile as JSON.
+  Future<String> updateProfileCookieJson({
+    required String provider,
+    required String profile,
+    String? cookie,
   });
 }

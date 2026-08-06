@@ -138,6 +138,23 @@ pub struct PixivPageFetchRequest {
     pub page: u32,
 }
 
+/// Request for one thumbnail image served by the Pixiv image host.
+///
+/// The URL is echoed back from the Core-provided feed DTO; the Core re-validates
+/// it against the profile origin policy and constructs the Referer itself.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PixivThumbnailFetchRequest {
+    /// Configured Pixiv profile.
+    pub profile: ProfileKey,
+    /// Numeric illustration ID.
+    pub illust_id: String,
+    /// Zero-based page index covered by this thumbnail.
+    pub page: u32,
+    /// Thumbnail URL previously parsed by the Core from the Pixiv feed response.
+    pub image_url: Url,
+}
+
 /// Request for one image displayed by the EH web viewer; it may be resampled.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

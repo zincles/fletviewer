@@ -96,6 +96,9 @@ Flutter Web / NAS / CLI -> HTTP + SSE + binary resource/stream -> fvcore executa
 - [x] 将统一下载列表、cancel/retry/delete、event invalidation 和图片 bytes 切到 FRB；本地 loopback client 与 executable launcher 不再是 Linux desktop 默认路径。
 - [x] 把浏览页的第一个 Provider 搜索、详情和 reader 从占位内容替换为真实 Rust 调用；详情、缩略索引、operation 轮询和 content-addressed image resource 已覆盖。
 - [x] EH 首页封面与详情页缩略图已接通：封面/缩略图走受限 EH 图片 operation 与内容缓存；缩略图解析为 sprite 整图 + 偏移（EH 无 `@x` 裁剪服务），Flutter 端按偏移裁剪显示，同页共享一次下载。
+- [x] Pixiv 浏览接通：推荐、关注（订阅）、日/周/月排行、搜索、收藏五条 feed + 详情页 + 原图阅读器；无 Cookie 时后端返回稳定 `authentication_required`，UI 显示登录引导。
+- [x] EH 热门（`/popular`）与本地浏览历史接通：详情查询自动记录（EH 画廊与 Pixiv 作品，按 media 幂等、500 条上限），历史列表/清除 + 点击回跳详情。
+- [x] 设置页支持 Pixiv Cookie 内存级配置（embedded Runtime 不落盘；executable 模式持久化到 `config.json`，HTTP 路由 `POST /api/v1/profiles/{provider}/{profile}/cookie`）。
 - [ ] 本地画廊 inventory/detail/page 从占位内容替换为真实 Rust 调用（本地端下一步）。
 - [x] `flutter analyze`、`flutter test`、Rust gate、Python sidecar probe 和真实 Linux desktop smoke 全部通过。
 - [ ] Flutter Web 复用同一 Dart domain model 连接 server `fvcore`（**推迟**，见"当前产品范围决策"；Web/NAS 是保留的后续方向）。

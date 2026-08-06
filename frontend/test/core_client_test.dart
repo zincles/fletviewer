@@ -200,7 +200,229 @@ void main() {
       ),
     );
   });
+
+  test('uses Pixiv feeds, history, and profile cookie routes', () async {
+    final seen = <String>[];
+    unawaited(
+      server.forEach((request) async {
+        seen.add('${request.method} ${request.uri}');
+        request.response.headers.contentType = ContentType.json;
+        switch (request.uri.path) {
+          case '/api/v1/providers/eh/default/popular':
+            request.response.write(jsonEncode(_ehHomeJson()));
+          case '/api/v1/history':
+            if (request.method == 'DELETE') {
+              request.response.statusCode = HttpStatus.noContent;
+            } else {
+              request.response.write(jsonEncode(_historyJson()));
+            }
+          case '/api/v1/providers/pixiv/default/search':
+            request.response.write(jsonEncode(_pixivSearchJson()));
+          case '/api/v1/providers/pixiv/default/ranking':
+            request.response.write(jsonEncode(_pixivRankingJson()));
+          case '/api/v1/providers/pixiv/default/recommendations':
+            request.response.write(jsonEncode(_pixivRecommendationsJson()));
+          case '/api/v1/providers/pixiv/default/following':
+            request.response.write(jsonEncode(_pixivFollowingJson()));
+          case '/api/v1/providers/pixiv/default/bookmarks':
+            request.response.write(jsonEncode(_pixivBookmarksJson()));
+          case '/api/v1/providers/pixiv/default/illusts/12345':
+            request.response.write(jsonEncode(_pixivIllustJson()));
+          case '/api/v1/providers/pixiv/default/illusts/12345/pages/0/fetch':
+            request.response.statusCode = HttpStatus.accepted;
+            request.response.write(jsonEncode(_operationJson(completed: true)));
+          case '/api/v1/providers/pixiv/default/illusts/12345/thumbnails/0/fetch':
+            request.response.statusCode = HttpStatus.accepted;
+            request.response.write(jsonEncode(_operationJson(completed: true)));
+          case '/api/v1/profiles/pixiv/default/cookie':
+            request.response.write(jsonEncode(_profileJson()));
+          default:
+            request.response.statusCode = HttpStatus.notFound;
+        }
+        await request.response.close();
+      }),
+    );
+
+    final popular = await client.ehPopular();
+    expect(popular.galleries.single.gallery.gid, 123);
+    expect(await client.history(), hasLength(1));
+    await client.clearHistory();
+    final search = await client.pixivSearch(query: 'landscape');
+    expect(search.items.single.title, 'Fixture Art');
+    final ranking = await client.pixivRanking();
+    expect(ranking.items.single.rank, 1);
+    final recommendations = await client.pixivRecommendations();
+    expect(recommendations.items.single.id, '12345');
+    final following = await client.pixivFollowing();
+    expect(following.items.single.id, '12345');
+    final bookmarks = await client.pixivBookmarks();
+    expect(bookmarks.total, 2);
+    final illust = await client.pixivIllust(illustId: '12345');
+    expect(illust.pages.single.originalUrl, contains('original'));
+    await client.startPixivPageFetch(illustId: '12345', page: 0);
+    await client.startPixivThumbnailFetch(
+      illustId: '12345',
+      page: 0,
+      imageUrl: 'https://i.pximg.net/thumb.webp',
+    );
+    final profile = await client.updateProfileCookie(
+      provider: 'pixiv',
+      profile: 'default',
+      cookie: 'PHPSESSID=x',
+    );
+    expect(profile.hasCookie, isTrue);
+
+    expect(seen, contains('GET /api/v1/providers/eh/default/popular'));
+    expect(seen, contains('DELETE /api/v1/history'));
+    expect(
+      seen,
+      contains(
+        'POST /api/v1/providers/pixiv/default/illusts/12345/thumbnails/0/fetch',
+      ),
+    );
+    expect(seen, contains('POST /api/v1/profiles/pixiv/default/cookie'));
+  });
 }
+
+Map<String, Object?> _ehHomeJson() => {
+  'profile': 'default',
+  'generation': 1,
+  'galleries': [
+    {
+      'gallery': {'gid': 123, 'token': 'fixture-token'},
+      'page_url': 'https://e-hentai.org/g/123/fixture-token/',
+      'title': 'Popular fixture',
+      'category': null,
+      'published': null,
+      'uploader': null,
+      'page_count': null,
+      'rating': null,
+      'language': null,
+      'tags': <Object?>[],
+      'cover_url': null,
+      'cover_width': null,
+      'cover_height': null,
+    },
+  ],
+  'previous': null,
+  'next': null,
+};
+
+List<Map<String, Object?>> _historyJson() => [
+  {
+    'provider': 'eh',
+    'profile': 'default',
+    'kind': 'eh_gallery',
+    'media': '123:fixture-token',
+    'title': 'Fixture Gallery',
+    'thumbnail': null,
+    'viewed_at': '2026-08-01T00:00:00Z',
+  },
+];
+
+Map<String, Object?> _pixivSearchJson() => {
+  'profile': 'default',
+  'generation': 1,
+  'query': 'landscape',
+  'page': 1,
+  'last_page': 1,
+  'next_page': null,
+  'items': [_pixivItemJson()],
+};
+
+Map<String, Object?> _pixivItemJson() => {
+  'id': '12345',
+  'title': 'Fixture Art',
+  'user': {'id': '99', 'name': 'fixture'},
+  'page_count': 1,
+  'x_restrict': 0,
+  'thumbnail_url': 'https://i.pximg.net/thumb.webp',
+  'tags': <Object?>['landscape'],
+};
+
+Map<String, Object?> _pixivRankingJson() => {
+  'profile': 'default',
+  'generation': 1,
+  'mode': 'day',
+  'date': '',
+  'page': 1,
+  'next_page': null,
+  'items': [
+    {
+      'rank': 1,
+      'previous_rank': null,
+      'id': '12345',
+      'title': 'Fixture Art',
+      'user': {'id': '99', 'name': 'fixture'},
+      'page_count': 1,
+      'x_restrict': 0,
+      'thumbnail_url': 'https://i.pximg.net/thumb.webp',
+      'tags': <Object?>[],
+    },
+  ],
+};
+
+Map<String, Object?> _pixivRecommendationsJson() => {
+  'profile': 'default',
+  'generation': 1,
+  'items': [_pixivItemJson()],
+};
+
+Map<String, Object?> _pixivFollowingJson() => {
+  'profile': 'default',
+  'generation': 1,
+  'visibility': 'public',
+  'page': 1,
+  'next_page': null,
+  'items': [_pixivItemJson()],
+};
+
+Map<String, Object?> _pixivBookmarksJson() => {
+  'profile': 'default',
+  'generation': 1,
+  'visibility': 'public',
+  'offset': 0,
+  'limit': 20,
+  'total': 2,
+  'next_offset': null,
+  'items': [_pixivItemJson()],
+};
+
+Map<String, Object?> _pixivIllustJson() => {
+  'id': '12345',
+  'page_url': 'https://www.pixiv.net/artworks/12345',
+  'title': 'Fixture Art',
+  'caption': '',
+  'illust_type': 0,
+  'page_count': 1,
+  'width': 800,
+  'height': 600,
+  'x_restrict': 0,
+  'view_count': 10,
+  'bookmark_count': 2,
+  'bookmarked': false,
+  'created_at': '2026-08-01',
+  'user': {'id': '99', 'name': 'fixture'},
+  'tags': <Object?>['landscape'],
+  'pages': [
+    {
+      'index': 0,
+      'original_url': 'https://i.pximg.net/original.webp',
+      'regular_url': null,
+      'small_url': null,
+    },
+  ],
+};
+
+Map<String, Object?> _profileJson() => {
+  'key': {'provider': 'pixiv', 'profile': 'default'},
+  'generation': 2,
+  'base_url': 'https://www.pixiv.net/',
+  'has_cookie': true,
+  'has_api_credentials': false,
+  'max_concurrent_requests': 4,
+  'min_request_interval_ms': 0,
+};
 
 Map<String, Object?> _runtimeJson({int apiProtocolVersion = 1}) => {
   'api_protocol_version': apiProtocolVersion,

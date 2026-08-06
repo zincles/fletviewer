@@ -45,7 +45,7 @@ extension ProviderFamilyPresentation on ProviderFamily {
 
   List<String> get tabs => switch (this) {
     ProviderFamily.ehentai => const ['主页', '订阅', '热门', '排行榜', '收藏', '历史'],
-    ProviderFamily.pixiv => const ['推荐', '关注', '排行', '搜索'],
+    ProviderFamily.pixiv => const ['推荐', '关注', '排行', '搜索', '收藏'],
     ProviderFamily.booru => const [
       'Danbooru',
       'Gelbooru',

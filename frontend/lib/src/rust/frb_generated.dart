@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 1169670296;
+  int get rustContentHash => -242711507;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -81,6 +81,10 @@ abstract class RustLibApi extends BaseApi {
   Future<String> crateApiFlutterNativeCoreCancelDownloadTaskJson({
     required NativeCore that,
     required String id,
+  });
+
+  Future<void> crateApiFlutterNativeCoreClearHistory({
+    required NativeCore that,
   });
 
   Future<void> crateApiFlutterNativeCoreDeleteDownloadTask({
@@ -104,6 +108,11 @@ abstract class RustLibApi extends BaseApi {
     required String token,
   });
 
+  Future<String> crateApiFlutterNativeCoreEhPopularJson({
+    required NativeCore that,
+    required String profile,
+  });
+
   Future<String> crateApiFlutterNativeCoreEhSearchJson({
     required NativeCore that,
     required String profile,
@@ -125,6 +134,10 @@ abstract class RustLibApi extends BaseApi {
     required BigInt cursor,
   });
 
+  Future<String> crateApiFlutterNativeCoreHistoryJson({
+    required NativeCore that,
+  });
+
   Future<Uint8List> crateApiFlutterNativeCoreImageResourceBytes({
     required NativeCore that,
     required String contentMd5,
@@ -139,6 +152,46 @@ abstract class RustLibApi extends BaseApi {
   Future<String> crateApiFlutterNativeCoreOperationJson({
     required NativeCore that,
     required String id,
+  });
+
+  Future<String> crateApiFlutterNativeCorePixivBookmarksJson({
+    required NativeCore that,
+    required String profile,
+    required String visibility,
+    required int offset,
+  });
+
+  Future<String> crateApiFlutterNativeCorePixivFollowingJson({
+    required NativeCore that,
+    required String profile,
+    required String visibility,
+    required int page,
+  });
+
+  Future<String> crateApiFlutterNativeCorePixivIllustJson({
+    required NativeCore that,
+    required String profile,
+    required String illustId,
+  });
+
+  Future<String> crateApiFlutterNativeCorePixivRankingJson({
+    required NativeCore that,
+    required String profile,
+    required String mode,
+    required String date,
+    required int page,
+  });
+
+  Future<String> crateApiFlutterNativeCorePixivRecommendationsJson({
+    required NativeCore that,
+    required String profile,
+  });
+
+  Future<String> crateApiFlutterNativeCorePixivSearchJson({
+    required NativeCore that,
+    required String profile,
+    required String query,
+    required int page,
   });
 
   Future<String> crateApiFlutterNativeCoreRetryDownloadTaskJson({
@@ -174,6 +227,28 @@ abstract class RustLibApi extends BaseApi {
     required String token,
     required int page,
     required String imageUrl,
+  });
+
+  Future<String> crateApiFlutterNativeCoreStartPixivPageFetchJson({
+    required NativeCore that,
+    required String profile,
+    required String illustId,
+    required int page,
+  });
+
+  Future<String> crateApiFlutterNativeCoreStartPixivThumbnailFetchJson({
+    required NativeCore that,
+    required String profile,
+    required String illustId,
+    required int page,
+    required String imageUrl,
+  });
+
+  Future<String> crateApiFlutterNativeCoreUpdateProfileCookieJson({
+    required NativeCore that,
+    required String provider,
+    required String profile,
+    String? cookie,
   });
 
   Future<void> crateApiFlutterInitApp();
@@ -241,6 +316,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiFlutterNativeCoreClearHistory({
+    required NativeCore that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 2,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreClearHistoryConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCoreClearHistoryConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_clear_history",
+        argNames: ["that"],
+      );
+
+  @override
   Future<void> crateApiFlutterNativeCoreDeleteDownloadTask({
     required NativeCore that,
     required String id,
@@ -257,7 +368,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 2,
+            funcId: 3,
             port: port_,
           );
         },
@@ -295,7 +406,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 4,
             port: port_,
           );
         },
@@ -331,7 +442,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 5,
             port: port_,
           );
         },
@@ -373,7 +484,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 6,
             port: port_,
           );
         },
@@ -392,6 +503,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "NativeCore_eh_gallery_detail_json",
         argNames: ["that", "profile", "gid", "token"],
+      );
+
+  @override
+  Future<String> crateApiFlutterNativeCoreEhPopularJson({
+    required NativeCore that,
+    required String profile,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 7,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreEhPopularJsonConstMeta,
+        argValues: [that, profile],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCoreEhPopularJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_eh_popular_json",
+        argNames: ["that", "profile"],
       );
 
   @override
@@ -417,7 +566,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 8,
             port: port_,
           );
         },
@@ -461,7 +610,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 9,
             port: port_,
           );
         },
@@ -499,7 +648,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 10,
             port: port_,
           );
         },
@@ -521,6 +670,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<String> crateApiFlutterNativeCoreHistoryJson({
+    required NativeCore that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 11,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreHistoryJsonConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCoreHistoryJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_history_json",
+        argNames: ["that"],
+      );
+
+  @override
   Future<Uint8List> crateApiFlutterNativeCoreImageResourceBytes({
     required NativeCore that,
     required String contentMd5,
@@ -539,7 +724,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 12,
             port: port_,
           );
         },
@@ -577,7 +762,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 13,
             port: port_,
           );
         },
@@ -615,7 +800,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 14,
             port: port_,
           );
         },
@@ -637,6 +822,255 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<String> crateApiFlutterNativeCorePixivBookmarksJson({
+    required NativeCore that,
+    required String profile,
+    required String visibility,
+    required int offset,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          sse_encode_String(visibility, serializer);
+          sse_encode_u_32(offset, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCorePixivBookmarksJsonConstMeta,
+        argValues: [that, profile, visibility, offset],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCorePixivBookmarksJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_pixiv_bookmarks_json",
+        argNames: ["that", "profile", "visibility", "offset"],
+      );
+
+  @override
+  Future<String> crateApiFlutterNativeCorePixivFollowingJson({
+    required NativeCore that,
+    required String profile,
+    required String visibility,
+    required int page,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          sse_encode_String(visibility, serializer);
+          sse_encode_u_32(page, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 16,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCorePixivFollowingJsonConstMeta,
+        argValues: [that, profile, visibility, page],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCorePixivFollowingJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_pixiv_following_json",
+        argNames: ["that", "profile", "visibility", "page"],
+      );
+
+  @override
+  Future<String> crateApiFlutterNativeCorePixivIllustJson({
+    required NativeCore that,
+    required String profile,
+    required String illustId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          sse_encode_String(illustId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 17,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCorePixivIllustJsonConstMeta,
+        argValues: [that, profile, illustId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCorePixivIllustJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_pixiv_illust_json",
+        argNames: ["that", "profile", "illustId"],
+      );
+
+  @override
+  Future<String> crateApiFlutterNativeCorePixivRankingJson({
+    required NativeCore that,
+    required String profile,
+    required String mode,
+    required String date,
+    required int page,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          sse_encode_String(mode, serializer);
+          sse_encode_String(date, serializer);
+          sse_encode_u_32(page, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 18,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCorePixivRankingJsonConstMeta,
+        argValues: [that, profile, mode, date, page],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCorePixivRankingJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_pixiv_ranking_json",
+        argNames: ["that", "profile", "mode", "date", "page"],
+      );
+
+  @override
+  Future<String> crateApiFlutterNativeCorePixivRecommendationsJson({
+    required NativeCore that,
+    required String profile,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 19,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCorePixivRecommendationsJsonConstMeta,
+        argValues: [that, profile],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiFlutterNativeCorePixivRecommendationsJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_pixiv_recommendations_json",
+        argNames: ["that", "profile"],
+      );
+
+  @override
+  Future<String> crateApiFlutterNativeCorePixivSearchJson({
+    required NativeCore that,
+    required String profile,
+    required String query,
+    required int page,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          sse_encode_String(query, serializer);
+          sse_encode_u_32(page, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 20,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCorePixivSearchJsonConstMeta,
+        argValues: [that, profile, query, page],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCorePixivSearchJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_pixiv_search_json",
+        argNames: ["that", "profile", "query", "page"],
+      );
+
+  @override
   Future<String> crateApiFlutterNativeCoreRetryDownloadTaskJson({
     required NativeCore that,
     required String id,
@@ -653,7 +1087,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 21,
             port: port_,
           );
         },
@@ -689,7 +1123,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 22,
             port: port_,
           );
         },
@@ -723,7 +1157,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 23,
             port: port_,
           );
         },
@@ -762,7 +1196,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 24,
             port: port_,
           );
         },
@@ -806,7 +1240,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 25,
             port: port_,
           );
         },
@@ -852,7 +1286,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 26,
             port: port_,
           );
         },
@@ -875,6 +1309,138 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<String> crateApiFlutterNativeCoreStartPixivPageFetchJson({
+    required NativeCore that,
+    required String profile,
+    required String illustId,
+    required int page,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          sse_encode_String(illustId, serializer);
+          sse_encode_u_32(page, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 27,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreStartPixivPageFetchJsonConstMeta,
+        argValues: [that, profile, illustId, page],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiFlutterNativeCoreStartPixivPageFetchJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_start_pixiv_page_fetch_json",
+        argNames: ["that", "profile", "illustId", "page"],
+      );
+
+  @override
+  Future<String> crateApiFlutterNativeCoreStartPixivThumbnailFetchJson({
+    required NativeCore that,
+    required String profile,
+    required String illustId,
+    required int page,
+    required String imageUrl,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          sse_encode_String(illustId, serializer);
+          sse_encode_u_32(page, serializer);
+          sse_encode_String(imageUrl, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 28,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta:
+            kCrateApiFlutterNativeCoreStartPixivThumbnailFetchJsonConstMeta,
+        argValues: [that, profile, illustId, page, imageUrl],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiFlutterNativeCoreStartPixivThumbnailFetchJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_start_pixiv_thumbnail_fetch_json",
+        argNames: ["that", "profile", "illustId", "page", "imageUrl"],
+      );
+
+  @override
+  Future<String> crateApiFlutterNativeCoreUpdateProfileCookieJson({
+    required NativeCore that,
+    required String provider,
+    required String profile,
+    String? cookie,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(provider, serializer);
+          sse_encode_String(profile, serializer);
+          sse_encode_opt_String(cookie, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 29,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreUpdateProfileCookieJsonConstMeta,
+        argValues: [that, provider, profile, cookie],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiFlutterNativeCoreUpdateProfileCookieJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_update_profile_cookie_json",
+        argNames: ["that", "provider", "profile", "cookie"],
+      );
+
+  @override
   Future<void> crateApiFlutterInitApp() {
     return handler.executeNormal(
       NormalTask(
@@ -883,7 +1449,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 30,
             port: port_,
           );
         },
@@ -919,7 +1485,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1303,6 +1869,10 @@ class NativeCoreImpl extends RustOpaque implements NativeCore {
       .api
       .crateApiFlutterNativeCoreCancelDownloadTaskJson(that: this, id: id);
 
+  /// Clears all recorded browse history.
+  Future<void> clearHistory() =>
+      RustLib.instance.api.crateApiFlutterNativeCoreClearHistory(that: this);
+
   /// Deletes one terminal download task record when the owning family allows it.
   Future<void> deleteDownloadTask({required String id}) => RustLib.instance.api
       .crateApiFlutterNativeCoreDeleteDownloadTask(that: this, id: id);
@@ -1326,6 +1896,12 @@ class NativeCoreImpl extends RustOpaque implements NativeCore {
     gid: gid,
     token: token,
   );
+
+  /// Returns the EH popular listing for one profile as JSON.
+  Future<String> ehPopularJson({required String profile}) => RustLib
+      .instance
+      .api
+      .crateApiFlutterNativeCoreEhPopularJson(that: this, profile: profile);
 
   /// Searches one EH profile and returns a listing page as JSON.
   Future<String> ehSearchJson({
@@ -1361,6 +1937,10 @@ class NativeCoreImpl extends RustOpaque implements NativeCore {
       .api
       .crateApiFlutterNativeCoreEventsAfterJson(that: this, cursor: cursor);
 
+  /// Returns recent browse history as JSON.
+  Future<String> historyJson() =>
+      RustLib.instance.api.crateApiFlutterNativeCoreHistoryJson(that: this);
+
   /// Reads content-addressed image bytes.
   Future<Uint8List> imageResourceBytes({
     required String contentMd5,
@@ -1378,6 +1958,73 @@ class NativeCoreImpl extends RustOpaque implements NativeCore {
   /// Returns one operation snapshot as JSON.
   Future<String> operationJson({required String id}) => RustLib.instance.api
       .crateApiFlutterNativeCoreOperationJson(that: this, id: id);
+
+  /// Returns one authenticated Pixiv bookmark slice as JSON.
+  Future<String> pixivBookmarksJson({
+    required String profile,
+    required String visibility,
+    required int offset,
+  }) => RustLib.instance.api.crateApiFlutterNativeCorePixivBookmarksJson(
+    that: this,
+    profile: profile,
+    visibility: visibility,
+    offset: offset,
+  );
+
+  /// Returns one authenticated Pixiv following feed page as JSON.
+  Future<String> pixivFollowingJson({
+    required String profile,
+    required String visibility,
+    required int page,
+  }) => RustLib.instance.api.crateApiFlutterNativeCorePixivFollowingJson(
+    that: this,
+    profile: profile,
+    visibility: visibility,
+    page: page,
+  );
+
+  /// Returns parsed metadata for one Pixiv illustration as JSON.
+  Future<String> pixivIllustJson({
+    required String profile,
+    required String illustId,
+  }) => RustLib.instance.api.crateApiFlutterNativeCorePixivIllustJson(
+    that: this,
+    profile: profile,
+    illustId: illustId,
+  );
+
+  /// Returns one Pixiv ranking page as JSON.
+  Future<String> pixivRankingJson({
+    required String profile,
+    required String mode,
+    required String date,
+    required int page,
+  }) => RustLib.instance.api.crateApiFlutterNativeCorePixivRankingJson(
+    that: this,
+    profile: profile,
+    mode: mode,
+    date: date,
+    page: page,
+  );
+
+  /// Returns the current Pixiv discovery recommendations as JSON.
+  Future<String> pixivRecommendationsJson({required String profile}) =>
+      RustLib.instance.api.crateApiFlutterNativeCorePixivRecommendationsJson(
+        that: this,
+        profile: profile,
+      );
+
+  /// Searches one Pixiv profile and returns a result page as JSON.
+  Future<String> pixivSearchJson({
+    required String profile,
+    required String query,
+    required int page,
+  }) => RustLib.instance.api.crateApiFlutterNativeCorePixivSearchJson(
+    that: this,
+    profile: profile,
+    query: query,
+    page: page,
+  );
 
   /// Retries one persistent download task and returns its updated JSON view.
   Future<String> retryDownloadTaskJson({required String id}) => RustLib
@@ -1433,5 +2080,44 @@ class NativeCoreImpl extends RustOpaque implements NativeCore {
     token: token,
     page: page,
     imageUrl: imageUrl,
+  );
+
+  /// Starts one Pixiv original page fetch and returns the operation as JSON.
+  Future<String> startPixivPageFetchJson({
+    required String profile,
+    required String illustId,
+    required int page,
+  }) => RustLib.instance.api.crateApiFlutterNativeCoreStartPixivPageFetchJson(
+    that: this,
+    profile: profile,
+    illustId: illustId,
+    page: page,
+  );
+
+  /// Starts one Pixiv thumbnail fetch and returns the operation as JSON.
+  Future<String> startPixivThumbnailFetchJson({
+    required String profile,
+    required String illustId,
+    required int page,
+    required String imageUrl,
+  }) => RustLib.instance.api
+      .crateApiFlutterNativeCoreStartPixivThumbnailFetchJson(
+        that: this,
+        profile: profile,
+        illustId: illustId,
+        page: page,
+        imageUrl: imageUrl,
+      );
+
+  /// Replaces one profile Cookie (or clears it) and returns the profile as JSON.
+  Future<String> updateProfileCookieJson({
+    required String provider,
+    required String profile,
+    String? cookie,
+  }) => RustLib.instance.api.crateApiFlutterNativeCoreUpdateProfileCookieJson(
+    that: this,
+    provider: provider,
+    profile: profile,
+    cookie: cookie,
   );
 }

@@ -415,6 +415,417 @@ final class EhThumbnailPage {
   final int? nextPage;
 }
 
+final class PixivUser {
+  const PixivUser({required this.id, required this.name});
+
+  factory PixivUser.fromJson(Map<String, Object?> json) {
+    return PixivUser(id: _string(json, 'id'), name: _string(json, 'name'));
+  }
+
+  final String id;
+  final String name;
+}
+
+final class PixivPage {
+  const PixivPage({
+    required this.index,
+    required this.originalUrl,
+    required this.regularUrl,
+    required this.smallUrl,
+  });
+
+  factory PixivPage.fromJson(Map<String, Object?> json) {
+    return PixivPage(
+      index: _integer(json, 'index'),
+      originalUrl: _string(json, 'original_url'),
+      regularUrl: _optionalString(json, 'regular_url'),
+      smallUrl: _optionalString(json, 'small_url'),
+    );
+  }
+
+  final int index;
+  final String originalUrl;
+  final String? regularUrl;
+  final String? smallUrl;
+}
+
+final class PixivIllust {
+  const PixivIllust({
+    required this.id,
+    required this.pageUrl,
+    required this.title,
+    required this.caption,
+    required this.illustType,
+    required this.pageCount,
+    required this.width,
+    required this.height,
+    required this.xRestrict,
+    required this.viewCount,
+    required this.bookmarkCount,
+    required this.bookmarked,
+    required this.createdAt,
+    required this.user,
+    required this.tags,
+    required this.pages,
+  });
+
+  factory PixivIllust.fromJson(Map<String, Object?> json) {
+    return PixivIllust(
+      id: _string(json, 'id'),
+      pageUrl: _string(json, 'page_url'),
+      title: _string(json, 'title'),
+      caption: _string(json, 'caption'),
+      illustType: _integer(json, 'illust_type'),
+      pageCount: _integer(json, 'page_count'),
+      width: _integer(json, 'width'),
+      height: _integer(json, 'height'),
+      xRestrict: _integer(json, 'x_restrict'),
+      viewCount: _integer(json, 'view_count'),
+      bookmarkCount: _integer(json, 'bookmark_count'),
+      bookmarked: _boolean(json, 'bookmarked'),
+      createdAt: _string(json, 'created_at'),
+      user: PixivUser.fromJson(_object(json['user'], 'user')),
+      tags: _stringList(json, 'tags'),
+      pages: List<PixivPage>.unmodifiable(
+        _list(
+          json,
+          'pages',
+        ).map((item) => PixivPage.fromJson(_object(item, 'page'))),
+      ),
+    );
+  }
+
+  final String id;
+  final String pageUrl;
+  final String title;
+  final String caption;
+  final int illustType;
+  final int pageCount;
+  final int width;
+  final int height;
+  final int xRestrict;
+  final int viewCount;
+  final int bookmarkCount;
+  final bool bookmarked;
+  final String createdAt;
+  final PixivUser user;
+  final List<String> tags;
+  final List<PixivPage> pages;
+}
+
+final class PixivSearchItem {
+  const PixivSearchItem({
+    required this.id,
+    required this.title,
+    required this.user,
+    required this.pageCount,
+    required this.xRestrict,
+    required this.thumbnailUrl,
+    required this.tags,
+  });
+
+  factory PixivSearchItem.fromJson(Map<String, Object?> json) {
+    return PixivSearchItem(
+      id: _string(json, 'id'),
+      title: _string(json, 'title'),
+      user: PixivUser.fromJson(_object(json['user'], 'user')),
+      pageCount: _integer(json, 'page_count'),
+      xRestrict: _integer(json, 'x_restrict'),
+      thumbnailUrl: _optionalString(json, 'thumbnail_url'),
+      tags: _stringList(json, 'tags'),
+    );
+  }
+
+  final String id;
+  final String title;
+  final PixivUser user;
+  final int pageCount;
+  final int xRestrict;
+  final String? thumbnailUrl;
+  final List<String> tags;
+}
+
+final class PixivSearchResult {
+  const PixivSearchResult({
+    required this.profile,
+    required this.generation,
+    required this.query,
+    required this.page,
+    required this.lastPage,
+    required this.nextPage,
+    required this.items,
+  });
+
+  factory PixivSearchResult.fromJson(Map<String, Object?> json) {
+    return PixivSearchResult(
+      profile: _string(json, 'profile'),
+      generation: _integer(json, 'generation'),
+      query: _string(json, 'query'),
+      page: _integer(json, 'page'),
+      lastPage: _integer(json, 'last_page'),
+      nextPage: _optionalInteger(json, 'next_page'),
+      items: List<PixivSearchItem>.unmodifiable(
+        _list(
+          json,
+          'items',
+        ).map((item) => PixivSearchItem.fromJson(_object(item, 'item'))),
+      ),
+    );
+  }
+
+  final String profile;
+  final int generation;
+  final String query;
+  final int page;
+  final int lastPage;
+  final int? nextPage;
+  final List<PixivSearchItem> items;
+}
+
+final class PixivRecommendationResult {
+  const PixivRecommendationResult({
+    required this.profile,
+    required this.generation,
+    required this.items,
+  });
+
+  factory PixivRecommendationResult.fromJson(Map<String, Object?> json) {
+    return PixivRecommendationResult(
+      profile: _string(json, 'profile'),
+      generation: _integer(json, 'generation'),
+      items: List<PixivSearchItem>.unmodifiable(
+        _list(
+          json,
+          'items',
+        ).map((item) => PixivSearchItem.fromJson(_object(item, 'item'))),
+      ),
+    );
+  }
+
+  final String profile;
+  final int generation;
+  final List<PixivSearchItem> items;
+}
+
+enum PixivFollowingVisibility { public, private }
+
+final class PixivFollowingResult {
+  const PixivFollowingResult({
+    required this.profile,
+    required this.generation,
+    required this.visibility,
+    required this.page,
+    required this.nextPage,
+    required this.items,
+  });
+
+  factory PixivFollowingResult.fromJson(Map<String, Object?> json) {
+    return PixivFollowingResult(
+      profile: _string(json, 'profile'),
+      generation: _integer(json, 'generation'),
+      visibility: PixivFollowingVisibility.values.byName(
+        _string(json, 'visibility'),
+      ),
+      page: _integer(json, 'page'),
+      nextPage: _optionalInteger(json, 'next_page'),
+      items: List<PixivSearchItem>.unmodifiable(
+        _list(
+          json,
+          'items',
+        ).map((item) => PixivSearchItem.fromJson(_object(item, 'item'))),
+      ),
+    );
+  }
+
+  final String profile;
+  final int generation;
+  final PixivFollowingVisibility visibility;
+  final int page;
+  final int? nextPage;
+  final List<PixivSearchItem> items;
+}
+
+enum PixivBookmarkVisibility { public, private }
+
+final class PixivBookmarksResult {
+  const PixivBookmarksResult({
+    required this.profile,
+    required this.generation,
+    required this.visibility,
+    required this.offset,
+    required this.limit,
+    required this.total,
+    required this.nextOffset,
+    required this.items,
+  });
+
+  factory PixivBookmarksResult.fromJson(Map<String, Object?> json) {
+    return PixivBookmarksResult(
+      profile: _string(json, 'profile'),
+      generation: _integer(json, 'generation'),
+      visibility: PixivBookmarkVisibility.values.byName(
+        _string(json, 'visibility'),
+      ),
+      offset: _integer(json, 'offset'),
+      limit: _integer(json, 'limit'),
+      total: _integer(json, 'total'),
+      nextOffset: _optionalInteger(json, 'next_offset'),
+      items: List<PixivSearchItem>.unmodifiable(
+        _list(
+          json,
+          'items',
+        ).map((item) => PixivSearchItem.fromJson(_object(item, 'item'))),
+      ),
+    );
+  }
+
+  final String profile;
+  final int generation;
+  final PixivBookmarkVisibility visibility;
+  final int offset;
+  final int limit;
+  final int total;
+  final int? nextOffset;
+  final List<PixivSearchItem> items;
+}
+
+final class PixivRankingItem {
+  const PixivRankingItem({
+    required this.rank,
+    required this.previousRank,
+    required this.id,
+    required this.title,
+    required this.user,
+    required this.pageCount,
+    required this.xRestrict,
+    required this.thumbnailUrl,
+    required this.tags,
+  });
+
+  factory PixivRankingItem.fromJson(Map<String, Object?> json) {
+    return PixivRankingItem(
+      rank: _integer(json, 'rank'),
+      previousRank: _optionalInteger(json, 'previous_rank'),
+      id: _string(json, 'id'),
+      title: _string(json, 'title'),
+      user: PixivUser.fromJson(_object(json['user'], 'user')),
+      pageCount: _integer(json, 'page_count'),
+      xRestrict: _integer(json, 'x_restrict'),
+      thumbnailUrl: _optionalString(json, 'thumbnail_url'),
+      tags: _stringList(json, 'tags'),
+    );
+  }
+
+  final int rank;
+  final int? previousRank;
+  final String id;
+  final String title;
+  final PixivUser user;
+  final int pageCount;
+  final int xRestrict;
+  final String? thumbnailUrl;
+  final List<String> tags;
+}
+
+final class PixivRankingResult {
+  const PixivRankingResult({
+    required this.profile,
+    required this.generation,
+    required this.mode,
+    required this.date,
+    required this.page,
+    required this.nextPage,
+    required this.items,
+  });
+
+  factory PixivRankingResult.fromJson(Map<String, Object?> json) {
+    return PixivRankingResult(
+      profile: _string(json, 'profile'),
+      generation: _integer(json, 'generation'),
+      mode: _string(json, 'mode'),
+      date: _string(json, 'date'),
+      page: _integer(json, 'page'),
+      nextPage: _optionalInteger(json, 'next_page'),
+      items: List<PixivRankingItem>.unmodifiable(
+        _list(
+          json,
+          'items',
+        ).map((item) => PixivRankingItem.fromJson(_object(item, 'item'))),
+      ),
+    );
+  }
+
+  final String profile;
+  final int generation;
+  final String mode;
+  final String date;
+  final int page;
+  final int? nextPage;
+  final List<PixivRankingItem> items;
+}
+
+final class HistoryEntry {
+  const HistoryEntry({
+    required this.provider,
+    required this.profile,
+    required this.kind,
+    required this.media,
+    required this.title,
+    required this.thumbnail,
+    required this.viewedAt,
+  });
+
+  factory HistoryEntry.fromJson(Map<String, Object?> json) {
+    return HistoryEntry(
+      provider: _string(json, 'provider'),
+      profile: _string(json, 'profile'),
+      kind: _string(json, 'kind'),
+      media: _string(json, 'media'),
+      title: _string(json, 'title'),
+      thumbnail: _optionalString(json, 'thumbnail'),
+      viewedAt: _string(json, 'viewed_at'),
+    );
+  }
+
+  final String provider;
+  final String profile;
+  final String kind;
+  final String media;
+  final String title;
+  final String? thumbnail;
+  final String viewedAt;
+}
+
+final class ProfileSnapshot {
+  const ProfileSnapshot({
+    required this.provider,
+    required this.profile,
+    required this.generation,
+    required this.baseUrl,
+    required this.hasCookie,
+    required this.hasApiCredentials,
+  });
+
+  factory ProfileSnapshot.fromJson(Map<String, Object?> json) {
+    final key = _object(json['key'], 'profile key');
+    return ProfileSnapshot(
+      provider: _string(key, 'provider'),
+      profile: _string(key, 'profile'),
+      generation: _integer(json, 'generation'),
+      baseUrl: _string(json, 'base_url'),
+      hasCookie: _boolean(json, 'has_cookie'),
+      hasApiCredentials: _boolean(json, 'has_api_credentials'),
+    );
+  }
+
+  final String provider;
+  final String profile;
+  final int generation;
+  final String baseUrl;
+  final bool hasCookie;
+  final bool hasApiCredentials;
+}
+
 final class ImageResourceKey {
   const ImageResourceKey({
     required this.provider,
@@ -585,6 +996,24 @@ final class CoreOperation {
     return key != null &&
         key.provider == 'eh' &&
         key.media == '${gallery.gid}:${gallery.token}' &&
+        key.page == page &&
+        key.variant == 'thumb';
+  }
+
+  bool belongsToPixivPage(String illustId, int page) {
+    final key = resourceKey;
+    return key != null &&
+        key.provider == 'pixiv' &&
+        key.media == illustId &&
+        key.page == page &&
+        key.variant == 'original';
+  }
+
+  bool belongsToPixivThumbnail(String illustId, int page) {
+    final key = resourceKey;
+    return key != null &&
+        key.provider == 'pixiv' &&
+        key.media == illustId &&
         key.page == page &&
         key.variant == 'thumb';
   }
@@ -773,6 +1202,65 @@ abstract interface class CoreClient {
     required EhGalleryRef gallery,
     required int page,
     required String imageUrl,
+  });
+
+  Future<EhHomePage> ehPopular({String profile = 'default'});
+
+  Future<List<HistoryEntry>> history();
+
+  Future<void> clearHistory();
+
+  Future<PixivSearchResult> pixivSearch({
+    String profile = 'default',
+    required String query,
+    int page = 1,
+  });
+
+  Future<PixivRankingResult> pixivRanking({
+    String profile = 'default',
+    String mode = 'day',
+    String date = '',
+    int page = 1,
+  });
+
+  Future<PixivRecommendationResult> pixivRecommendations({
+    String profile = 'default',
+  });
+
+  Future<PixivFollowingResult> pixivFollowing({
+    String profile = 'default',
+    PixivFollowingVisibility visibility = PixivFollowingVisibility.public,
+    int page = 1,
+  });
+
+  Future<PixivBookmarksResult> pixivBookmarks({
+    String profile = 'default',
+    PixivBookmarkVisibility visibility = PixivBookmarkVisibility.public,
+    int offset = 0,
+  });
+
+  Future<PixivIllust> pixivIllust({
+    String profile = 'default',
+    required String illustId,
+  });
+
+  Future<CoreOperation> startPixivPageFetch({
+    String profile = 'default',
+    required String illustId,
+    required int page,
+  });
+
+  Future<CoreOperation> startPixivThumbnailFetch({
+    String profile = 'default',
+    required String illustId,
+    required int page,
+    required String imageUrl,
+  });
+
+  Future<ProfileSnapshot> updateProfileCookie({
+    required String provider,
+    required String profile,
+    required String? cookie,
   });
 
   Future<CoreOperation> operation(String id);
@@ -976,6 +1464,155 @@ final class HttpCoreClient implements CoreClient {
         data.write(line.substring(5).trimLeft());
       }
     }
+  }
+
+  @override
+  Future<EhHomePage> ehPopular({String profile = 'default'}) async {
+    final value = await _jsonRequest(
+      'GET',
+      '/api/v1/providers/eh/${Uri.encodeComponent(profile)}/popular',
+    );
+    return EhHomePage.fromJson(_object(value, 'EH popular page'));
+  }
+
+  @override
+  Future<List<HistoryEntry>> history() async {
+    final value = await _jsonRequest('GET', '/api/v1/history');
+    final list = value is List ? value : const <Object?>[];
+    return List<HistoryEntry>.unmodifiable(
+      list.map((item) => HistoryEntry.fromJson(_object(item, 'history entry'))),
+    );
+  }
+
+  @override
+  Future<void> clearHistory() async {
+    await _request('DELETE', '/api/v1/history');
+  }
+
+  @override
+  Future<PixivSearchResult> pixivSearch({
+    String profile = 'default',
+    required String query,
+    int page = 1,
+  }) async {
+    final value = await _jsonRequest(
+      'GET',
+      '/api/v1/providers/pixiv/${Uri.encodeComponent(profile)}/search',
+      {'query': query, 'page': '$page'},
+    );
+    return PixivSearchResult.fromJson(_object(value, 'Pixiv search result'));
+  }
+
+  @override
+  Future<PixivRankingResult> pixivRanking({
+    String profile = 'default',
+    String mode = 'day',
+    String date = '',
+    int page = 1,
+  }) async {
+    final value = await _jsonRequest(
+      'GET',
+      '/api/v1/providers/pixiv/${Uri.encodeComponent(profile)}/ranking',
+      {'mode': mode, 'date': date, 'page': '$page'},
+    );
+    return PixivRankingResult.fromJson(_object(value, 'Pixiv ranking'));
+  }
+
+  @override
+  Future<PixivRecommendationResult> pixivRecommendations({
+    String profile = 'default',
+  }) async {
+    final value = await _jsonRequest(
+      'GET',
+      '/api/v1/providers/pixiv/${Uri.encodeComponent(profile)}/recommendations',
+    );
+    return PixivRecommendationResult.fromJson(
+      _object(value, 'Pixiv recommendations'),
+    );
+  }
+
+  @override
+  Future<PixivFollowingResult> pixivFollowing({
+    String profile = 'default',
+    PixivFollowingVisibility visibility = PixivFollowingVisibility.public,
+    int page = 1,
+  }) async {
+    final value = await _jsonRequest(
+      'GET',
+      '/api/v1/providers/pixiv/${Uri.encodeComponent(profile)}/following',
+      {'visibility': visibility.name, 'page': '$page'},
+    );
+    return PixivFollowingResult.fromJson(_object(value, 'Pixiv following'));
+  }
+
+  @override
+  Future<PixivBookmarksResult> pixivBookmarks({
+    String profile = 'default',
+    PixivBookmarkVisibility visibility = PixivBookmarkVisibility.public,
+    int offset = 0,
+  }) async {
+    final value = await _jsonRequest(
+      'GET',
+      '/api/v1/providers/pixiv/${Uri.encodeComponent(profile)}/bookmarks',
+      {'visibility': visibility.name, 'offset': '$offset'},
+    );
+    return PixivBookmarksResult.fromJson(_object(value, 'Pixiv bookmarks'));
+  }
+
+  @override
+  Future<PixivIllust> pixivIllust({
+    String profile = 'default',
+    required String illustId,
+  }) async {
+    final value = await _jsonRequest(
+      'GET',
+      '/api/v1/providers/pixiv/${Uri.encodeComponent(profile)}/illusts/${Uri.encodeComponent(illustId)}',
+    );
+    return PixivIllust.fromJson(_object(value, 'Pixiv illust'));
+  }
+
+  @override
+  Future<CoreOperation> startPixivPageFetch({
+    String profile = 'default',
+    required String illustId,
+    required int page,
+  }) async {
+    final value = await _jsonRequest(
+      'POST',
+      '/api/v1/providers/pixiv/${Uri.encodeComponent(profile)}/illusts/${Uri.encodeComponent(illustId)}/pages/$page/fetch',
+    );
+    return CoreOperation.fromJson(_object(value, 'Pixiv page operation'));
+  }
+
+  @override
+  Future<CoreOperation> startPixivThumbnailFetch({
+    String profile = 'default',
+    required String illustId,
+    required int page,
+    required String imageUrl,
+  }) async {
+    final value = await _jsonRequest(
+      'POST',
+      '/api/v1/providers/pixiv/${Uri.encodeComponent(profile)}/illusts/${Uri.encodeComponent(illustId)}/thumbnails/$page/fetch',
+      null,
+      jsonEncode({'image_url': imageUrl}),
+    );
+    return CoreOperation.fromJson(_object(value, 'Pixiv thumbnail operation'));
+  }
+
+  @override
+  Future<ProfileSnapshot> updateProfileCookie({
+    required String provider,
+    required String profile,
+    required String? cookie,
+  }) async {
+    final value = await _jsonRequest(
+      'POST',
+      '/api/v1/profiles/${Uri.encodeComponent(provider)}/${Uri.encodeComponent(profile)}/cookie',
+      null,
+      jsonEncode({'cookie': cookie}),
+    );
+    return ProfileSnapshot.fromJson(_object(value, 'profile snapshot'));
   }
 
   Future<Object?> _jsonRequest(
@@ -1202,6 +1839,159 @@ final class NativeCoreClient implements CoreClient {
       ),
     );
     return CoreOperation.fromJson(_object(value, 'EH thumbnail operation'));
+  }
+
+  @override
+  Future<EhHomePage> ehPopular({String profile = 'default'}) async {
+    final value = await _jsonCall(() => _core.ehPopularJson(profile: profile));
+    return EhHomePage.fromJson(_object(value, 'EH popular page'));
+  }
+
+  @override
+  Future<List<HistoryEntry>> history() async {
+    final value = await _jsonCall(() => _core.historyJson());
+    final list = value is List ? value : const <Object?>[];
+    return List<HistoryEntry>.unmodifiable(
+      list.map((item) => HistoryEntry.fromJson(_object(item, 'history entry'))),
+    );
+  }
+
+  @override
+  Future<void> clearHistory() => _call(() => _core.clearHistory());
+
+  @override
+  Future<PixivSearchResult> pixivSearch({
+    String profile = 'default',
+    required String query,
+    int page = 1,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.pixivSearchJson(profile: profile, query: query, page: page),
+    );
+    return PixivSearchResult.fromJson(_object(value, 'Pixiv search result'));
+  }
+
+  @override
+  Future<PixivRankingResult> pixivRanking({
+    String profile = 'default',
+    String mode = 'day',
+    String date = '',
+    int page = 1,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.pixivRankingJson(
+        profile: profile,
+        mode: mode,
+        date: date,
+        page: page,
+      ),
+    );
+    return PixivRankingResult.fromJson(_object(value, 'Pixiv ranking'));
+  }
+
+  @override
+  Future<PixivRecommendationResult> pixivRecommendations({
+    String profile = 'default',
+  }) async {
+    final value = await _jsonCall(
+      () => _core.pixivRecommendationsJson(profile: profile),
+    );
+    return PixivRecommendationResult.fromJson(
+      _object(value, 'Pixiv recommendations'),
+    );
+  }
+
+  @override
+  Future<PixivFollowingResult> pixivFollowing({
+    String profile = 'default',
+    PixivFollowingVisibility visibility = PixivFollowingVisibility.public,
+    int page = 1,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.pixivFollowingJson(
+        profile: profile,
+        visibility: visibility.name,
+        page: page,
+      ),
+    );
+    return PixivFollowingResult.fromJson(_object(value, 'Pixiv following'));
+  }
+
+  @override
+  Future<PixivBookmarksResult> pixivBookmarks({
+    String profile = 'default',
+    PixivBookmarkVisibility visibility = PixivBookmarkVisibility.public,
+    int offset = 0,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.pixivBookmarksJson(
+        profile: profile,
+        visibility: visibility.name,
+        offset: offset,
+      ),
+    );
+    return PixivBookmarksResult.fromJson(_object(value, 'Pixiv bookmarks'));
+  }
+
+  @override
+  Future<PixivIllust> pixivIllust({
+    String profile = 'default',
+    required String illustId,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.pixivIllustJson(profile: profile, illustId: illustId),
+    );
+    return PixivIllust.fromJson(_object(value, 'Pixiv illust'));
+  }
+
+  @override
+  Future<CoreOperation> startPixivPageFetch({
+    String profile = 'default',
+    required String illustId,
+    required int page,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.startPixivPageFetchJson(
+        profile: profile,
+        illustId: illustId,
+        page: page,
+      ),
+    );
+    return CoreOperation.fromJson(_object(value, 'Pixiv page operation'));
+  }
+
+  @override
+  Future<CoreOperation> startPixivThumbnailFetch({
+    String profile = 'default',
+    required String illustId,
+    required int page,
+    required String imageUrl,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.startPixivThumbnailFetchJson(
+        profile: profile,
+        illustId: illustId,
+        page: page,
+        imageUrl: imageUrl,
+      ),
+    );
+    return CoreOperation.fromJson(_object(value, 'Pixiv thumbnail operation'));
+  }
+
+  @override
+  Future<ProfileSnapshot> updateProfileCookie({
+    required String provider,
+    required String profile,
+    required String? cookie,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.updateProfileCookieJson(
+        provider: provider,
+        profile: profile,
+        cookie: cookie,
+      ),
+    );
+    return ProfileSnapshot.fromJson(_object(value, 'profile snapshot'));
   }
 
   @override

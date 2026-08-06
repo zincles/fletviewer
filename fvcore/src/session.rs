@@ -350,6 +350,23 @@ impl SessionRegistry {
             .await
     }
 
+    pub(crate) async fn get_pixiv_thumbnail_image<F>(
+        &self,
+        key: &ProfileKey,
+        url: &Url,
+        limit: BodyLimit,
+        cancellation: CancellationToken,
+        progress: F,
+    ) -> Result<NetworkResponse, CoreError>
+    where
+        F: FnMut(usize, Option<u64>) + Send,
+    {
+        let session = self.session(key)?;
+        session
+            .get_pixiv_thumbnail_image(url, limit, cancellation, progress)
+            .await
+    }
+
     pub(crate) async fn probe(
         &self,
         key: &ProfileKey,
@@ -746,6 +763,48 @@ impl SessionGeneration {
         let referer = safe_join(&self.config.base_url, referer_path)?;
         self.get_eh_viewer_image(url, &referer, limit, cancellation, progress)
             .await
+    }
+
+    /// Fetches one Pixiv thumbnail from the Pixiv image host.
+    ///
+    /// The Referer is constructed by the Core as the profile origin, and Cookie is
+    /// only sent when the target host is the profile origin itself.
+    async fn get_pixiv_thumbnail_image<F>(
+        &self,
+        url: &Url,
+        limit: BodyLimit,
+        cancellation: CancellationToken,
+        progress: F,
+    ) -> Result<NetworkResponse, CoreError>
+    where
+        F: FnMut(usize, Option<u64>) + Send,
+    {
+        let referer = self.config.base_url.clone();
+        if self.key.provider != "pixiv" {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Pixiv thumbnail requests require a Pixiv profile",
+                false,
+            ));
+        }
+        self.validate_absolute(url, Some(&referer))?;
+        let mut request = self
+            .client
+            .get(url.clone())
+            .header(header::REFERER, referer.as_str());
+        if url.host_str() == self.config.base_url.host_str() {
+            if let Some(cookie) = &self.cookie {
+                request = request.header(header::COOKIE, cookie.expose_secret());
+            }
+        }
+        self.execute(
+            request,
+            limit.max_bytes,
+            cancellation,
+            limit.byte_budget,
+            progress,
+        )
+        .await
     }
 
     async fn post_eh_api(

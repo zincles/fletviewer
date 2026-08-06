@@ -3,7 +3,7 @@
 use crate::{
     BooruOriginalFetchRequest, ContentMd5, CoreError, CoreHandle, EhCoverFetchRequest,
     EhPageFetchRequest, EhThumbnailFetchRequest, ErrorCode, EventStreamItem, FakeOperationRequest,
-    OperationId, PixivPageFetchRequest, RuntimeState,
+    OperationId, PixivPageFetchRequest, PixivThumbnailFetchRequest, RuntimeState,
 };
 use axum::{
     Json, Router,
@@ -268,6 +268,10 @@ pub(crate) async fn start(
             post(probe_profile),
         )
         .route(
+            "/api/v1/profiles/{provider}/{profile}/cookie",
+            post(update_profile_cookie_route),
+        )
+        .route(
             "/api/v1/providers/danbooru/{profile}/posts",
             get(search_danbooru),
         )
@@ -332,6 +336,10 @@ pub(crate) async fn start(
             post(start_pixiv_page_fetch),
         )
         .route(
+            "/api/v1/providers/pixiv/{profile}/illusts/{illust_id}/thumbnails/{page}/fetch",
+            post(start_pixiv_thumbnail_fetch),
+        )
+        .route(
             "/api/v1/providers/pixiv/{profile}/illusts/{illust_id}/pages/{page}/download",
             post(start_pixiv_image_download),
         )
@@ -344,6 +352,11 @@ pub(crate) async fn start(
             get(get_image_cache).post(maintain_image_cache),
         )
         .route("/api/v1/providers/eh/{profile}/galleries", get(get_eh_home))
+        .route(
+            "/api/v1/providers/eh/{profile}/popular",
+            get(get_eh_popular),
+        )
+        .route("/api/v1/history", get(get_history).delete(clear_history))
         .route(
             "/api/v1/favorite-searches",
             get(list_favorite_searches).post(create_favorite_search),
@@ -587,6 +600,27 @@ async fn probe_profile(
     let key = crate::ProfileKey::new(provider, profile);
     match state.core.probe_profile(&key).await {
         Ok(probe) => with_security_headers(Json(probe).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileCookieInput {
+    cookie: Option<String>,
+}
+
+async fn update_profile_cookie_route(
+    State(state): State<ControlState>,
+    Path((provider, profile)): Path<(String, String)>,
+    Json(input): Json<ProfileCookieInput>,
+) -> Response {
+    match state
+        .core
+        .update_profile_cookie(crate::ProfileKey::new(&provider, &profile), input.cookie)
+        .await
+    {
+        Ok(snapshot) => with_security_headers(Json(snapshot).into_response()),
         Err(error) => error_response(&error),
     }
 }
@@ -862,6 +896,38 @@ async fn start_pixiv_page_fetch(
             profile: crate::ProfileKey::new("pixiv", profile),
             illust_id,
             page,
+        })
+        .await
+    {
+        Ok(operation) => {
+            with_security_headers((StatusCode::ACCEPTED, Json(operation)).into_response())
+        }
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn start_pixiv_thumbnail_fetch(
+    State(state): State<ControlState>,
+    Path((profile, illust_id, page)): Path<(String, String, u32)>,
+    Json(input): Json<EhThumbnailFetchInput>,
+) -> Response {
+    let image_url = match Url::parse(&input.image_url) {
+        Ok(url) => url,
+        Err(_) => {
+            return error_response(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "Pixiv thumbnail URL must be an absolute HTTP(S) URL",
+                false,
+            ));
+        }
+    };
+    match state
+        .core
+        .start_pixiv_thumbnail_fetch(PixivThumbnailFetchRequest {
+            profile: crate::ProfileKey::new("pixiv", profile),
+            illust_id,
+            page,
+            image_url,
         })
         .await
     {
@@ -1532,6 +1598,31 @@ async fn get_eh_home(
         .await
     {
         Ok(page) => with_security_headers(Json(page).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_eh_popular(
+    State(state): State<ControlState>,
+    Path(profile): Path<String>,
+) -> Response {
+    let key = crate::ProfileKey::new("eh", profile);
+    match state.core.eh_popular(&key).await {
+        Ok(page) => with_security_headers(Json(page).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_history(State(state): State<ControlState>) -> Response {
+    match state.core.history() {
+        Ok(history) => with_security_headers(Json(history).into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn clear_history(State(state): State<ControlState>) -> Response {
+    match state.core.clear_history() {
+        Ok(()) => with_security_headers(StatusCode::NO_CONTENT.into_response()),
         Err(error) => error_response(&error),
     }
 }

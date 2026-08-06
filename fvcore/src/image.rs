@@ -238,6 +238,7 @@ pub(crate) enum ImageFetchAuthority {
     Profile,
     EhViewerResponse,
     EhThumbnail,
+    PixivThumbnail,
 }
 
 #[derive(Clone)]
@@ -695,6 +696,31 @@ impl ImageService {
                         &spec.profile,
                         &spec.url,
                         referer_path,
+                        crate::session::BodyLimit::budgeted(
+                            self.config.max_image_bytes,
+                            self.inflight_bytes.clone(),
+                        ),
+                        transfer.cancellation.clone(),
+                        |done, total| {
+                            state.send_replace(TransferState {
+                                progress: ImageProgress {
+                                    phase: "fetching",
+                                    bytes_done: done as u64,
+                                    bytes_total: total.or(spec.expected_bytes),
+                                    source: Some(ResourceSource::Network),
+                                    shared: shared(),
+                                },
+                                result: None,
+                            });
+                        },
+                    )
+                    .await?
+            }
+            ImageFetchAuthority::PixivThumbnail => {
+                self.sessions
+                    .get_pixiv_thumbnail_image(
+                        &spec.profile,
+                        &spec.url,
                         crate::session::BodyLimit::budgeted(
                             self.config.max_image_bytes,
                             self.inflight_bytes.clone(),

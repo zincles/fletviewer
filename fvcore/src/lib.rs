@@ -55,7 +55,7 @@ pub use operation::{
     BooruOriginalFetchRequest, CoreEvent, CoreEventSubject, EhCoverFetchRequest,
     EhPageFetchRequest, EhThumbnailFetchRequest, ErrorSnapshot, EventBatch, EventStreamItem,
     EventSubscription, FakeOperationRequest, FakeOutcome, OperationKind, OperationSnapshot,
-    OperationState, PixivPageFetchRequest,
+    OperationState, PixivPageFetchRequest, PixivThumbnailFetchRequest,
 };
 pub use provider::booru::{
     BooruPost, BooruSearchResult, BooruTagSuggestion, BooruTagSuggestions, ImageVariant,
@@ -73,7 +73,7 @@ pub use provider::pixiv::{
 pub use runtime::{CoreBuilder, CoreHandle, CoreRuntime};
 pub use session::{ProfileKey, ProfileProbeSnapshot, ProfileSnapshot};
 pub use snapshot::{CoreSnapshot, RuntimeState, StorageSnapshot};
-pub use storage::FavoriteSearch;
+pub use storage::{FavoriteSearch, HistoryEntry};
 
 /// Installs the default stderr tracing subscriber once for Core entry points.
 ///

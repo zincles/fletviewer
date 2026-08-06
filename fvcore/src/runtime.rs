@@ -4,9 +4,10 @@ use crate::{
     ArchiveTaskSnapshot, BooruImageDownloadRequest, BooruOriginalFetchRequest, ContentMd5,
     CoreConfig, CoreError, CoreSnapshot, EhArchiveDownloadRequest, EhCoverFetchRequest,
     EhPageFetchRequest, EhThumbnailFetchRequest, ErrorCode, EventBatch, EventSubscription,
-    FakeOperationRequest, ImageDownloadTaskSnapshot, ImageResource, OperationId, OperationSnapshot,
-    PixivImageDownloadRequest, PixivPageFetchRequest, ProfileKey, ProfileProbeSnapshot,
-    ProfileSnapshot, ProviderProfileConfig, RuntimeId, RuntimeState, StorageSnapshot,
+    FakeOperationRequest, HistoryEntry, ImageDownloadTaskSnapshot, ImageResource, OperationId,
+    OperationSnapshot, PixivImageDownloadRequest, PixivPageFetchRequest,
+    PixivThumbnailFetchRequest, ProfileKey, ProfileProbeSnapshot, ProfileSnapshot,
+    ProviderProfileConfig, RuntimeId, RuntimeState, StorageSnapshot,
     archive::ArchiveService,
     control,
     gallery::GalleryService,
@@ -15,8 +16,9 @@ use crate::{
     operation_service::{OperationCompletion, OperationMessage, OperationService},
     provider::booru::BooruService,
     provider::eh::EhService,
+    provider::pixiv::PixivService,
     session::{DangerousProfileCredentials, SessionRegistry},
-    storage::{FavoriteSearchRegistry, StorageService},
+    storage::{FavoriteSearchRegistry, HistoryRegistry, StorageService},
 };
 use fs2::FileExt;
 use std::io::Write;
@@ -48,6 +50,10 @@ enum CoreCommand {
     },
     StartPixivPage {
         request: PixivPageFetchRequest,
+        reply: oneshot::Sender<Result<OperationSnapshot, CoreError>>,
+    },
+    StartPixivThumbnail {
+        request: PixivThumbnailFetchRequest,
         reply: oneshot::Sender<Result<OperationSnapshot, CoreError>>,
     },
     StartEhPage {
@@ -220,6 +226,7 @@ impl CoreBuilder {
         )
         .await?;
         let favorite_searches = storage.favorite_search_registry();
+        let history = storage.history_registry();
         let data = RuntimeData {
             id: runtime_id,
             config: self.config,
@@ -257,6 +264,7 @@ impl CoreBuilder {
             archives,
             galleries,
             favorite_searches,
+            history,
         };
         handle.wait_ready().await?;
         let control = if control_config.enabled {
@@ -311,6 +319,7 @@ pub struct CoreHandle {
     archives: Arc<ArchiveService>,
     galleries: Arc<GalleryService>,
     favorite_searches: Arc<FavoriteSearchRegistry>,
+    history: Arc<HistoryRegistry>,
 }
 
 impl CoreHandle {
@@ -391,9 +400,24 @@ impl CoreHandle {
         key: &ProfileKey,
         illust_id: &str,
     ) -> Result<crate::PixivIllust, CoreError> {
-        crate::provider::pixiv::PixivService::new(self.sessions.clone())
+        let illust = PixivService::new(self.sessions.clone())
             .illust(key, illust_id, self.shutdown.child_token())
-            .await
+            .await?;
+        self.record_history(HistoryEntry {
+            provider: "pixiv".to_owned(),
+            profile: key.profile.clone(),
+            kind: "pixiv_illust".to_owned(),
+            media: illust.id.clone(),
+            title: illust.title.clone(),
+            thumbnail: illust.pages.first().and_then(|page| {
+                page.small_url
+                    .as_ref()
+                    .or(page.regular_url.as_ref())
+                    .map(ToString::to_string)
+            }),
+            viewed_at: time::OffsetDateTime::now_utc().to_string(),
+        });
+        Ok(illust)
     }
 
     /// Searches Pixiv artwork through the shared Web AJAX profile session.
@@ -461,6 +485,15 @@ impl CoreHandle {
         request: PixivPageFetchRequest,
     ) -> Result<OperationSnapshot, CoreError> {
         self.request(|reply| CoreCommand::StartPixivPage { request, reply })
+            .await?
+    }
+
+    /// Starts a cancellable thumbnail fetch for one Pixiv illustration page.
+    pub async fn start_pixiv_thumbnail_fetch(
+        &self,
+        request: PixivThumbnailFetchRequest,
+    ) -> Result<OperationSnapshot, CoreError> {
+        self.request(|reply| CoreCommand::StartPixivThumbnail { request, reply })
             .await?
     }
 
@@ -784,6 +817,12 @@ impl CoreHandle {
             .await?
     }
 
+    fn record_history(&self, entry: HistoryEntry) {
+        if let Err(error) = self.history.record(entry) {
+            tracing::warn!(%error, "failed to record browse history");
+        }
+    }
+
     /// Returns safe snapshots of all configured Provider session generations.
     pub fn profiles(&self) -> Result<Vec<ProfileSnapshot>, CoreError> {
         self.sessions.snapshots()
@@ -1049,9 +1088,26 @@ impl CoreHandle {
             .await
     }
 
+    /// Fetches the EH popular listing using the shared profile session.
+    pub async fn eh_popular(&self, key: &ProfileKey) -> Result<crate::EhHomePage, CoreError> {
+        EhService::new(self.sessions.clone())
+            .popular(key, self.shutdown.child_token())
+            .await
+    }
+
     /// Lists provider-scoped favorite searches.
     pub fn favorite_searches(&self) -> Result<Vec<crate::FavoriteSearch>, CoreError> {
         self.favorite_searches.list()
+    }
+
+    /// Returns recent browse history in reverse chronological order.
+    pub fn history(&self) -> Result<Vec<HistoryEntry>, CoreError> {
+        self.history.list()
+    }
+
+    /// Clears all recorded browse history.
+    pub fn clear_history(&self) -> Result<(), CoreError> {
+        self.history.clear()
     }
 
     /// Saves one provider-native favorite search.
@@ -1090,9 +1146,20 @@ impl CoreHandle {
         key: &ProfileKey,
         gallery: crate::EhGalleryRef,
     ) -> Result<crate::EhGalleryDetail, CoreError> {
-        EhService::new(self.sessions.clone())
+        let media = format!("{}:{}", gallery.gid, gallery.token);
+        let detail = EhService::new(self.sessions.clone())
             .gallery_detail(key, gallery, self.shutdown.child_token())
-            .await
+            .await?;
+        self.record_history(HistoryEntry {
+            provider: "eh".to_owned(),
+            profile: key.profile.clone(),
+            kind: "eh_gallery".to_owned(),
+            media,
+            title: detail.title.clone(),
+            thumbnail: None,
+            viewed_at: time::OffsetDateTime::now_utc().to_string(),
+        });
+        Ok(detail)
     }
 
     /// Fetches one zero-based page of EH gallery thumbnails.
@@ -1341,6 +1408,9 @@ async fn run_actor(
                 Some(CoreCommand::StartPixivPage { request, reply }) => {
                     let _ = reply.send(data.operations.start_pixiv_page(request, &shutdown));
                 }
+                Some(CoreCommand::StartPixivThumbnail { request, reply }) => {
+                    let _ = reply.send(data.operations.start_pixiv_thumbnail(request, &shutdown));
+                }
                 Some(CoreCommand::StartEhPage { request, reply }) => {
                     let _ = reply.send(data.operations.start_eh_page(request, &shutdown));
                 }
@@ -1468,13 +1538,6 @@ fn update_profile_credentials(
     key: &ProfileKey,
     update: CredentialUpdate,
 ) -> Result<ProfileSnapshot, CoreError> {
-    let path = data.config_path.as_ref().ok_or_else(|| {
-        CoreError::new(
-            ErrorCode::NotReady,
-            "credential persistence is unavailable for an embedded Runtime",
-            false,
-        )
-    })?;
     let current = data
         .config
         .profiles
@@ -1503,7 +1566,11 @@ fn update_profile_credentials(
     }
     replacement.validate(&key.to_string())?;
 
-    persist_profile_credentials(path, key, &replacement)?;
+    // Embedded Runtimes update credentials in memory only; executable Runtimes
+    // additionally persist them to the adjacent config.json for the debug WebUI.
+    if let Some(path) = data.config_path.as_ref() {
+        persist_profile_credentials(path, key, &replacement)?;
+    }
     let snapshot = data
         .sessions
         .replace(replacement.clone(), data.config.network.clone())?;
@@ -1867,17 +1934,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn embedded_runtime_rejects_plaintext_credential_persistence() {
+    async fn embedded_runtime_updates_credentials_in_memory_only() {
         let temp = TempDir::new().unwrap();
         let runtime = CoreBuilder::new(config(&temp)).build().await.unwrap();
 
-        let error = runtime
+        let snapshot = runtime
             .handle()
             .update_profile_cookie(ProfileKey::new("eh", "default"), Some("cookie".to_owned()))
             .await
-            .unwrap_err();
+            .unwrap();
+        assert!(snapshot.has_cookie);
 
-        assert_eq!(error.code(), ErrorCode::NotReady);
+        let active = runtime
+            .handle()
+            .profiles()
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.key == ProfileKey::new("eh", "default"))
+            .unwrap();
+        assert!(active.has_cookie);
         runtime.shutdown().await.unwrap();
     }
 
@@ -3496,6 +3571,219 @@ mod tests {
         );
         let api = String::from_utf8(http_request(listen, api.as_bytes()).await).unwrap();
         assert!(api.starts_with("HTTP/1.1 202 Accepted"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn records_browse_history_and_serves_it_through_http() {
+        const DETAIL: &str = include_str!("../tests/fixtures/eh/gallery_detail.html");
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        let router = axum::Router::new().route(
+            "/g/123456/abcdef1234/",
+            axum::routing::get(move || async move {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                    DETAIL,
+                )
+            }),
+        );
+        tokio::spawn(async move { axum::serve(provider_listener, router).await.unwrap() });
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config.profiles.insert(
+            "eh".to_owned(),
+            ProviderProfileConfig {
+                provider: "eh".to_owned(),
+                base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let handle = runtime.handle();
+        handle
+            .eh_gallery_detail(
+                &ProfileKey::new("eh", "default"),
+                crate::EhGalleryRef {
+                    gid: 123456,
+                    token: "abcdef1234".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        let history = handle.history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].kind, "eh_gallery");
+        assert_eq!(history[0].media, "123456:abcdef1234");
+        assert_eq!(history[0].title, "Fixture Gallery Title");
+        // Same gallery viewed again stays one entry.
+        handle
+            .eh_gallery_detail(
+                &ProfileKey::new("eh", "default"),
+                crate::EhGalleryRef {
+                    gid: 123456,
+                    token: "abcdef1234".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(handle.history().unwrap().len(), 1);
+
+        let listen = runtime.control_listen().unwrap();
+        let api = String::from_utf8(
+            http_request(
+                listen,
+                b"GET /api/v1/history HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(api.starts_with("HTTP/1.1 200 OK"));
+        assert!(api.contains("Fixture Gallery Title"));
+        let deleted = String::from_utf8(
+            http_request(
+                listen,
+                b"DELETE /api/v1/history HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(deleted.starts_with("HTTP/1.1 204 No Content"));
+        assert!(handle.history().unwrap().is_empty());
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pixiv_thumbnail_fetch_is_shared_and_content_addressed() {
+        let image = Arc::new(test_jpeg());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let image_listener = tokio::net::TcpListener::bind("127.0.0.2:0").await.unwrap();
+        let image_listen = image_listener.local_addr().unwrap();
+        let image_router = axum::Router::new().route(
+            "/thumb.webp",
+            axum::routing::get({
+                let image = image.clone();
+                let requests = requests.clone();
+                move |headers: axum::http::HeaderMap| {
+                    let image = image.clone();
+                    let requests = requests.clone();
+                    async move {
+                        assert!(headers.get(axum::http::header::COOKIE).is_none());
+                        assert!(
+                            headers
+                                .get(axum::http::header::REFERER)
+                                .and_then(|value| value.to_str().ok())
+                                .is_some_and(|value| value.starts_with("http://127.0.0.1:"))
+                        );
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "image/webp")],
+                            image.as_ref().clone(),
+                        )
+                    }
+                }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(image_listener, image_router).await.unwrap() });
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(provider_listener, axum::Router::new())
+                .await
+                .unwrap()
+        });
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config.operations.max_active = 1;
+        config.profiles.insert(
+            "pixiv".to_owned(),
+            ProviderProfileConfig {
+                provider: "pixiv".to_owned(),
+                base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                allowed_redirect_hosts: vec!["127.0.0.2".to_owned()],
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let request = crate::PixivThumbnailFetchRequest {
+            profile: ProfileKey::new("pixiv", "default"),
+            illust_id: "12345".to_owned(),
+            page: 0,
+            image_url: Url::parse(&format!("http://{image_listen}/thumb.webp")).unwrap(),
+        };
+        let first = runtime
+            .handle()
+            .start_pixiv_thumbnail_fetch(request.clone())
+            .await
+            .unwrap();
+        let second = runtime
+            .handle()
+            .start_pixiv_thumbnail_fetch(request)
+            .await
+            .unwrap();
+        let first = wait_terminal(&runtime.handle(), first.id).await;
+        let second = wait_terminal(&runtime.handle(), second.id).await;
+        assert_eq!(first.state, OperationState::Completed);
+        assert_eq!(second.state, OperationState::Completed);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            first.resource.unwrap().content_md5,
+            second.resource.unwrap().content_md5
+        );
+
+        let listen = runtime.control_listen().unwrap();
+        let body = format!(r#"{{"image_url":"http://{image_listen}/thumb.webp"}}"#);
+        let api = format!(
+            "POST /api/v1/providers/pixiv/default/illusts/12345/thumbnails/0/fetch HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let api = String::from_utf8(http_request(listen, api.as_bytes()).await).unwrap();
+        assert!(api.starts_with("HTTP/1.1 202 Accepted"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn serves_profile_cookie_updates_through_http() {
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let listen = runtime.control_listen().unwrap();
+
+        let body = r#"{"cookie":"PHPSESSID=fixture-secret"}"#;
+        let request = format!(
+            "POST /api/v1/profiles/pixiv/default/cookie HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let response = String::from_utf8(http_request(listen, request.as_bytes()).await).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"has_cookie\":true"));
+
+        let active = runtime
+            .handle()
+            .profiles()
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.key == ProfileKey::new("pixiv", "default"))
+            .unwrap();
+        assert!(active.has_cookie);
+
+        let body = r#"{"cookie":null}"#;
+        let request = format!(
+            "POST /api/v1/profiles/pixiv/default/cookie HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let response = String::from_utf8(http_request(listen, request.as_bytes()).await).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"has_cookie\":false"));
         runtime.shutdown().await.unwrap();
     }
 

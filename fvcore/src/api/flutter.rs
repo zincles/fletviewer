@@ -129,6 +129,177 @@ impl NativeCore {
         )
     }
 
+    /// Returns the EH popular listing for one profile as JSON.
+    pub async fn eh_popular_json(&self, profile: String) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .eh_popular(&ProfileKey::new("eh", profile))
+                .await,
+        )
+    }
+
+    /// Returns recent browse history as JSON.
+    pub async fn history_json(&self) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(self.handle.history())
+    }
+
+    /// Clears all recorded browse history.
+    pub async fn clear_history(&self) -> Result<(), String> {
+        self.ensure_running().await?;
+        self.handle.clear_history().map_err(bridge_error)
+    }
+
+    /// Searches one Pixiv profile and returns a result page as JSON.
+    pub async fn pixiv_search_json(
+        &self,
+        profile: String,
+        query: String,
+        page: u32,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .search_pixiv(&ProfileKey::new("pixiv", profile), &query, page)
+                .await,
+        )
+    }
+
+    /// Returns one Pixiv ranking page as JSON.
+    pub async fn pixiv_ranking_json(
+        &self,
+        profile: String,
+        mode: String,
+        date: String,
+        page: u32,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .pixiv_ranking(&ProfileKey::new("pixiv", profile), &mode, &date, page)
+                .await,
+        )
+    }
+
+    /// Returns the current Pixiv discovery recommendations as JSON.
+    pub async fn pixiv_recommendations_json(&self, profile: String) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .pixiv_recommendations(&ProfileKey::new("pixiv", profile))
+                .await,
+        )
+    }
+
+    /// Returns one authenticated Pixiv following feed page as JSON.
+    pub async fn pixiv_following_json(
+        &self,
+        profile: String,
+        visibility: String,
+        page: u32,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        let visibility = parse_pixiv_following_visibility(&visibility)?;
+        to_json(
+            self.handle
+                .pixiv_following(&ProfileKey::new("pixiv", profile), visibility, page)
+                .await,
+        )
+    }
+
+    /// Returns one authenticated Pixiv bookmark slice as JSON.
+    pub async fn pixiv_bookmarks_json(
+        &self,
+        profile: String,
+        visibility: String,
+        offset: u32,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        let visibility = parse_pixiv_bookmark_visibility(&visibility)?;
+        to_json(
+            self.handle
+                .pixiv_bookmarks(&ProfileKey::new("pixiv", profile), visibility, offset)
+                .await,
+        )
+    }
+
+    /// Returns parsed metadata for one Pixiv illustration as JSON.
+    pub async fn pixiv_illust_json(
+        &self,
+        profile: String,
+        illust_id: String,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .pixiv_illust(&ProfileKey::new("pixiv", profile), &illust_id)
+                .await,
+        )
+    }
+
+    /// Starts one Pixiv original page fetch and returns the operation as JSON.
+    pub async fn start_pixiv_page_fetch_json(
+        &self,
+        profile: String,
+        illust_id: String,
+        page: u32,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .start_pixiv_page_fetch(crate::PixivPageFetchRequest {
+                    profile: ProfileKey::new("pixiv", profile),
+                    illust_id,
+                    page,
+                })
+                .await,
+        )
+    }
+
+    /// Starts one Pixiv thumbnail fetch and returns the operation as JSON.
+    pub async fn start_pixiv_thumbnail_fetch_json(
+        &self,
+        profile: String,
+        illust_id: String,
+        page: u32,
+        image_url: String,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        let image_url = url::Url::parse(&image_url).map_err(|_| {
+            bridge_error(CoreError::new(
+                ErrorCode::InvalidInput,
+                "Pixiv thumbnail URL must be an absolute HTTP(S) URL",
+                false,
+            ))
+        })?;
+        to_json(
+            self.handle
+                .start_pixiv_thumbnail_fetch(crate::PixivThumbnailFetchRequest {
+                    profile: ProfileKey::new("pixiv", profile),
+                    illust_id,
+                    page,
+                    image_url,
+                })
+                .await,
+        )
+    }
+
+    /// Replaces one profile Cookie (or clears it) and returns the profile as JSON.
+    pub async fn update_profile_cookie_json(
+        &self,
+        provider: String,
+        profile: String,
+        cookie: Option<String>,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .update_profile_cookie(ProfileKey::new(&provider, &profile), cookie)
+                .await,
+        )
+    }
+
     /// Returns parsed metadata for one EH gallery as JSON.
     pub async fn eh_gallery_detail_json(
         &self,
@@ -318,6 +489,34 @@ fn parse_operation_id(input: &str) -> Result<crate::OperationId, String> {
             false,
         ))
     })
+}
+
+fn parse_pixiv_following_visibility(
+    visibility: &str,
+) -> Result<crate::PixivFollowingVisibility, String> {
+    match visibility {
+        "public" => Ok(crate::PixivFollowingVisibility::Public),
+        "private" => Ok(crate::PixivFollowingVisibility::Private),
+        _ => Err(bridge_error(CoreError::new(
+            ErrorCode::InvalidInput,
+            "Pixiv following visibility must be public or private",
+            false,
+        ))),
+    }
+}
+
+fn parse_pixiv_bookmark_visibility(
+    visibility: &str,
+) -> Result<crate::PixivBookmarkVisibility, String> {
+    match visibility {
+        "public" => Ok(crate::PixivBookmarkVisibility::Public),
+        "private" => Ok(crate::PixivBookmarkVisibility::Private),
+        _ => Err(bridge_error(CoreError::new(
+            ErrorCode::InvalidInput,
+            "Pixiv bookmark visibility must be public or private",
+            false,
+        ))),
+    }
 }
 
 fn parse_eh_cursor(

@@ -14,6 +14,8 @@ const STORAGE_SCHEMA_VERSION: u64 = 3;
 const METADATA: TableDefinition<&str, u64> = TableDefinition::new("metadata");
 const LOCAL_GALLERIES: TableDefinition<&str, &str> = TableDefinition::new("local_galleries");
 const FAVORITE_SEARCHES: TableDefinition<&str, &str> = TableDefinition::new("favorite_searches");
+const HISTORY: TableDefinition<&str, &str> = TableDefinition::new("history");
+const HISTORY_LIMIT: usize = 500;
 
 /// One provider-scoped saved search.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -32,7 +34,30 @@ pub struct FavoriteSearch {
     pub revision: u64,
 }
 
+/// One browse-history item recorded when a detail view is opened.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct HistoryEntry {
+    /// Provider implementation identifier.
+    pub provider: String,
+    /// Provider profile used by the detail request.
+    pub profile: String,
+    /// Provider-neutral detail kind such as `eh_gallery` or `pixiv_illust`.
+    pub kind: String,
+    /// Provider media identifier such as `gid:token` or a Pixiv illustration ID.
+    pub media: String,
+    /// Detail title at record time.
+    pub title: String,
+    /// Provider thumbnail URL when the Provider supplied one at record time.
+    pub thumbnail: Option<String>,
+    /// RFC 3339 view timestamp; also the ordering key.
+    pub viewed_at: String,
+}
+
 pub(crate) struct FavoriteSearchRegistry {
+    database: Weak<Database>,
+}
+
+pub(crate) struct HistoryRegistry {
     database: Weak<Database>,
 }
 
@@ -137,6 +162,12 @@ impl StorageService {
 
     pub(crate) fn favorite_search_registry(&self) -> Arc<FavoriteSearchRegistry> {
         Arc::new(FavoriteSearchRegistry {
+            database: Arc::downgrade(&self.database),
+        })
+    }
+
+    pub(crate) fn history_registry(&self) -> Arc<HistoryRegistry> {
+        Arc::new(HistoryRegistry {
             database: Arc::downgrade(&self.database),
         })
     }
@@ -248,6 +279,100 @@ fn validate_favorite(
         ));
     }
     Ok(())
+}
+
+impl HistoryRegistry {
+    pub(crate) fn record(&self, entry: HistoryEntry) -> Result<(), CoreError> {
+        if entry.provider.trim().is_empty()
+            || entry.kind.trim().is_empty()
+            || entry.media.trim().is_empty()
+            || entry.media.len() > 256
+            || entry.title.trim().is_empty()
+            || entry.title.len() > 512
+            || entry.thumbnail.as_ref().is_some_and(|url| url.len() > 4096)
+        {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "history entry fields are invalid or unbounded",
+                false,
+            ));
+        }
+        let key = format!("{}:{}:{}", entry.provider, entry.kind, entry.media);
+        let json = serde_json::to_string(&entry).map_err(database_error)?;
+        let database = self.database()?;
+        let write = database.begin_write().map_err(database_error)?;
+        {
+            let mut table = write.open_table(HISTORY).map_err(database_error)?;
+            table
+                .insert(key.as_str(), json.as_str())
+                .map_err(database_error)?;
+            let mut entries: Vec<(String, String)> = table
+                .iter()
+                .map_err(database_error)?
+                .filter_map(|entry| {
+                    let (key, value) = entry.ok()?;
+                    let viewed_at = serde_json::from_str::<HistoryEntry>(value.value())
+                        .ok()?
+                        .viewed_at;
+                    Some((key.value().to_owned(), viewed_at))
+                })
+                .collect();
+            if entries.len() > HISTORY_LIMIT {
+                entries.sort_by(|left, right| left.1.cmp(&right.1));
+                let excess = entries.len() - HISTORY_LIMIT;
+                for (key, _) in entries.into_iter().take(excess) {
+                    table.remove(key.as_str()).map_err(database_error)?;
+                }
+            }
+        }
+        write.commit().map_err(database_error)
+    }
+
+    pub(crate) fn list(&self) -> Result<Vec<HistoryEntry>, CoreError> {
+        let database = self.database()?;
+        let read = database.begin_read().map_err(database_error)?;
+        let table = read.open_table(HISTORY).map_err(database_error)?;
+        let mut entries = Vec::new();
+        for entry in table.iter().map_err(database_error)? {
+            let (_, value) = entry.map_err(database_error)?;
+            entries.push(serde_json::from_str(value.value()).map_err(|_| {
+                CoreError::new(
+                    ErrorCode::IntegrityMismatch,
+                    "history entry is invalid",
+                    false,
+                )
+            })?);
+        }
+        entries.sort_by(|left: &HistoryEntry, right| right.viewed_at.cmp(&left.viewed_at));
+        Ok(entries)
+    }
+
+    pub(crate) fn clear(&self) -> Result<(), CoreError> {
+        let database = self.database()?;
+        let write = database.begin_write().map_err(database_error)?;
+        {
+            let mut table = write.open_table(HISTORY).map_err(database_error)?;
+            let keys: Vec<String> = table
+                .iter()
+                .map_err(database_error)?
+                .filter_map(|entry| entry.ok().map(|(key, _)| key.value().to_owned()))
+                .collect();
+            for key in keys {
+                table.remove(key.as_str()).map_err(database_error)?;
+            }
+        }
+        write.commit().map_err(database_error)
+    }
+
+    fn database(&self) -> Result<Arc<Database>, CoreError> {
+        self.database.upgrade().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::NotReady,
+                "history registry is unavailable",
+                false,
+            )
+        })
+    }
 }
 
 impl GalleryRegistry {
@@ -416,6 +541,7 @@ fn initialize_schema(database: &Database) -> Result<(), CoreError> {
     write
         .open_table(FAVORITE_SEARCHES)
         .map_err(database_error)?;
+    write.open_table(HISTORY).map_err(database_error)?;
     write.commit().map_err(database_error)
 }
 
@@ -505,6 +631,82 @@ mod tests {
         let storage = StorageService::open(&config(&temp)).unwrap();
         assert_eq!(storage.snapshot().unwrap().schema_version, 3);
         assert!(storage.gallery_registry().list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn history_records_lists_clears_and_persists() {
+        let temp = TempDir::new().unwrap();
+        let config = config(&temp);
+        let entry = |media: &str, title: &str, viewed_at: &str| super::HistoryEntry {
+            provider: "eh".to_owned(),
+            profile: "default".to_owned(),
+            kind: "eh_gallery".to_owned(),
+            media: media.to_owned(),
+            title: title.to_owned(),
+            thumbnail: None,
+            viewed_at: viewed_at.to_owned(),
+        };
+        let storage = StorageService::open(&config).unwrap();
+        let registry = storage.history_registry();
+        registry
+            .record(entry("1:abc", "one", "2026-08-01T00:00:00Z"))
+            .unwrap();
+        registry
+            .record(entry("2:abc", "two", "2026-08-02T00:00:00Z"))
+            .unwrap();
+        registry
+            .record(entry("3:abc", "three", "2026-08-03T00:00:00Z"))
+            .unwrap();
+        let list = registry.list().unwrap();
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].title, "three");
+        assert_eq!(list[2].title, "one");
+        // Same media id updates in place.
+        registry
+            .record(entry("1:abc", "one-updated", "2026-08-04T00:00:00Z"))
+            .unwrap();
+        let list = registry.list().unwrap();
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].title, "one-updated");
+        assert!(
+            registry
+                .record(super::HistoryEntry {
+                    provider: "".to_owned(),
+                    ..entry("9:abc", "bad", "2026-08-05T00:00:00Z")
+                })
+                .is_err()
+        );
+        drop(storage);
+
+        let reopened = StorageService::open(&config).unwrap();
+        let list = reopened.history_registry().list().unwrap();
+        assert_eq!(list.len(), 3);
+        reopened.history_registry().clear().unwrap();
+        assert!(reopened.history_registry().list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn history_bounds_retention_at_the_configured_limit() {
+        let temp = TempDir::new().unwrap();
+        let storage = StorageService::open(&config(&temp)).unwrap();
+        let registry = storage.history_registry();
+        for index in 0..super::HISTORY_LIMIT + 10 {
+            registry
+                .record(super::HistoryEntry {
+                    provider: "pixiv".to_owned(),
+                    profile: "default".to_owned(),
+                    kind: "pixiv_illust".to_owned(),
+                    media: index.to_string(),
+                    title: format!("work {index}"),
+                    thumbnail: None,
+                    viewed_at: format!("2026-08-01T00:{:02}:{:02}Z", index / 60, index % 60),
+                })
+                .unwrap();
+        }
+        let list = registry.list().unwrap();
+        assert_eq!(list.len(), super::HISTORY_LIMIT);
+        assert_eq!(list[0].media, (super::HISTORY_LIMIT + 9).to_string());
+        assert_eq!(list.last().unwrap().media, "10".to_owned());
     }
 
     #[test]
