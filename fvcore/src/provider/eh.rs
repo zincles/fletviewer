@@ -428,6 +428,35 @@ impl EhService {
         })
     }
 
+    pub(crate) async fn watched(
+        &self,
+        key: &ProfileKey,
+        cancellation: CancellationToken,
+    ) -> Result<EhHomePage, CoreError> {
+        ensure_eh(key)?;
+        if !self.sessions.has_cookie(key)? {
+            return Err(CoreError::new(
+                ErrorCode::AuthenticationRequired,
+                "EH watched galleries require a logged-in browser Cookie",
+                false,
+            ));
+        }
+        let response = self.sessions.get(key, "watched", cancellation).await?;
+        ensure_html(&response.content_type, "EH watched page")?;
+        let generation = response.generation;
+        let final_url = response.final_url;
+        let html = std::str::from_utf8(&response.body)
+            .map_err(|_| unexpected("EH watched page returned invalid UTF-8"))?;
+        let (galleries, previous, next) = parse_home(html, &final_url)?;
+        Ok(EhHomePage {
+            profile: key.profile.clone(),
+            generation,
+            galleries,
+            previous,
+            next,
+        })
+    }
+
     pub(crate) async fn favorites(
         &self,
         key: &ProfileKey,

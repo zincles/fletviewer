@@ -106,6 +106,21 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('EH watched tab shows signed-out guidance', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FletViewerApp(client: client));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('reading-tab-1')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('E-Hentai 需要登录'), findsOneWidget);
+    expect(find.textContaining('配置浏览器 Cookie'), findsOneWidget);
+  });
+
   testWidgets('EH favorites tab shows signed-out guidance', (tester) async {
     tester.view.physicalSize = const Size(1280, 800);
     tester.view.devicePixelRatio = 1;
@@ -281,6 +296,16 @@ final class _FakeCoreClient implements CoreClient {
   Future<EhHomePage> ehPopular({String profile = 'default'}) async {
     final page = await ehSearch(profile: profile);
     return page;
+  }
+
+  @override
+  Future<EhHomePage> ehWatched({String profile = 'default'}) async {
+    throw CoreApiException(
+      statusCode: 401,
+      code: 'authentication_required',
+      message: 'EH watched galleries require a logged-in browser Cookie',
+      retryable: false,
+    );
   }
 
   @override

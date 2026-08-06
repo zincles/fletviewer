@@ -87,6 +87,9 @@ abstract class NativeCore implements RustOpaqueInterface {
     required int page,
   });
 
+  /// Returns the authenticated EH watched-galleries listing for one profile as JSON.
+  Future<String> ehWatchedJson({required String profile});
+
   /// Replays retained Runtime events after a cursor as JSON.
   Future<String> eventsAfterJson({required BigInt cursor});
 

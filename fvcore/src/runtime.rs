@@ -1095,6 +1095,13 @@ impl CoreHandle {
             .await
     }
 
+    /// Fetches the authenticated EH watched-galleries listing using the shared profile session.
+    pub async fn eh_watched(&self, key: &ProfileKey) -> Result<crate::EhHomePage, CoreError> {
+        EhService::new(self.sessions.clone())
+            .watched(key, self.shutdown.child_token())
+            .await
+    }
+
     /// Fetches the authenticated EH favorites listing using the shared profile session.
     pub async fn eh_favorites(
         &self,

@@ -1366,6 +1366,8 @@ abstract interface class CoreClient {
 
   Future<EhHomePage> ehPopular({String profile = 'default'});
 
+  Future<EhHomePage> ehWatched({String profile = 'default'});
+
   Future<List<HistoryEntry>> history();
 
   Future<void> clearHistory();
@@ -1657,6 +1659,15 @@ final class HttpCoreClient implements CoreClient {
       '/api/v1/providers/eh/${Uri.encodeComponent(profile)}/popular',
     );
     return EhHomePage.fromJson(_object(value, 'EH popular page'));
+  }
+
+  @override
+  Future<EhHomePage> ehWatched({String profile = 'default'}) async {
+    final value = await _jsonRequest(
+      'GET',
+      '/api/v1/providers/eh/${Uri.encodeComponent(profile)}/watched',
+    );
+    return EhHomePage.fromJson(_object(value, 'EH watched page'));
   }
 
   @override
@@ -2105,6 +2116,12 @@ final class NativeCoreClient implements CoreClient {
   Future<EhHomePage> ehPopular({String profile = 'default'}) async {
     final value = await _jsonCall(() => _core.ehPopularJson(profile: profile));
     return EhHomePage.fromJson(_object(value, 'EH popular page'));
+  }
+
+  @override
+  Future<EhHomePage> ehWatched({String profile = 'default'}) async {
+    final value = await _jsonCall(() => _core.ehWatchedJson(profile: profile));
+    return EhHomePage.fromJson(_object(value, 'EH watched page'));
   }
 
   @override

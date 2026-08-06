@@ -751,12 +751,13 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
   final TextEditingController _searchController = TextEditingController();
   EhHomePage? _page;
   bool _loading = false;
+  bool _authRequired = false;
   String? _error;
   String _activeSearch = '';
 
   bool get _isEhHome =>
       widget.provider == ProviderFamily.ehentai &&
-      (widget.tab == '主页' || widget.tab == '热门');
+      (widget.tab == '主页' || widget.tab == '热门' || widget.tab == '订阅');
 
   bool get _isEhHistory =>
       widget.provider == ProviderFamily.ehentai && widget.tab == '历史';
@@ -791,13 +792,16 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
     if (!_isEhHome) return;
     setState(() {
       _loading = true;
+      _authRequired = false;
       _error = null;
     });
     final query = search ?? _activeSearch;
     try {
-      final page = widget.tab == '热门'
-          ? await widget.client.ehPopular(profile: widget.profile)
-          : await widget.client.ehSearch(search: query, cursor: cursor);
+      final page = switch (widget.tab) {
+        '热门' => await widget.client.ehPopular(profile: widget.profile),
+        '订阅' => await widget.client.ehWatched(profile: widget.profile),
+        _ => await widget.client.ehSearch(search: query, cursor: cursor),
+      };
       if (!mounted) return;
       setState(() {
         _page = page;
@@ -808,7 +812,12 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = '$error';
+        if (error is CoreApiException &&
+            error.code == 'authentication_required') {
+          _authRequired = true;
+        } else {
+          _error = '$error';
+        }
       });
     }
   }
@@ -835,11 +844,8 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
     if (widget.provider == ProviderFamily.ehentai && widget.tab == '收藏') {
       return EhFavoritesView(client: widget.client, profile: widget.profile);
     }
-    if (widget.provider == ProviderFamily.ehentai && widget.tab == '订阅') {
-      return EhFavoriteSearchesPage(
-        client: widget.client,
-        profile: widget.profile,
-      );
+    if (_isEhHome && _authRequired) {
+      return const AuthRequiredView(providerLabel: 'E-Hentai');
     }
     if (!_isEhHome) {
       final ehentaiUnwired = const ['排行榜'].contains(widget.tab);

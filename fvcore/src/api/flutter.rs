@@ -143,6 +143,16 @@ impl NativeCore {
         )
     }
 
+    /// Returns the authenticated EH watched-galleries listing for one profile as JSON.
+    pub async fn eh_watched_json(&self, profile: String) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .eh_watched(&ProfileKey::new("eh", profile))
+                .await,
+        )
+    }
+
     /// Returns the authenticated EH favorites listing for one profile as JSON.
     pub async fn eh_favorites_json(&self, profile: String) -> Result<String, String> {
         self.ensure_running().await?;
