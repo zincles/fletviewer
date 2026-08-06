@@ -5,6 +5,7 @@ use fs2::FileExt;
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
     sync::{Arc, Weak},
@@ -16,6 +17,28 @@ const LOCAL_GALLERIES: TableDefinition<&str, &str> = TableDefinition::new("local
 const FAVORITE_SEARCHES: TableDefinition<&str, &str> = TableDefinition::new("favorite_searches");
 const HISTORY: TableDefinition<&str, &str> = TableDefinition::new("history");
 const HISTORY_LIMIT: usize = 500;
+const SECRETS_SCHEMA_VERSION: u32 = 1;
+
+/// Plaintext Provider credentials persisted for the local embedded app.
+///
+/// Stored as a 0600 JSON file inside the Data domain so desktop/mobile
+/// sessions survive restarts. This is the product credential store, distinct
+/// from the executable-only `config.json` used by the diagnostic WebUI.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub(crate) struct ProfileSecrets {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cookie: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) api_user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) api_key: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct StoredSecrets {
+    schema_version: u32,
+    profiles: BTreeMap<String, ProfileSecrets>,
+}
 
 /// One provider-scoped saved search.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -170,6 +193,16 @@ impl StorageService {
         Arc::new(HistoryRegistry {
             database: Arc::downgrade(&self.database),
         })
+    }
+
+    pub(crate) fn secrets_path(&self) -> PathBuf {
+        self.paths.data.join("secrets.json")
+    }
+
+    pub(crate) fn load_profile_secrets(
+        &self,
+    ) -> Result<BTreeMap<String, ProfileSecrets>, CoreError> {
+        load_secrets(&self.secrets_path())
     }
 }
 
@@ -545,6 +578,74 @@ fn initialize_schema(database: &Database) -> Result<(), CoreError> {
     write.commit().map_err(database_error)
 }
 
+pub(crate) fn load_secrets(path: &Path) -> Result<BTreeMap<String, ProfileSecrets>, CoreError> {
+    let input = match std::fs::read(path) {
+        Ok(input) => input,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BTreeMap::new());
+        }
+        Err(error) => return Err(io_error("read profile secrets", path, error)),
+    };
+    let stored: StoredSecrets = serde_json::from_slice(&input).map_err(|_| {
+        CoreError::new(
+            ErrorCode::Parse,
+            format!("failed to parse profile secrets {}", path.display()),
+            false,
+        )
+    })?;
+    if stored.schema_version > SECRETS_SCHEMA_VERSION {
+        return Err(CoreError::new(
+            ErrorCode::InvalidConfig,
+            format!(
+                "unsupported profile secrets schema {}",
+                stored.schema_version
+            ),
+            false,
+        ));
+    }
+    Ok(stored.profiles)
+}
+
+pub(crate) fn save_secrets(
+    path: &Path,
+    profiles: &BTreeMap<String, ProfileSecrets>,
+) -> Result<(), CoreError> {
+    let json = serde_json::to_vec_pretty(&StoredSecrets {
+        schema_version: SECRETS_SCHEMA_VERSION,
+        profiles: profiles.clone(),
+    })
+    .map_err(|error| {
+        CoreError::new(
+            ErrorCode::Internal,
+            format!("failed to encode profile secrets: {error}"),
+            false,
+        )
+    })?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|error| io_error("create secrets directory", parent, error))?;
+    let temporary = path.with_extension("json.tmp");
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temporary)
+            .map_err(|error| io_error("create staged profile secrets", &temporary, error))?;
+        use std::io::Write;
+        file.write_all(&json)
+            .map_err(|error| io_error("write staged profile secrets", &temporary, error))?;
+        file.sync_all()
+            .map_err(|error| io_error("flush staged profile secrets", &temporary, error))?;
+    }
+    std::fs::rename(&temporary, path)
+        .map_err(|error| io_error("publish profile secrets", path, error))
+}
+
 fn safe_directory_name(name: &str) -> bool {
     let path = Path::new(name);
     !name.is_empty()
@@ -584,6 +685,7 @@ fn storage_identity(domain: &str, path: &Path) -> String {
 mod tests {
     use super::{METADATA, StorageService, open_database};
     use crate::{ErrorCode, StorageConfig};
+    use std::collections::BTreeMap;
     use tempfile::TempDir;
 
     fn config(temp: &TempDir) -> StorageConfig {
@@ -707,6 +809,42 @@ mod tests {
         assert_eq!(list.len(), super::HISTORY_LIMIT);
         assert_eq!(list[0].media, (super::HISTORY_LIMIT + 9).to_string());
         assert_eq!(list.last().unwrap().media, "10".to_owned());
+    }
+
+    #[test]
+    fn profile_secrets_roundtrip_and_permissions() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("Data/secrets.json");
+        let mut secrets = BTreeMap::new();
+        secrets.insert(
+            "pixiv/default".to_owned(),
+            super::ProfileSecrets {
+                cookie: Some("PHPSESSID=secret".to_owned()),
+                api_user: None,
+                api_key: None,
+            },
+        );
+        super::save_secrets(&path, &secrets).unwrap();
+        let loaded = super::load_secrets(&path).unwrap();
+        assert_eq!(
+            loaded["pixiv/default"].cookie.as_deref(),
+            Some("PHPSESSID=secret")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "secrets file must be owner-only");
+        }
+        // 损坏文件返回解析错误而不是静默丢失。
+        std::fs::write(&path, "{broken").unwrap();
+        assert!(super::load_secrets(&path).is_err());
+        // 不存在的文件返回空映射。
+        assert!(
+            super::load_secrets(&temp.path().join("missing.json"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

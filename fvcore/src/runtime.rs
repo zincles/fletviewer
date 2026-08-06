@@ -18,9 +18,13 @@ use crate::{
     provider::eh::EhService,
     provider::pixiv::PixivService,
     session::{DangerousProfileCredentials, SessionRegistry},
-    storage::{FavoriteSearchRegistry, HistoryRegistry, StorageService},
+    storage::{
+        FavoriteSearchRegistry, HistoryRegistry, ProfileSecrets, StorageService, load_secrets,
+        save_secrets,
+    },
 };
 use fs2::FileExt;
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -119,6 +123,7 @@ struct RuntimeData {
     operations: OperationService,
     sessions: Arc<SessionRegistry>,
     config_path: Option<PathBuf>,
+    secrets_path: Option<PathBuf>,
 }
 
 impl RuntimeData {
@@ -190,24 +195,31 @@ impl CoreBuilder {
         let storage_snapshot = storage.snapshot()?;
         let cache_path = storage.cache_path();
         let downloads_path = storage.downloads_path();
-        let sessions = Arc::new(SessionRegistry::new(
-            &self.config.profiles,
-            &self.config.network,
-        )?);
+        // Embedded Runtimes restore persisted credentials from the Data domain
+        // secrets file; executable config.json values take precedence.
+        let secrets = storage.load_profile_secrets()?;
+        let mut config = self.config;
+        merge_profile_secrets(&mut config.profiles, &secrets);
+        let secrets_path = if self.config_path.is_none() {
+            Some(storage.secrets_path())
+        } else {
+            None
+        };
+        let sessions = Arc::new(SessionRegistry::new(&config.profiles, &config.network)?);
         let (command_tx, command_rx) = mpsc::channel(command_capacity);
         let (message_tx, message_rx) = mpsc::channel(command_capacity);
         let (state_tx, state_rx) = watch::channel(RuntimeState::Starting);
         let shutdown = CancellationToken::new();
         let actor_shutdown = shutdown.clone();
         let runtime_id = RuntimeId::new();
-        let images = ImageService::new(self.config.images.clone(), cache_path, sessions.clone())?;
+        let images = ImageService::new(config.images.clone(), cache_path, sessions.clone())?;
         let image_downloads = ImageDownloadService::open(
             downloads_path.clone(),
             sessions.clone(),
             images.clone(),
             shutdown.child_token(),
             message_tx.clone(),
-            self.config.image_downloads.clone(),
+            config.image_downloads.clone(),
         )
         .await?;
         let archives = ArchiveService::open(
@@ -221,15 +233,15 @@ impl CoreBuilder {
             downloads_path,
             archives.clone(),
             storage.gallery_registry(),
-            self.config.images.max_image_bytes,
-            self.config.images.max_inflight_bytes,
+            config.images.max_image_bytes,
+            config.images.max_inflight_bytes,
         )
         .await?;
         let favorite_searches = storage.favorite_search_registry();
         let history = storage.history_registry();
         let data = RuntimeData {
             id: runtime_id,
-            config: self.config,
+            config,
             started_at: Instant::now(),
             state: RuntimeState::Starting,
             revision: 0,
@@ -245,6 +257,7 @@ impl CoreBuilder {
             ),
             sessions: sessions.clone(),
             config_path: self.config_path,
+            secrets_path,
         };
         let mut actor = tokio::spawn(run_actor(
             data,
@@ -1561,6 +1574,29 @@ async fn run_actor(
     states.send_replace(RuntimeState::Stopped);
 }
 
+fn merge_profile_secrets(
+    profiles: &mut BTreeMap<String, ProviderProfileConfig>,
+    secrets: &BTreeMap<String, ProfileSecrets>,
+) {
+    for (profile_key, secret) in secrets {
+        let Some(profile) = profiles
+            .values_mut()
+            .find(|profile| format!("{}/{}", profile.provider, profile.profile) == *profile_key)
+        else {
+            continue;
+        };
+        if profile.cookie.is_none() {
+            profile.cookie = secret.cookie.clone();
+        }
+        if profile.api_user.is_none() {
+            profile.api_user = secret.api_user.clone();
+        }
+        if profile.api_key.is_none() {
+            profile.api_key = secret.api_key.clone();
+        }
+    }
+}
+
 fn update_profile_credentials(
     data: &mut RuntimeData,
     key: &ProfileKey,
@@ -1594,10 +1630,19 @@ fn update_profile_credentials(
     }
     replacement.validate(&key.to_string())?;
 
-    // Embedded Runtimes update credentials in memory only; executable Runtimes
-    // additionally persist them to the adjacent config.json for the debug WebUI.
+    // Executable Runtimes persist to the adjacent config.json for the debug
+    // WebUI; embedded Runtimes persist to the Data-domain secrets store.
     if let Some(path) = data.config_path.as_ref() {
         persist_profile_credentials(path, key, &replacement)?;
+    } else if let Some(path) = &data.secrets_path {
+        let mut secrets = load_secrets(path)?;
+        let secret = secrets
+            .entry(format!("{}/{}", key.provider, key.profile))
+            .or_default();
+        secret.cookie = replacement.cookie.clone();
+        secret.api_user = replacement.api_user.clone();
+        secret.api_key = replacement.api_key.clone();
+        save_secrets(path, &secrets)?;
     }
     let snapshot = data
         .sessions
@@ -1962,9 +2007,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn embedded_runtime_updates_credentials_in_memory_only() {
+    async fn embedded_runtime_persists_credentials_across_restart() {
         let temp = TempDir::new().unwrap();
-        let runtime = CoreBuilder::new(config(&temp)).build().await.unwrap();
+        let config = config(&temp);
+        let runtime = CoreBuilder::new(config.clone()).build().await.unwrap();
 
         let snapshot = runtime
             .handle()
@@ -1972,8 +2018,11 @@ mod tests {
             .await
             .unwrap();
         assert!(snapshot.has_cookie);
+        runtime.shutdown().await.unwrap();
 
-        let active = runtime
+        // A new Runtime over the same Data domain restores the persisted secret.
+        let restarted = CoreBuilder::new(config).build().await.unwrap();
+        let active = restarted
             .handle()
             .profiles()
             .unwrap()
@@ -1981,7 +2030,7 @@ mod tests {
             .find(|profile| profile.key == ProfileKey::new("eh", "default"))
             .unwrap();
         assert!(active.has_cookie);
-        runtime.shutdown().await.unwrap();
+        restarted.shutdown().await.unwrap();
     }
 
     fn test_jpeg() -> Vec<u8> {

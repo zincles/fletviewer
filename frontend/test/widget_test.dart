@@ -7,11 +7,15 @@ import 'package:fletviewer_frontend/main.dart';
 import 'package:fletviewer_frontend/core_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   late _FakeCoreClient client;
 
-  setUp(() => client = _FakeCoreClient());
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    client = _FakeCoreClient();
+  });
   testWidgets('shows the responsive Flet-style browse shell', (tester) async {
     tester.view.physicalSize = const Size(1280, 800);
     tester.view.devicePixelRatio = 1;
@@ -136,6 +140,28 @@ void main() {
 
     expect(find.text('E-Hentai 需要登录'), findsOneWidget);
     expect(find.textContaining('配置浏览器 Cookie'), findsOneWidget);
+  });
+
+  testWidgets('settings show providers, theme switch and cookie cards', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(420, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FletViewerApp(client: client));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('nav-settings')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Pixiv Cookie'), findsWidgets);
+    expect(find.text('E-Hentai Cookie'), findsWidgets);
+    expect(find.text('外观主题'), findsOneWidget);
+    expect(find.text('浅色'), findsOneWidget);
+    await tester.tap(find.text('深色'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('debug section shows runtime and profile diagnostics', (

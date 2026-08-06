@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_navigation.dart';
 import 'core_client.dart';
@@ -18,7 +19,7 @@ void main() {
   runApp(FletViewerApp(launcher: NativeRuntimeLauncher()));
 }
 
-class FletViewerApp extends StatelessWidget {
+class FletViewerApp extends StatefulWidget {
   const FletViewerApp({super.key, this.client, this.launcher})
     : assert(client == null || launcher == null);
 
@@ -26,11 +27,47 @@ class FletViewerApp extends StatelessWidget {
   final NativeRuntimeLauncher? launcher;
 
   @override
+  State<FletViewerApp> createState() => _FletViewerAppState();
+}
+
+class _FletViewerAppState extends State<FletViewerApp> {
+  ThemeMode _themeMode = ThemeMode.system;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadTheme());
+  }
+
+  Future<void> _loadTheme() async {
+    final prefs = await SharedPreferences.getInstance();
+    final stored = prefs.getString('theme_mode');
+    if (!mounted) return;
+    setState(() {
+      _themeMode = switch (stored) {
+        'light' => ThemeMode.light,
+        'dark' => ThemeMode.dark,
+        _ => ThemeMode.system,
+      };
+    });
+  }
+
+  void _setThemeMode(ThemeMode mode) {
+    setState(() => _themeMode = mode);
+    unawaited(
+      SharedPreferences.getInstance().then(
+        (prefs) => prefs.setString('theme_mode', mode.name),
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     const seed = Color(0xff6750a4);
     return MaterialApp(
       title: 'FletViewer · $experimentalGuiLabel',
       debugShowCheckedModeBanner: false,
+      themeMode: _themeMode,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: seed),
         useMaterial3: true,
@@ -44,17 +81,31 @@ class FletViewerApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: launcher == null
-          ? FletViewerShell(client: client)
-          : _RuntimeBootstrap(launcher: launcher!),
+      home: widget.launcher == null
+          ? FletViewerShell(
+              client: widget.client,
+              onThemeModeChanged: _setThemeMode,
+              initialThemeMode: _themeMode,
+            )
+          : _RuntimeBootstrap(
+              launcher: widget.launcher!,
+              onThemeModeChanged: _setThemeMode,
+              initialThemeMode: _themeMode,
+            ),
     );
   }
 }
 
 class _RuntimeBootstrap extends StatefulWidget {
-  const _RuntimeBootstrap({required this.launcher});
+  const _RuntimeBootstrap({
+    required this.launcher,
+    required this.onThemeModeChanged,
+    required this.initialThemeMode,
+  });
 
   final NativeRuntimeLauncher launcher;
+  final ValueChanged<ThemeMode> onThemeModeChanged;
+  final ThemeMode initialThemeMode;
 
   @override
   State<_RuntimeBootstrap> createState() => _RuntimeBootstrapState();
@@ -106,7 +157,12 @@ class _RuntimeBootstrapState extends State<_RuntimeBootstrap> {
   Widget build(BuildContext context) {
     final connection = _connection;
     if (connection != null) {
-      return FletViewerShell(client: connection.client, connection: connection);
+      return FletViewerShell(
+        client: connection.client,
+        connection: connection,
+        onThemeModeChanged: widget.onThemeModeChanged,
+        initialThemeMode: widget.initialThemeMode,
+      );
     }
     final colors = Theme.of(context).colorScheme;
     return Scaffold(
@@ -160,10 +216,18 @@ class _RuntimeBootstrapState extends State<_RuntimeBootstrap> {
 }
 
 class FletViewerShell extends StatefulWidget {
-  const FletViewerShell({super.key, this.client, this.connection});
+  const FletViewerShell({
+    super.key,
+    this.client,
+    this.connection,
+    this.onThemeModeChanged,
+    this.initialThemeMode = ThemeMode.system,
+  });
 
   final CoreClient? client;
   final RuntimeConnection? connection;
+  final ValueChanged<ThemeMode>? onThemeModeChanged;
+  final ThemeMode initialThemeMode;
 
   @override
   State<FletViewerShell> createState() => _FletViewerShellState();
@@ -224,6 +288,8 @@ class _FletViewerShellState extends State<FletViewerShell> {
             client: _client,
             provider: _provider,
             onProviderSelected: _selectProvider,
+            themeMode: widget.initialThemeMode,
+            onThemeModeChanged: widget.onThemeModeChanged,
           ),
           AppSection.debug => DebugPage(client: _client),
         };
@@ -1299,54 +1365,21 @@ class _SettingsPage extends StatefulWidget {
     required this.client,
     required this.provider,
     required this.onProviderSelected,
+    required this.themeMode,
+    required this.onThemeModeChanged,
   });
 
   final CoreClient client;
   final ProviderFamily provider;
   final ValueChanged<ProviderFamily> onProviderSelected;
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode>? onThemeModeChanged;
 
   @override
   State<_SettingsPage> createState() => _SettingsPageState();
 }
 
 class _SettingsPageState extends State<_SettingsPage> {
-  final TextEditingController _cookieController = TextEditingController();
-  bool _savingCookie = false;
-  String? _cookieStatus;
-
-  @override
-  void dispose() {
-    _cookieController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _saveCookie(String? cookie) async {
-    setState(() {
-      _savingCookie = true;
-      _cookieStatus = null;
-    });
-    try {
-      final snapshot = await widget.client.updateProfileCookie(
-        provider: 'pixiv',
-        profile: 'default',
-        cookie: cookie,
-      );
-      if (!mounted) return;
-      setState(() {
-        _savingCookie = false;
-        _cookieStatus = snapshot.hasCookie
-            ? 'Cookie 已保存并生效；当前会话已重新创建。'
-            : 'Cookie 已清除。';
-      });
-    } on Object catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _savingCookie = false;
-        _cookieStatus = '保存失败：$error';
-      });
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -1389,88 +1422,192 @@ class _SettingsPageState extends State<_SettingsPage> {
                 ),
               ),
               const Divider(height: 1),
-              const ListTile(
-                leading: Icon(Icons.palette_outlined),
-                title: Text('Material 3 主题'),
-                subtitle: Text('跟随系统；后续接入 fvcore 脱敏配置和本地 UI 偏好'),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                child: Row(
+                  children: [
+                    const Icon(Icons.palette_outlined),
+                    const SizedBox(width: 16),
+                    const Expanded(child: Text('外观主题')),
+                    SegmentedButton<ThemeMode>(
+                      segments: const [
+                        ButtonSegment(
+                          value: ThemeMode.light,
+                          icon: Icon(Icons.light_mode_outlined),
+                          label: Text('浅色'),
+                        ),
+                        ButtonSegment(
+                          value: ThemeMode.dark,
+                          icon: Icon(Icons.dark_mode_outlined),
+                          label: Text('深色'),
+                        ),
+                        ButtonSegment(
+                          value: ThemeMode.system,
+                          icon: Icon(Icons.brightness_auto_outlined),
+                          label: Text('系统'),
+                        ),
+                      ],
+                      selected: {widget.themeMode},
+                      onSelectionChanged: widget.onThemeModeChanged == null
+                          ? null
+                          : (selection) =>
+                                widget.onThemeModeChanged!(selection.first),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
         ),
         const SizedBox(height: 16),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+        _CookieCard(
+          client: widget.client,
+          provider: 'pixiv',
+          title: 'Pixiv Cookie',
+          subtitle: '从浏览器复制登录后的 Cookie（如 PHPSESSID=...）。',
+          hint: 'PHPSESSID=...; other=...',
+        ),
+        const SizedBox(height: 16),
+        _CookieCard(
+          client: widget.client,
+          provider: 'eh',
+          title: 'E-Hentai Cookie',
+          subtitle:
+              '订阅（watched）与收藏（favorites）需要登录；Cookie 以 0600 权限保存在本地 Data 域，重启不丢失。',
+          hint: 'igneous=...; ipb_member_id=...; ipb_pass_hash=...',
+        ),
+      ],
+    );
+  }
+}
+
+class _CookieCard extends StatefulWidget {
+  const _CookieCard({
+    required this.client,
+    required this.provider,
+    required this.title,
+    required this.subtitle,
+    required this.hint,
+  });
+
+  final CoreClient client;
+  final String provider;
+  final String title;
+  final String subtitle;
+  final String hint;
+
+  @override
+  State<_CookieCard> createState() => _CookieCardState();
+}
+
+class _CookieCardState extends State<_CookieCard> {
+  final TextEditingController _cookieController = TextEditingController();
+  bool _saving = false;
+  String? _status;
+
+  @override
+  void dispose() {
+    _cookieController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save(String? cookie) async {
+    setState(() {
+      _saving = true;
+      _status = null;
+    });
+    try {
+      final snapshot = await widget.client.updateProfileCookie(
+        provider: widget.provider,
+        profile: 'default',
+        cookie: cookie,
+      );
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _status = snapshot.hasCookie
+            ? 'Cookie 已保存并生效；当前会话已重新创建。'
+            : 'Cookie 已清除。';
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _status = '保存失败：$error';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.key_outlined),
+              title: Text(widget.title),
+              subtitle: Text(widget.subtitle),
+            ),
+            TextField(
+              controller: _cookieController,
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: widget.title,
+                hintText: widget.hint,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
               children: [
-                const ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.key_outlined),
-                  title: Text('Pixiv Cookie'),
-                  subtitle: Text(
-                    '从浏览器复制登录后的 Cookie（如 PHPSESSID=...）。保存到本机 Runtime 会话，重启后需重新配置；桌面进程不会写入磁盘。',
-                  ),
+                FilledButton.icon(
+                  onPressed: _saving
+                      ? null
+                      : () => _save(
+                          _cookieController.text.trim().isEmpty
+                              ? null
+                              : _cookieController.text.trim(),
+                        ),
+                  icon: const Icon(Icons.save_outlined),
+                  label: const Text('保存'),
                 ),
-                TextField(
-                  controller: _cookieController,
-                  obscureText: true,
-                  maxLines: 2,
-                  decoration: const InputDecoration(
-                    labelText: 'Pixiv Cookie',
-                    hintText: 'PHPSESSID=...; other=...',
-                    border: OutlineInputBorder(),
-                  ),
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  onPressed: _saving
+                      ? null
+                      : () {
+                          _cookieController.clear();
+                          _save(null);
+                        },
+                  child: const Text('清除'),
                 ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    FilledButton.icon(
-                      onPressed: _savingCookie
-                          ? null
-                          : () => _saveCookie(
-                              _cookieController.text.trim().isEmpty
-                                  ? null
-                                  : _cookieController.text.trim(),
-                            ),
-                      icon: const Icon(Icons.save_outlined),
-                      label: const Text('保存'),
-                    ),
-                    const SizedBox(width: 8),
-                    OutlinedButton(
-                      onPressed: _savingCookie
-                          ? null
-                          : () {
-                              _cookieController.clear();
-                              _saveCookie(null);
-                            },
-                      child: const Text('清除'),
-                    ),
-                    if (_savingCookie) ...[
-                      const SizedBox(width: 12),
-                      const SizedBox.square(
-                        dimension: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    ],
-                  ],
-                ),
-                if (_cookieStatus != null) ...[
-                  const SizedBox(height: 10),
-                  Text(
-                    _cookieStatus!,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: _cookieStatus!.contains('失败')
-                          ? Theme.of(context).colorScheme.error
-                          : Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                if (_saving) ...[
+                  const SizedBox(width: 12),
+                  const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 ],
               ],
             ),
-          ),
+            if (_status != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                _status!,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: _status!.contains('失败')
+                      ? Theme.of(context).colorScheme.error
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ],
         ),
-      ],
+      ),
     );
   }
 }

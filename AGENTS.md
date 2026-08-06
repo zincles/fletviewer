@@ -78,6 +78,7 @@ Flutter UI -> HTTP command/query + SSE event + binary resource/stream -> fvcore 
 - 同一 Provider profile 共用连接池、认证、代理、限流和 session generation；配置变化创建新 generation，旧请求自然持有旧 generation 至完成，不持锁跨网络 `.await`。
 - Provider 页面与 API 请求限制在配置 origin 与 allowlist redirect host，限制 redirect 次数和响应体大小；EH 画廊图片（封面、缩略图、viewer 页图）接受 Provider 返回的任何 HTTP(S) 图片 URL（包括 H@H `*.hath.network` 直链）并经格式/大小/MD5 校验，redirect 保持次数与 scheme 一致性限制；Cookie/API secret 不进入缓存键、任务、公开 DTO 或日志。
 - EH 搜索、详情、图片和 Archive 共用同一逻辑会话。标准 E-Hentai 页面 origin 为 `e-hentai.org`，reader 私有 API 为 `api.e-hentai.org/api.php`；ExHentai 使用其 origin 下 `/api.php`。私有 API 即使以 `text/html` 返回也应按有界 body 尝试解析 JSON。
+- 本地嵌入应用的 Provider 凭据（Cookie/API key）持久化在 Data 域 `secrets.json`（0600、原子写；embedded 启动时加载、设置保存时落盘，重启不丢）；executable 模式仍写入同级 `config.json` 供调试 WebUI 使用。凭据永不进入日志、缓存键、任务或公开 DTO。
 - EH 逐页 reader 图片可能重采样，只用于阅读；只有 Original Archive 承诺原始文件，批量下载不伪装为逐页原图。
 - Danbooru、Gelbooru 和其他 Booru 只使用公开 API 与正式凭据；401/403/429、HTML 非预期响应和阻断返回稳定错误，不实现网页 fallback 或绕过。
 - Booru 协议差异必须保留：Danbooru JSON、Gelbooru JSON DAPI、Gelbooru-style XML、Moebooru、E621、Philomena 和 Paheal 不强行共用 parser。
