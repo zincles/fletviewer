@@ -14,7 +14,6 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
-use tracing_subscriber::EnvFilter;
 
 const CONFIG_FILENAME: &str = "config.json";
 const CONFIG_BACKUP_FILENAME: &str = ".config.json.override-backup";
@@ -224,7 +223,7 @@ enum EhInspectCommand {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    init_tracing();
+    fvcore::init_tracing();
     let cli = Cli::parse();
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
@@ -931,11 +930,6 @@ fn load_config_from_directory(
     }
     config.validate()?;
     Ok(config)
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
 #[cfg(test)]

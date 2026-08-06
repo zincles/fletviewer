@@ -26,6 +26,7 @@ struct BridgeError<'a> {
 /// Initializes flutter_rust_bridge process utilities.
 #[flutter_rust_bridge::frb(init)]
 pub fn init_app() {
+    crate::init_tracing();
     flutter_rust_bridge::setup_default_user_utils();
 }
 
@@ -36,6 +37,7 @@ pub async fn start_native_core(
     downloads_dir: String,
     temp_dir: String,
 ) -> Result<NativeCore, String> {
+    crate::init_tracing();
     let mut config = crate::CoreConfig::default();
     config.control.enabled = false;
     config.storage.data = PathBuf::from(data_dir);
@@ -47,6 +49,12 @@ pub async fn start_native_core(
         .await
         .map_err(bridge_error)?;
     let handle = runtime.handle();
+    let snapshot = handle.snapshot().await.map_err(bridge_error)?;
+    tracing::info!(
+        runtime_id = %snapshot.runtime_id,
+        instance = snapshot.instance_name,
+        "embedded fvcore is ready"
+    );
     Ok(NativeCore {
         handle,
         runtime: Mutex::new(Some(runtime)),
@@ -224,7 +232,10 @@ impl NativeCore {
     pub async fn shutdown(&self) -> Result<(), String> {
         let runtime = self.runtime.lock().await.take();
         match runtime {
-            Some(runtime) => runtime.shutdown().await.map_err(bridge_error),
+            Some(runtime) => {
+                tracing::info!("embedded fvcore graceful shutdown requested");
+                runtime.shutdown().await.map_err(bridge_error)
+            }
             None => Ok(()),
         }
     }

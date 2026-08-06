@@ -74,6 +74,20 @@ pub use session::{ProfileKey, ProfileProbeSnapshot, ProfileSnapshot};
 pub use snapshot::{CoreSnapshot, RuntimeState, StorageSnapshot};
 pub use storage::FavoriteSearch;
 
+/// Installs the default stderr tracing subscriber once for Core entry points.
+///
+/// `RUST_LOG` controls filtering. If an embedding host has already installed a
+/// global subscriber, that subscriber remains authoritative.
+pub fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
 /// Crate version compiled into the current artifact.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
