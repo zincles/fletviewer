@@ -35,6 +35,19 @@ if [[ "${1:-}" == "--restart" ]]; then
   shift
 fi
 
+check_bridge_sync() {
+  local rust_hash dart_hash
+  rust_hash="$(sed -n 's/.*FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = \(-*[0-9]*\);/\1/p' "$ROOT_DIR/fvcore/src/frb_generated.rs" | head -1)"
+  dart_hash="$(sed -n 's/.*int get rustContentHash => \(-*[0-9]*\);/\1/p' "$FRONTEND_DIR/lib/src/rust/frb_generated.dart" | head -1)"
+  if [[ -z "$rust_hash" || -z "$dart_hash" || "$rust_hash" != "$dart_hash" ]]; then
+    printf '[start] 错误：FRB 桥代码不同步（Rust=%s Dart=%s），会导致 Runtime 启动失败。\n' "${rust_hash:-?}" "${dart_hash:-?}"
+    printf '[start] 请先运行 ./codegen.sh 重新生成桥代码，再重新启动。\n'
+    exit 1
+  fi
+}
+
+check_bridge_sync
+
 if [[ "$restart" == "1" ]]; then
   local_pids="$(pgrep -f "$APP_PATTERN" 2>/dev/null || true)"
   if [[ -n "$local_pids" ]]; then

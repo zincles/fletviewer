@@ -23,6 +23,9 @@ Flutter Web / NAS -> HTTP / SSE / resource -> fvcore executable
 
 `start.sh` 每次都会执行 `flutter build linux --release`，再运行 release bundle；该构建经由 `cargokit` 同步编译 FRB 的 Rust library，因此无需手动执行 `cargo build` 或 `flutter build`。应用在同一进程创建唯一 `fvcore Runtime`，不会额外启动 `fvcore web` 或 loopback sidecar。该入口当前仅支持 Linux desktop。
 
+- Rust API 变更后先运行 `./codegen.sh` 重新生成 FRB 桥代码；`start.sh` 启动前会校验两侧 content hash，不同步会拒绝启动。
+- 应用对 `SIGTERM` 不响应（已知行为）；重复启动前若提示"已有实例正在运行"，请关闭旧实例或使用 `./start.sh --restart`（仅清理本应用同名进程）。
+
 ## Rust Core 开发
 
 ```bash
