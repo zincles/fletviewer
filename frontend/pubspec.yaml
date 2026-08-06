@@ -1,5 +1,5 @@
 name: fletviewer_frontend
-description: Experimental Flutter GUI for the standalone fvcore Runtime.
+description: Experimental Flutter GUI with an embedded fvcore Runtime.
 publish_to: none
 version: 0.1.0+1
 

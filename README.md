@@ -6,15 +6,22 @@ FletViewer 是跨平台 Anime Provider 浏览、阅读和下载工具。当前 F
 
 项目正在迁移为：
 
-```text
-Flutter UI -> HTTP/SSE/resource -> fvcore Runtime
-```
+Flutter desktop / Android -> flutter_rust_bridge -> 进程内 fvcore Runtime
+Flutter Web / NAS -> HTTP / SSE / resource -> fvcore executable
 
-- `fvcore/`：纯 Rust 业务核心和独立 executable，负责 Provider、认证、网络、图片、缓存、下载、本地画廊、历史和存储。
-- `frontend/`：实验性的 Flutter 前端；已接入 EH 搜索、详情、页面索引和 reader 的第一条真实纵向链路，本地画廊、Web、Android 和部分设置能力仍有占位内容。
+- `fvcore/`：纯 Rust 业务核心和独立 executable，负责 Provider、认证、网络、图片、缓存、下载、本地画廊、历史和存储；desktop/Android 通过 `flutter_rust_bridge` 嵌入它，Web/NAS 使用其 HTTP 控制面。
+- `frontend/`：实验性的 Flutter 前端；desktop 默认在应用进程内启动唯一 `fvcore Runtime`，已接入 EH 搜索、详情、页面索引和 reader 的第一条真实纵向链路，本地画廊、Web、Android 和部分设置能力仍有占位内容。
 - `app/`、`core/`、根 `main.py`：待退役 Python/Flet 迁移源，仅用于 fixture、行为对照和临时基线，不再继续产品化。
 
 当前进度与下一步见 `TODO.md`，Rust Core 架构与迁移不变量见 `FVCORE.md`。
+
+## 启动桌面应用
+
+```bash
+./start.sh
+```
+
+`start.sh` 每次都会执行 `flutter build linux --release`，再运行 release bundle；该构建经由 `cargokit` 同步编译 FRB 的 Rust library，因此无需手动执行 `cargo build` 或 `flutter build`。应用在同一进程创建唯一 `fvcore Runtime`，不会额外启动 `fvcore web` 或 loopback sidecar。该入口当前仅支持 Linux desktop。
 
 ## Rust Core 开发
 

@@ -3,9 +3,11 @@ set -Eeuo pipefail
 
 readonly ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly FRONTEND_DIR="$ROOT_DIR/frontend"
+readonly BUNDLE_DIR="$FRONTEND_DIR/build/linux/x64/release/bundle"
+readonly FRONTEND_BIN="$BUNDLE_DIR/fletviewer_frontend"
 
 fail() {
-  printf '[frontend] 错误：%s\n' "$*" >&2
+  printf '[start] 错误：%s\n' "$*" >&2
   exit 1
 }
 
@@ -29,7 +31,9 @@ resolve_flutter() {
 [[ -d "$FRONTEND_DIR" ]] || fail "缺少 Flutter 工程：$FRONTEND_DIR"
 
 flutter_bin="$(resolve_flutter)"
-device="${FLUTTER_DEVICE:-linux}"
-printf '[frontend] 启动 Flutter（device: %s）\n' "$device"
+printf '[start] 构建 Flutter Linux release；fvcore 由 flutter_rust_bridge 一并编译并嵌入应用进程\n'
 cd -- "$FRONTEND_DIR"
-exec "$flutter_bin" run -d "$device" "$@"
+"$flutter_bin" build linux --release
+[[ -x "$FRONTEND_BIN" ]] || fail "缺少构建产物：$FRONTEND_BIN"
+printf '[start] 启动 release bundle\n'
+exec "$FRONTEND_BIN" "$@"

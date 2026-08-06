@@ -1,6 +1,14 @@
 # FletViewer Experimental GUI
 
-这是 FletViewer 的实验性 Flutter GUI，当前用于验证 `fvcore` 进程内 Runtime 和最小纵向客户端链路。
+这是 FletViewer 的实验性 Flutter GUI；desktop 通过 `flutter_rust_bridge` 在应用进程内启动 `fvcore Runtime`。
+
+从仓库根目录启动：
+
+```bash
+./start.sh
+```
+
+该脚本每次构建 Linux release bundle 后再运行；FRB Rust library 随 Flutter build 编译。不需要手动执行 `cargo build` 或 `flutter build`，也不需要、也不应并行启动独立 `fvcore` 进程。
 
 当前仍未完成：
 

@@ -8,7 +8,7 @@
 - `fvcore` 是纯 Rust、可独立运行、也可被其他 Rust 程序嵌入的完整核心，不包含、不嵌入、不调用 Python、Dart、JavaScript 或其他语言的业务实现。
 - `fvcore` 只有一个 Cargo crate；同一 package 同时产出 library 和 `fvcore` executable，不预设 Provider、server、CLI、C ABI 或前端子 crate。
 - library 实现配置、Runtime、Provider、共享会话、网络、图像、缓存、下载、任务和公开方法；executable 只负责装配并运行同一套 library，不复制业务。
-- Flutter 通过 executable 的 HTTP command/query、SSE event 和二进制 resource/stream 使用 Core；Dart 只包装公开 DTO 和平台机制，不复制业务状态机。
+- Flutter desktop/Android 通过 `flutter_rust_bridge` 在应用进程内创建并调用一个长期存活的 `CoreRuntime`；Flutter Web/NAS 通过 executable 的 HTTP command/query、SSE event 和二进制 resource/stream 使用同一 Core。Dart 只包装公开 DTO 和平台机制，不复制业务状态机。
 - Core 对使用者提供 command、snapshot、event、resource 四类语义；控制数据结构化，图像和 Archive 等二进制资源不通过 base64 JSON 传输。
 - `fvcore` 正在全面重写现有 Python `core/` 的全部业务能力；完成并切换后，Provider、网络、会话、图像、缓存、下载、ZIP/CBZ、本地画廊、历史和存储均由 Rust Core 独占。
 - Booru 只使用站点公开 API，不实现 Camoufox、浏览器自动化、Cloudflare bypass、TLS impersonation 或 challenge backend。
@@ -317,7 +317,7 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 ## 不属于 Core 的能力
 
 - Flutter widget、路由、主题、平台文件选择、分享、通知或其他前端代码；这些属于 `frontend/`。
-- Python binding、Serious Python bridge、C ABI、JNI/FFI 或平台 extension；Android sidecar 未经真机证伪前不预建 binding。
+- Python binding、Serious Python bridge、裸 C ABI、JNI 或平台 extension；现有 `flutter_rust_bridge` 仅作为 desktop/Android 的窄前端边界，不复制业务实现，也不创建第二个 Runtime。
 - 多 crate workspace、Provider plugin crate 或空 adapter crate。
 - Camoufox、Playwright、浏览器 profile、Cloudflare bypass、Turnstile 和 challenge backend。
 - WASM 构建。
@@ -380,14 +380,14 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 
 ### 正式 transport 与所有权决策
 
-- Flutter 首套正式 transport 固定复用 executable 已有 HTTP command/query、SSE event 和二进制 resource/stream，不以 `inspect` stdout、Python module、Python bridge、C ABI 或 Provider-specific adapter 形成第二套协议。
-- server/Web/NAS 使用长期运行的单一 `fvcore` executable；桌面 Flutter launcher 只接受带显式端口的明文 loopback origin，先通过 ready 和 Runtime snapshot 校验 protocol version、Core version、`runtime_id`、`instance_name` 及四域规范路径，再发现或启动 sidecar。
-- 桌面 Flutter 退出时只向自己启动的进程发送中断并等待 graceful shutdown；发现的外部 Runtime 由其原 owner 管理，前端不得代为关闭。packaged executable 的相对布局、同级配置、端口发现和脱敏启动诊断属于正式契约。
+- Flutter desktop 与 Android 通过 `flutter_rust_bridge` 在应用进程内创建一个长期存活的 `CoreRuntime`，直接传入四域平台路径；不启动 sidecar、不监听 loopback，也不读取 executable 同级 `config.json`。应用退出时关闭它所创建的 Runtime。
+- Web/NAS、CLI 和调试 WebUI 使用长期运行的单一 `fvcore` executable；它从同级配置取得自己的四域并暴露 HTTP command/query、SSE event 和二进制 resource/stream。嵌入模式和独立模式不得并发拥有同一组四域。
+- FRB facade 与 HTTP handler 只适配同一套 Runtime/Handle 方法、DTO 和 resource 语义；Dart 不得复制 Provider、缓存、下载或任务状态机。
 - 一组 Data、Cache、Downloads、Temp 在任一时刻只能由一个 Rust Runtime 或旧 Python Core 持有。正式切换按完整 Runtime ownership 进行，不按 EH/Booru/Pixiv 页面拆分，不允许 Python 管 Provider 而 Rust 同时写图片或下载任务。
-- 当前 Python/Flet 产品仍使用 Python Core，但不再接入 Rust 形成过渡产品。`app/fvcore_sidecar.py` 只作为 executable 进程边界探针；协议和生命周期冻结后由 Dart launcher 原生实现同一契约。
-- Android 不从桌面行为推断可行性：用目标 Flutter 隔离 APK 验证 Rust sidecar 打包、loopback listener、后台存活、应用重启恢复和 private storage。只有 sidecar 被实测证明不可可靠使用时，才评估包装同一公开契约的窄 JNI/FFI binding，并先更新安全不变量。
-- SSE 是 invalidation/revision 信号而非任务权威状态。Flutter 收到 Archive 或 image task event 后按 task ID 查询统一 `DownloadTaskView`，重复/乱序按 revision 忽略，lagged、断线或 Runtime ID 变化后重新拉取列表。
-- 当前 Python sidecar smoke 已验证 ready、统一下载空列表、同 Runtime 复用、非 owner 不终止进程、owner SIGINT graceful shutdown 及同一存储重启。冻结 Flutter transport 前仍需补非空持久任务恢复、协议/版本握手、资源响应、错误 DTO 和 packaged executable 验收。
+- `app/fvcore_sidecar.py` 及早期 executable launcher 仅保留为历史进程边界探针，不进入 Flutter 产品启动路径。
+- Android 不从 desktop 行为推断可行性：必须验证 arm64 FRB library 打包、private storage、后台/返回键、进程回收和持久任务恢复。
+- event 是 invalidation/revision 信号而非任务权威状态。Flutter 收到 Archive 或 image task event 后按 task ID 查询统一 `DownloadTaskView`，重复/乱序按 revision 忽略，lagged、断线或 Runtime ID 变化后重新拉取列表。
+- 当前 Python sidecar smoke 是历史 executable 边界探针；Flutter desktop 的验收以进程内 Runtime、FRB DTO/resource/event 和 packaged application smoke 为准。
 
 ### 阶段 8：平台验证与所有权切换准备
 
@@ -437,17 +437,17 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 | 已完成 | 图像与持久产物 | 内容 MD5/alias、有界 memory/disk/network、共享 fetch、异步缓存监管；EH Archive、Booru original 和 Pixiv 指定页持久下载 |
 | 已完成 | 统一下载契约 | Archive 与图片任务映射为安全 `DownloadTaskView`，统一 list/get/cancel/retry/delete、capability 和稳定 action-not-allowed 错误 |
 | 已完成 | 本地画廊 | Archive 消费、登记与健康盘点、安全 ZIP 阅读、统一 resource、确定性 sidecar、确认删除和有界流式导出 |
-| 已完成 | Flutter transport v1 | Runtime 协议/Core 版本握手、机器可读 `/api/v1/contract`、稳定错误、统一下载 DTO、SSE invalidation/resync 和二进制 resource header 已有自动测试；隔离非空图片/Archive fixture 已跨真实 executable 重启验证 |
-| 已完成 | Flutter desktop 客户端起点 | `frontend/` 覆盖 Linux/Windows；纯 Dart client 已实现 Runtime、统一下载 query/command、SSE invalidation/reconnect、resource bytes；Material 3 页面已显示连接、任务、命令和图片，Linux desktop 已真实启动 smoke |
-| 下一步 | Flutter desktop launcher 与端到端任务 smoke | 用 Dart 实现 executable 发现/启动、instance/四域/protocol 校验和 owner shutdown；让真实 executable 驱动 UI 的非空任务操作与事件刷新 |
-| 下一步 | Flutter Web 与 Android | Web 复用同一 Dart client 连接 server Core；Android Flutter APK 真机验证 arm64 sidecar、private storage、loopback、生命周期和恢复 |
+| 已完成 | Flutter transport v1 | HTTP contract 已覆盖 Runtime 协议/Core 版本握手、稳定错误、统一下载 DTO、SSE invalidation/resync 和二进制 resource header；FRB 为 desktop 提供同一 Core 语义的 Runtime、下载、event 和 resource 接口。 |
+| 已完成 | Flutter desktop 客户端起点 | `frontend/` 覆盖 Linux/Windows；默认 desktop 路径通过 FRB 在进程内启动 Runtime，Material 3 页面已显示连接、任务、命令和图片，Linux desktop 已真实启动 smoke。 |
+| 下一步 | Flutter desktop 端到端任务 smoke | 用真实进程内 Runtime 驱动非空任务操作、事件刷新与应用重启后的持久状态验证。 |
+| 下一步 | Flutter Web 与 Android | Web 复用 Dart domain model 连接 server Core；Android Flutter APK 真机验证 arm64 FRB、private storage、生命周期和恢复。 |
 | 进行中 | 只读 CLI 诊断 | `inspect` 已覆盖 Runtime/Profile/Pixiv、17 个现有 Booru 的搜索与详情、EH 主页和文本搜索；它只用于诊断，不是 Flutter transport |
 | 后续 | Python/Flet 完整退役 | 对照 fixture 补齐 Rust 余量，Flutter 覆盖产品能力并迁移数据后删除 `app/`、`core/`、Python/Flet 入口、依赖、测试和文档 |
 
 当前不可跨越的切换门槛：
 
-1. Flutter 只使用 HTTP command/query、SSE invalidation 和二进制 resource/stream；不得依赖 Python 或复制业务。
+1. Flutter desktop/Android 只通过 FRB 调用进程内 Runtime；Flutter Web/NAS 只通过 HTTP command/query、SSE invalidation 和二进制 resource/stream；两者都不得依赖 Python 或复制业务。
 2. transport v1 已冻结；新增 OPTIONAL 响应字段可保持 v1，删除、重命名、改变类型/语义或破坏路由必须提升 protocol version。
 3. 切换按完整 Runtime 进行；一组四域只能有一个 owner，禁止局部双写或 Python fallback。
-4. 桌面验收不能替代 Android Flutter APK 真机结论；只有 sidecar 实测不可靠时才讨论窄 JNI/FFI。
+4. desktop 验收不能替代 Android Flutter APK 的 FRB 真机结论；不得以 sidecar 或 loopback 作为 Android 的未经验证 fallback。
 5. 调试 WebUI 无内置认证且配置页明文处理 Provider secret，只适用于可信 LAN，不代表 Flutter 产品控制面可安全公网暴露。
