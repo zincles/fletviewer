@@ -6,7 +6,7 @@ use crate::{
     FakeOutcome, ImageDownloadTaskSnapshot, ImageResourceDescriptor, OperationConfig, OperationId,
     OperationKind, OperationSnapshot, OperationState, PixivPageFetchRequest, ResourceKey,
     RuntimeId,
-    image::{ContentMd5, ImageFetchSpec, ImageProgress, ImageService},
+    image::{ContentMd5, ImageFetchAuthority, ImageFetchSpec, ImageProgress, ImageService},
     provider::booru::BooruService,
     provider::eh::EhService,
     provider::pixiv::PixivService,
@@ -703,6 +703,7 @@ async fn run_booru_original(
             ImageFetchSpec {
                 profile: request.profile,
                 url,
+                authority: ImageFetchAuthority::Profile,
                 expected_md5,
                 resource_key,
                 expected_bytes: post.original.byte_length,
@@ -767,6 +768,7 @@ async fn run_pixiv_page(
             ImageFetchSpec {
                 profile: request.profile,
                 url: page.original_url.clone(),
+                authority: ImageFetchAuthority::Profile,
                 expected_md5: None,
                 resource_key: Some(resource_key),
                 expected_bytes: None,
@@ -830,6 +832,7 @@ async fn run_eh_page(
             ImageFetchSpec {
                 profile: request.profile,
                 url: resolved.url,
+                authority: ImageFetchAuthority::EhViewerResponse,
                 expected_md5: None,
                 resource_key: Some(resource_key),
                 expected_bytes: None,

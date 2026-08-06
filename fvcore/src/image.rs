@@ -225,10 +225,17 @@ impl ImageResource {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ImageFetchAuthority {
+    Profile,
+    EhViewerResponse,
+}
+
 #[derive(Clone)]
 pub(crate) struct ImageFetchSpec {
     pub(crate) profile: ProfileKey,
     pub(crate) url: Url,
+    pub(crate) authority: ImageFetchAuthority,
     pub(crate) expected_md5: Option<ContentMd5>,
     pub(crate) resource_key: Option<ResourceKey>,
     pub(crate) expected_bytes: Option<u64>,
@@ -604,31 +611,67 @@ impl ImageService {
         state: &watch::Sender<TransferState>,
     ) -> Result<ImageResource, CoreError> {
         let shared = || transfer.subscribers.load(Ordering::Relaxed) > 1;
-        let response = self
-            .sessions
-            .get_absolute(
-                &spec.profile,
-                &spec.url,
-                spec.referer.as_ref(),
-                crate::session::BodyLimit::budgeted(
-                    self.config.max_image_bytes,
-                    self.inflight_bytes.clone(),
-                ),
-                transfer.cancellation.clone(),
-                |done, total| {
-                    state.send_replace(TransferState {
-                        progress: ImageProgress {
-                            phase: "fetching",
-                            bytes_done: done as u64,
-                            bytes_total: total.or(spec.expected_bytes),
-                            source: Some(ResourceSource::Network),
-                            shared: shared(),
+        let response = match spec.authority {
+            ImageFetchAuthority::Profile => {
+                self.sessions
+                    .get_absolute(
+                        &spec.profile,
+                        &spec.url,
+                        spec.referer.as_ref(),
+                        crate::session::BodyLimit::budgeted(
+                            self.config.max_image_bytes,
+                            self.inflight_bytes.clone(),
+                        ),
+                        transfer.cancellation.clone(),
+                        |done, total| {
+                            state.send_replace(TransferState {
+                                progress: ImageProgress {
+                                    phase: "fetching",
+                                    bytes_done: done as u64,
+                                    bytes_total: total.or(spec.expected_bytes),
+                                    source: Some(ResourceSource::Network),
+                                    shared: shared(),
+                                },
+                                result: None,
+                            });
                         },
-                        result: None,
-                    });
-                },
-            )
-            .await?;
+                    )
+                    .await?
+            }
+            ImageFetchAuthority::EhViewerResponse => {
+                let referer = spec.referer.as_ref().ok_or_else(|| {
+                    CoreError::new(
+                        ErrorCode::InvalidInput,
+                        "EH viewer image fetch requires its API referer",
+                        false,
+                    )
+                })?;
+                self.sessions
+                    .get_eh_viewer_image(
+                        &spec.profile,
+                        &spec.url,
+                        referer,
+                        crate::session::BodyLimit::budgeted(
+                            self.config.max_image_bytes,
+                            self.inflight_bytes.clone(),
+                        ),
+                        transfer.cancellation.clone(),
+                        |done, total| {
+                            state.send_replace(TransferState {
+                                progress: ImageProgress {
+                                    phase: "fetching",
+                                    bytes_done: done as u64,
+                                    bytes_total: total.or(spec.expected_bytes),
+                                    source: Some(ResourceSource::Network),
+                                    shared: shared(),
+                                },
+                                result: None,
+                            });
+                        },
+                    )
+                    .await?
+            }
+        };
         let crate::session::NetworkResponse {
             body, byte_budget, ..
         } = response;

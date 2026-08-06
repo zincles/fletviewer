@@ -2,7 +2,7 @@
 
 use crate::{
     ContentMd5, CoreError, ErrorCode, ProfileKey, ResourceKey,
-    image::{ImageFetchSpec, ImageService},
+    image::{ImageFetchAuthority, ImageFetchSpec, ImageService},
     operation_service::OperationMessage,
     provider::booru::BooruService,
     provider::pixiv::PixivService,
@@ -726,6 +726,7 @@ impl ImageDownloadService {
                 ImageFetchSpec {
                     profile: task.profile.clone(),
                     url,
+                    authority: ImageFetchAuthority::Profile,
                     expected_md5,
                     resource_key,
                     expected_bytes,

@@ -314,6 +314,24 @@ impl SessionRegistry {
             .await
     }
 
+    pub(crate) async fn get_eh_viewer_image<F>(
+        &self,
+        key: &ProfileKey,
+        url: &Url,
+        referer: &Url,
+        limit: BodyLimit,
+        cancellation: CancellationToken,
+        progress: F,
+    ) -> Result<NetworkResponse, CoreError>
+    where
+        F: FnMut(usize, Option<u64>) + Send,
+    {
+        let session = self.session(key)?;
+        session
+            .get_eh_viewer_image(url, referer, limit, cancellation, progress)
+            .await
+    }
+
     pub(crate) async fn probe(
         &self,
         key: &ProfileKey,
@@ -665,6 +683,37 @@ impl SessionGeneration {
         .await
     }
 
+    async fn get_eh_viewer_image<F>(
+        &self,
+        url: &Url,
+        referer: &Url,
+        limit: BodyLimit,
+        cancellation: CancellationToken,
+        progress: F,
+    ) -> Result<NetworkResponse, CoreError>
+    where
+        F: FnMut(usize, Option<u64>) + Send,
+    {
+        self.validate_eh_viewer_image(url, referer)?;
+        let mut request = self
+            .client
+            .get(url.clone())
+            .header(header::REFERER, referer.as_str());
+        if url.host_str() == self.config.base_url.host_str() {
+            if let Some(cookie) = &self.cookie {
+                request = request.header(header::COOKIE, cookie.expose_secret());
+            }
+        }
+        self.execute(
+            request,
+            limit.max_bytes,
+            cancellation,
+            limit.byte_budget,
+            progress,
+        )
+        .await
+    }
+
     async fn post_eh_api(
         &self,
         payload: &serde_json::Value,
@@ -865,6 +914,29 @@ impl SessionGeneration {
             etag,
             last_modified,
         })
+    }
+
+    fn validate_eh_viewer_image(&self, url: &Url, referer: &Url) -> Result<(), CoreError> {
+        if self.key.provider != "eh" {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH viewer image requests require an EH profile",
+                false,
+            ));
+        }
+        self.validate_absolute(referer, None)?;
+        if url.scheme() != self.config.base_url.scheme()
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(CoreError::new(
+                ErrorCode::AccessDenied,
+                "EH viewer image URL violates secure origin requirements",
+                false,
+            ));
+        }
+        Ok(())
     }
 
     fn validate_absolute(&self, url: &Url, referer: Option<&Url>) -> Result<(), CoreError> {
@@ -1144,7 +1216,7 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> CoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{EH_PUBLIC_API_HOST, ProfileKey, SessionRegistry, eh_api_url};
+    use super::{BodyLimit, EH_PUBLIC_API_HOST, ProfileKey, SessionRegistry, eh_api_url};
     use crate::{ErrorCode, NetworkConfig, ProviderProfileConfig};
     use axum::{Router, http::StatusCode, response::Redirect, routing::get};
     use std::{
@@ -1283,6 +1355,79 @@ mod tests {
                 &ProfileKey::new("test", "default"),
                 "redirect",
                 CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::RedirectDenied);
+    }
+
+    #[tokio::test]
+    async fn restricts_dynamic_eh_viewer_images_to_api_responses() {
+        let image_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
+        let image_listen = image_listener.local_addr().unwrap();
+        let image_router = Router::new()
+            .route(
+                "/image",
+                get(|headers: axum::http::HeaderMap| async move {
+                    assert!(headers.get(axum::http::header::COOKIE).is_none());
+                    "image"
+                }),
+            )
+            .route(
+                "/redirect",
+                get(|| async { Redirect::temporary("http://127.0.0.3:9/denied") }),
+            );
+        tokio::spawn(async move { axum::serve(image_listener, image_router).await.unwrap() });
+
+        let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(provider_listener, Router::new()).await.unwrap() });
+        let base_url = Url::parse(&format!("http://{provider_listen}/")).unwrap();
+        let profile = ProviderProfileConfig {
+            provider: "eh".to_owned(),
+            base_url: base_url.clone(),
+            cookie: Some("eh_session=fixture-secret".to_owned()),
+            ..ProviderProfileConfig::default()
+        };
+        let profiles = BTreeMap::from([("eh/default".to_owned(), profile)]);
+        let registry = SessionRegistry::new(&profiles, &NetworkConfig::default()).unwrap();
+        let key = ProfileKey::new("eh", "default");
+        let image_url = Url::parse(&format!("http://{image_listen}/image")).unwrap();
+        let response = registry
+            .get_eh_viewer_image(
+                &key,
+                &image_url,
+                &base_url,
+                BodyLimit::bounded(128),
+                CancellationToken::new(),
+                |_, _| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.body.as_ref(), b"image");
+
+        let error = registry
+            .get_absolute(
+                &key,
+                &image_url,
+                Some(&base_url),
+                BodyLimit::bounded(128),
+                CancellationToken::new(),
+                |_, _| {},
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::AccessDenied);
+
+        let redirect_url = Url::parse(&format!("http://{image_listen}/redirect")).unwrap();
+        let error = registry
+            .get_eh_viewer_image(
+                &key,
+                &redirect_url,
+                &base_url,
+                BodyLimit::bounded(128),
+                CancellationToken::new(),
+                |_, _| {},
             )
             .await
             .unwrap_err();

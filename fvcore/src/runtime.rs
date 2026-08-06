@@ -2986,6 +2986,34 @@ mod tests {
         let image = Arc::new(test_jpeg());
         let requests = Arc::new(AtomicUsize::new(0));
         let gallery_requests = Arc::new(AtomicUsize::new(0));
+        let image_listener = tokio::net::TcpListener::bind("127.0.0.2:0").await.unwrap();
+        let image_listen = image_listener.local_addr().unwrap();
+        let image_router = axum::Router::new().route(
+            "/original.jpg",
+            axum::routing::get({
+                let image = image.clone();
+                let requests = requests.clone();
+                move |headers: axum::http::HeaderMap| {
+                    let image = image.clone();
+                    let requests = requests.clone();
+                    async move {
+                        assert!(
+                            headers
+                                .get(axum::http::header::REFERER)
+                                .and_then(|value| value.to_str().ok())
+                                .is_some_and(|value| value.starts_with("http://127.0.0.1:"))
+                        );
+                        assert!(headers.get(axum::http::header::COOKIE).is_none());
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
+                            image.as_ref().clone(),
+                        )
+                    }
+                }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(image_listener, image_router).await.unwrap() });
         let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_listen = provider_listener.local_addr().unwrap();
         let fixture = format!("{DETAIL}{THUMBNAILS}")
@@ -3034,7 +3062,7 @@ mod tests {
                         assert_eq!(payload["imgkey"], "aaa111");
                         assert_eq!(payload["showkey"], "fixture-showkey");
                         let body = serde_json::json!({
-                            "i3": format!("<img src=\"http://{provider_listen}/original.jpg\" style=\"max-width:100%\">"),
+                            "i3": format!("<img src=\"http://{image_listen}/original.jpg\" style=\"max-width:100%\">"),
                             "i6": "<a onclick=\"return nl('next-nonce')\">reload</a>"
                         })
                         .to_string();
@@ -3044,30 +3072,6 @@ mod tests {
                         )
                     },
                 ),
-            )
-            .route(
-                "/original.jpg",
-                axum::routing::get({
-                    let image = image.clone();
-                    let requests = requests.clone();
-                    move |headers: axum::http::HeaderMap| {
-                        let image = image.clone();
-                        let requests = requests.clone();
-                        async move {
-                            assert!(
-                                headers
-                                    .get(axum::http::header::REFERER)
-                                    .and_then(|value| value.to_str().ok())
-                                    .is_some_and(|value| value.starts_with("http://127.0.0.1:"))
-                            );
-                            requests.fetch_add(1, Ordering::SeqCst);
-                            (
-                                [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
-                                image.as_ref().clone(),
-                            )
-                        }
-                    }
-                }),
             );
         tokio::spawn(async move {
             axum::serve(provider_listener, provider_router)
@@ -3084,6 +3088,7 @@ mod tests {
             ProviderProfileConfig {
                 provider: "eh".to_owned(),
                 base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                cookie: Some("eh_session=fixture-secret".to_owned()),
                 ..ProviderProfileConfig::default()
             },
         );
