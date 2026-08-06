@@ -14,7 +14,16 @@ final class RuntimeLaunchException implements Exception {
   final Object? cause;
 
   @override
-  String toString() => message;
+  String toString() {
+    final detail = switch (cause) {
+      null => null,
+      RuntimeLaunchException inner => inner.toString(),
+      CoreApiException api => '${api.code}: ${api.message}',
+      CoreTransportException transport => transport.toString(),
+      final other => '$other',
+    };
+    return detail == null || detail.isEmpty ? message : '$message\n$detail';
+  }
 }
 
 final class RuntimeStoragePaths {
@@ -135,6 +144,9 @@ final class NativeRuntimeLauncher {
     } on CoreApiException catch (error) {
       if (started != null) await _closeQuietly(started);
       throw RuntimeLaunchException(_startupMessage(error), error);
+    } on CoreTransportException catch (error) {
+      if (started != null) await _closeQuietly(started);
+      throw RuntimeLaunchException('无法调用本地 fvcore bridge', error);
     } on Object catch (error) {
       if (started != null) await _closeQuietly(started);
       throw RuntimeLaunchException('无法启动本地 fvcore Runtime', error);

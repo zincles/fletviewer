@@ -5,6 +5,7 @@ readonly ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly FRONTEND_DIR="$ROOT_DIR/frontend"
 readonly BUNDLE_DIR="$FRONTEND_DIR/build/linux/x64/release/bundle"
 readonly FRONTEND_BIN="$BUNDLE_DIR/fletviewer_frontend"
+readonly APP_PATTERN="fletviewer_frontend"
 
 fail() {
   printf '[start] 错误：%s\n' "$*" >&2
@@ -27,6 +28,33 @@ resolve_flutter() {
   [[ -x "$bundled" ]] || fail "找不到 Flutter；请设置 FLUTTER_BIN 或把 flutter 加入 PATH"
   printf '%s\n' "$bundled"
 }
+
+restart="${FVCORE_RESTART:-0}"
+if [[ "${1:-}" == "--restart" ]]; then
+  restart=1
+  shift
+fi
+
+if [[ "$restart" == "1" ]]; then
+  local_pids="$(pgrep -f "$APP_PATTERN" 2>/dev/null || true)"
+  if [[ -n "$local_pids" ]]; then
+    printf '[start] --restart：停止既有实例（PID %s）\n' "$(printf '%s' "$local_pids" | tr '\n' ' ')"
+    # 只清理本应用同名进程，不触碰其他 fvcore 进程（如独立 server）。
+    kill $local_pids 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      pgrep -f "$APP_PATTERN" >/dev/null 2>&1 || break
+      sleep 0.25
+    done
+    kill -9 $local_pids 2>/dev/null || true
+  fi
+else
+  existing="$(pgrep -f "$APP_PATTERN" 2>/dev/null || true)"
+  if [[ -n "$existing" ]]; then
+    printf '[start] 检测到已有实例正在运行（PID %s）。\n' "$(printf '%s' "$existing" | tr '\n' ' ')"
+    printf '[start] 请先关闭它再启动，或使用 ./start.sh --restart 自动重启（仅清理本应用同名进程）。\n'
+    exit 1
+  fi
+fi
 
 [[ -d "$FRONTEND_DIR" ]] || fail "缺少 Flutter 工程：$FRONTEND_DIR"
 
