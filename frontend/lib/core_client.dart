@@ -890,6 +890,54 @@ final class EhArchiveOptions {
 
 enum EhArchiveVariant { original, resample }
 
+final class EhToplistItem {
+  const EhToplistItem({
+    required this.rank,
+    required this.gallery,
+    required this.title,
+    required this.thumbnailUrl,
+  });
+
+  factory EhToplistItem.fromJson(Map<String, Object?> json) {
+    return EhToplistItem(
+      rank: _optionalInteger(json, 'rank'),
+      gallery: EhGalleryRef.fromJson(_object(json['gallery'], 'gallery')),
+      title: _string(json, 'title'),
+      thumbnailUrl: _optionalString(json, 'thumbnail_url'),
+    );
+  }
+
+  final int? rank;
+  final EhGalleryRef gallery;
+  final String title;
+  final String? thumbnailUrl;
+}
+
+final class EhToplistPage {
+  const EhToplistPage({
+    required this.profile,
+    required this.generation,
+    required this.items,
+  });
+
+  factory EhToplistPage.fromJson(Map<String, Object?> json) {
+    return EhToplistPage(
+      profile: _string(json, 'profile'),
+      generation: _integer(json, 'generation'),
+      items: List<EhToplistItem>.unmodifiable(
+        _list(
+          json,
+          'items',
+        ).map((item) => EhToplistItem.fromJson(_object(item, 'toplist item'))),
+      ),
+    );
+  }
+
+  final String profile;
+  final int generation;
+  final List<EhToplistItem> items;
+}
+
 final class EhFavoriteItem {
   const EhFavoriteItem({
     required this.gallery,
@@ -1368,6 +1416,8 @@ abstract interface class CoreClient {
 
   Future<EhHomePage> ehWatched({String profile = 'default'});
 
+  Future<EhToplistPage> ehToplist({String profile = 'default'});
+
   Future<List<HistoryEntry>> history();
 
   Future<void> clearHistory();
@@ -1668,6 +1718,15 @@ final class HttpCoreClient implements CoreClient {
       '/api/v1/providers/eh/${Uri.encodeComponent(profile)}/watched',
     );
     return EhHomePage.fromJson(_object(value, 'EH watched page'));
+  }
+
+  @override
+  Future<EhToplistPage> ehToplist({String profile = 'default'}) async {
+    final value = await _jsonRequest(
+      'GET',
+      '/api/v1/providers/eh/${Uri.encodeComponent(profile)}/toplist',
+    );
+    return EhToplistPage.fromJson(_object(value, 'EH toplist'));
   }
 
   @override
@@ -2122,6 +2181,12 @@ final class NativeCoreClient implements CoreClient {
   Future<EhHomePage> ehWatched({String profile = 'default'}) async {
     final value = await _jsonCall(() => _core.ehWatchedJson(profile: profile));
     return EhHomePage.fromJson(_object(value, 'EH watched page'));
+  }
+
+  @override
+  Future<EhToplistPage> ehToplist({String profile = 'default'}) async {
+    final value = await _jsonCall(() => _core.ehToplistJson(profile: profile));
+    return EhToplistPage.fromJson(_object(value, 'EH toplist'));
   }
 
   @override

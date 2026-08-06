@@ -161,6 +161,30 @@ pub struct EhGalleryDetail {
     pub newer_versions: Vec<EhGalleryVersion>,
 }
 
+/// One ranked gallery from the EH toplist page.
+#[derive(Clone, Debug, Serialize)]
+pub struct EhToplistItem {
+    /// Rank shown by EH when it can be extracted.
+    pub rank: Option<u32>,
+    /// Stable gallery identity.
+    pub gallery: EhGalleryRef,
+    /// Display title.
+    pub title: String,
+    /// Cover thumbnail URL when EH supplied one.
+    pub thumbnail_url: Option<String>,
+}
+
+/// One EH gallery toplist page.
+#[derive(Clone, Debug, Serialize)]
+pub struct EhToplistPage {
+    /// Profile that executed the request.
+    pub profile: String,
+    /// Session generation used for the complete response body.
+    pub generation: u64,
+    /// Ranked galleries in page order.
+    pub items: Vec<EhToplistItem>,
+}
+
 /// One gallery from the authenticated EH favorites listing.
 #[derive(Clone, Debug, Serialize)]
 pub struct EhFavoriteItem {
@@ -425,6 +449,26 @@ impl EhService {
             galleries,
             previous,
             next,
+        })
+    }
+
+    pub(crate) async fn toplist(
+        &self,
+        key: &ProfileKey,
+        cancellation: CancellationToken,
+    ) -> Result<EhToplistPage, CoreError> {
+        ensure_eh(key)?;
+        let response = self.sessions.get(key, "toplist.php", cancellation).await?;
+        ensure_html(&response.content_type, "EH toplist page")?;
+        let generation = response.generation;
+        let final_url = response.final_url;
+        let html = std::str::from_utf8(&response.body)
+            .map_err(|_| unexpected("EH toplist page returned invalid UTF-8"))?;
+        let items = parse_toplist(html, &final_url)?;
+        Ok(EhToplistPage {
+            profile: key.profile.clone(),
+            generation,
+            items,
         })
     }
 
@@ -1239,6 +1283,78 @@ fn first_http_url(value: &str) -> Option<String> {
         .map(|value| value.as_str().to_owned())
 }
 
+fn parse_toplist(html: &str, base_url: &Url) -> Result<Vec<EhToplistItem>, CoreError> {
+    let dom = tl::parse(html, tl::ParserOptions::default())
+        .map_err(|_| unexpected("EH toplist page contains malformed HTML"))?;
+    let parser = dom.parser();
+    let links: Vec<&tl::HTMLTag<'_>> = dom
+        .query_selector("a")
+        .into_iter()
+        .flatten()
+        .filter_map(|node| node.get(parser).and_then(tl::Node::as_tag))
+        .collect();
+    let mut thumbnails = std::collections::HashMap::new();
+    for link in &links {
+        let Some(gallery) = attribute(link, "href", parser)
+            .and_then(|href| resolve_same_origin(base_url, &href))
+            .and_then(|url| parse_gallery_path(&url))
+        else {
+            continue;
+        };
+        let Some(thumbnail) = descendants(link, parser, "img")
+            .and_then(|mut nodes| nodes.next())
+            .and_then(|image| attribute(image, "src", parser))
+            .filter(|value| !value.starts_with("data:"))
+        else {
+            continue;
+        };
+        thumbnails
+            .entry((gallery.gid, gallery.token))
+            .or_insert(thumbnail);
+    }
+    let mut items: Vec<EhToplistItem> = Vec::new();
+    for row in dom
+        .query_selector("tr")
+        .into_iter()
+        .flatten()
+        .filter_map(|node| node.get(parser).and_then(tl::Node::as_tag))
+    {
+        let Some(title_link) = descendants(row, parser, "a").and_then(|mut nodes| {
+            nodes.find(|link| !clean_text(&link.inner_text(parser)).is_empty())
+        }) else {
+            continue;
+        };
+        let Some(href) = attribute(title_link, "href", parser) else {
+            continue;
+        };
+        let Some(url) = resolve_same_origin(base_url, &href) else {
+            continue;
+        };
+        let Some(gallery) = parse_gallery_path(&url) else {
+            continue;
+        };
+        if items.iter().any(|item| item.gallery == gallery) {
+            continue;
+        }
+        let title = clean_text(&title_link.inner_text(parser));
+        let text = clean_text(&row.inner_text(parser));
+        let rank = text
+            .split_whitespace()
+            .next()
+            .and_then(|token| token.trim_start_matches(['#', '.']).parse::<u32>().ok());
+        let thumbnail_url = thumbnails
+            .get(&(gallery.gid, gallery.token.clone()))
+            .cloned();
+        items.push(EhToplistItem {
+            rank,
+            gallery,
+            title,
+            thumbnail_url,
+        });
+    }
+    Ok(items)
+}
+
 fn parse_favorites(html: &str, base_url: &Url) -> Result<Vec<EhFavoriteItem>, CoreError> {
     let dom = tl::parse(html, tl::ParserOptions::default())
         .map_err(|_| unexpected("EH favorites page contains malformed HTML"))?;
@@ -1757,6 +1873,7 @@ mod tests {
     const API_SHOWPAGE: &str = include_str!("../../tests/fixtures/eh/api_showpage.json");
     const API_IMAGEDISPATCH: &str = include_str!("../../tests/fixtures/eh/api_imagedispatch.json");
     const FAVORITES: &str = include_str!("../../tests/fixtures/eh/favorites.html");
+    const TOPLIST: &str = include_str!("../../tests/fixtures/eh/toplist.html");
 
     #[test]
     fn parses_gallery_urls_strictly() {
@@ -1765,6 +1882,22 @@ mod tests {
         assert_eq!(gallery.token, "abcdef1234");
         assert!(EhGalleryRef::parse("https://example.com/g/123456/abcdef1234/").is_err());
         assert!(EhGalleryRef::parse("https://e-hentai.org/g/0/not-token/").is_err());
+    }
+
+    #[test]
+    fn parses_toplist_fixture() {
+        let base = Url::parse("https://e-hentai.org/").unwrap();
+        let items = super::parse_toplist(TOPLIST, &base).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].rank, Some(1));
+        assert_eq!(items[0].gallery.gid, 111111);
+        assert_eq!(items[0].title, "Top Gallery One");
+        assert_eq!(
+            items[0].thumbnail_url.as_deref(),
+            Some("https://ehgt.org/top-one.webp")
+        );
+        assert_eq!(items[1].rank, Some(2));
+        assert_eq!(items[1].title, "Top Gallery Two");
     }
 
     #[test]

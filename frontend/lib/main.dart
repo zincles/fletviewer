@@ -844,17 +844,17 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
     if (widget.provider == ProviderFamily.ehentai && widget.tab == '收藏') {
       return EhFavoritesView(client: widget.client, profile: widget.profile);
     }
+    if (widget.provider == ProviderFamily.ehentai && widget.tab == '排行榜') {
+      return EhToplistView(client: widget.client, profile: widget.profile);
+    }
     if (_isEhHome && _authRequired) {
       return const AuthRequiredView(providerLabel: 'E-Hentai');
     }
     if (!_isEhHome) {
-      final ehentaiUnwired = const ['排行榜'].contains(widget.tab);
       return _EmptySection(
         icon: Icons.construction_outlined,
         title: '${widget.provider.label} · ${widget.tab}',
-        message: ehentaiUnwired
-            ? 'E-Hentai 没有排行榜页面；热门即为其周期热度列表。'
-            : '此页尚未接入 Rust 查询接口；当前只启用 E-Hentai 主页/热门与 Pixiv 浏览作为浏览链路。',
+        message: '此页尚未接入 Rust 查询接口；当前只启用 E-Hentai 主页/热门与 Pixiv 浏览作为浏览链路。',
         actionLabel: '等待接入',
       );
     }

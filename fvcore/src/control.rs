@@ -357,6 +357,10 @@ pub(crate) async fn start(
             get(get_eh_popular),
         )
         .route(
+            "/api/v1/providers/eh/{profile}/toplist",
+            get(get_eh_toplist),
+        )
+        .route(
             "/api/v1/providers/eh/{profile}/watched",
             get(get_eh_watched),
         )
@@ -1631,6 +1635,17 @@ async fn get_history(State(state): State<ControlState>) -> Response {
 async fn clear_history(State(state): State<ControlState>) -> Response {
     match state.core.clear_history() {
         Ok(()) => with_security_headers(StatusCode::NO_CONTENT.into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_eh_toplist(
+    State(state): State<ControlState>,
+    Path(profile): Path<String>,
+) -> Response {
+    let key = crate::ProfileKey::new("eh", profile);
+    match state.core.eh_toplist(&key).await {
+        Ok(page) => with_security_headers(Json(page).into_response()),
         Err(error) => error_response(&error),
     }
 }

@@ -101,6 +101,7 @@ Flutter Web / NAS / CLI -> HTTP + SSE + binary resource/stream -> fvcore executa
 - [x] 设置页支持 Pixiv Cookie 内存级配置（embedded Runtime 不落盘；executable 模式持久化到 `config.json`，HTTP 路由 `POST /api/v1/profiles/{provider}/{profile}/cookie`）。
 - [x] EH 收藏与订阅接通：`favorites.php` 后端解析（需 Cookie，未登录显示引导）+ 收藏列表/封面；订阅 = EH `/watched` 关注画廊（需 Cookie，未登录引导），复用主页列表 UI。
 - [x] EH Archive 下载接通：详情页展示官方选项（Original/Resample 下载、H@H 仅展示），创建持久下载任务并提示跳转下载页。
+- [x] EH 排行榜接通：官方 `toplist.php`（公开），宽松解析排名/封面/标题；榜单周期切换（`?tl=` 参数语义）待真机确认后补充。
 - [ ] 本地画廊 inventory/detail/page 从占位内容替换为真实 Rust 调用（本地端下一步）。
 - [ ] 持续完善 UI 操作逻辑：浏览/阅读/下载的交互细节、状态反馈与桌面体验（长列表性能、键盘操作、图片缩放、错误重试路径）。
 - [x] `flutter analyze`、`flutter test`、Rust gate、Python sidecar probe 和真实 Linux desktop smoke 全部通过。

@@ -106,6 +106,23 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('EH toplist tab shows ranked galleries', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FletViewerApp(client: client));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('reading-tab-3')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('E-Hentai · 排行榜'), findsOneWidget);
+    expect(find.text('Top Gallery One'), findsOneWidget);
+    expect(find.text('#1'), findsOneWidget);
+    expect(find.byKey(const Key('eh-toplist-111111')), findsOneWidget);
+  });
+
   testWidgets('EH watched tab shows signed-out guidance', (tester) async {
     tester.view.physicalSize = const Size(1280, 800);
     tester.view.devicePixelRatio = 1;
@@ -305,6 +322,28 @@ final class _FakeCoreClient implements CoreClient {
       code: 'authentication_required',
       message: 'EH watched galleries require a logged-in browser Cookie',
       retryable: false,
+    );
+  }
+
+  @override
+  Future<EhToplistPage> ehToplist({String profile = 'default'}) async {
+    return const EhToplistPage(
+      profile: 'default',
+      generation: 1,
+      items: [
+        EhToplistItem(
+          rank: 1,
+          gallery: EhGalleryRef(gid: 111111, token: 'aaaa1111'),
+          title: 'Top Gallery One',
+          thumbnailUrl: 'https://ehgt.org/top-one.webp',
+        ),
+        EhToplistItem(
+          rank: 2,
+          gallery: EhGalleryRef(gid: 222222, token: 'bbbb2222'),
+          title: 'Top Gallery Two',
+          thumbnailUrl: null,
+        ),
+      ],
     );
   }
 

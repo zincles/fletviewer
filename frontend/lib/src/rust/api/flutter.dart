@@ -87,6 +87,9 @@ abstract class NativeCore implements RustOpaqueInterface {
     required int page,
   });
 
+  /// Returns the EH gallery toplist for one profile as JSON.
+  Future<String> ehToplistJson({required String profile});
+
   /// Returns the authenticated EH watched-galleries listing for one profile as JSON.
   Future<String> ehWatchedJson({required String profile});
 

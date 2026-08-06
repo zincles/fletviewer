@@ -7,6 +7,194 @@ import 'core_client.dart';
 import 'eh_gallery_pages.dart';
 import 'pixiv_pages.dart' show AuthRequiredView;
 
+/// EH gallery toplist with rank badges.
+class EhToplistView extends StatefulWidget {
+  const EhToplistView({super.key, required this.client, required this.profile});
+
+  final CoreClient client;
+  final String profile;
+
+  @override
+  State<EhToplistView> createState() => _EhToplistViewState();
+}
+
+class _EhToplistViewState extends State<EhToplistView> {
+  List<EhToplistItem> _items = const [];
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final page = await widget.client.ehToplist(profile: widget.profile);
+      if (!mounted) return;
+      setState(() {
+        _items = page.items;
+        _loading = false;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = '$error';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'E-Hentai · 排行榜',
+                      style: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'EH 官方 toplist（当前周期榜单）。',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton.filledTonal(
+                tooltip: '刷新',
+                onPressed: _loading ? null : _load,
+                icon: _loading
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _error != null
+              ? Center(child: Text(_error!))
+              : _items.isEmpty
+              ? const Center(
+                  child: Text('排行榜为空', style: TextStyle(fontSize: 16)),
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(18, 10, 18, 100),
+                  itemCount: _items.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) => _ToplistTile(
+                    client: widget.client,
+                    profile: widget.profile,
+                    item: _items[index],
+                    fallbackRank: index + 1,
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ToplistTile extends StatelessWidget {
+  const _ToplistTile({
+    required this.client,
+    required this.profile,
+    required this.item,
+    required this.fallbackRank,
+  });
+
+  final CoreClient client;
+  final String profile;
+  final EhToplistItem item;
+  final int fallbackRank;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: ListTile(
+        key: Key('eh-toplist-${item.gallery.gid}'),
+        leading: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 40,
+              child: Text(
+                '#${item.rank ?? fallbackRank}',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: colors.primary,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            SizedBox(
+              width: 56,
+              height: 72,
+              child: _FavoriteCover(
+                client: client,
+                profile: profile,
+                gallery: item.gallery,
+                thumbnailUrl: item.thumbnailUrl,
+              ),
+            ),
+          ],
+        ),
+        title: Text(item.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+        subtitle: Text('#${item.gallery.gid}'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.of(context).push<void>(
+          MaterialPageRoute(
+            builder: (_) => EhGalleryPage(
+              client: client,
+              profile: profile,
+              summary: EhGallerySummary(
+                gallery: item.gallery,
+                pageUrl: '',
+                title: item.title,
+                category: null,
+                published: null,
+                uploader: null,
+                pageCount: null,
+                rating: null,
+                language: null,
+                tags: const [],
+                coverUrl: null,
+                coverWidth: null,
+                coverHeight: null,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Authenticated EH favorites listing with signed-out guidance.
 class EhFavoritesView extends StatefulWidget {
   const EhFavoritesView({

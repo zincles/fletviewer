@@ -64,7 +64,7 @@ pub use provider::eh::{
     EhArchiveDelivery, EhArchiveOption, EhArchiveOptions, EhArchiveVariant, EhComment,
     EhFavoriteItem, EhFavoritesPage, EhGalleryDetail, EhGalleryRef, EhGallerySummary,
     EhGalleryVersion, EhHomePage, EhImageResolution, EhPageCursor, EhPageDirection, EhThumbnail,
-    EhThumbnailPage,
+    EhThumbnailPage, EhToplistItem, EhToplistPage,
 };
 pub use provider::pixiv::{
     PixivBookmarkVisibility, PixivBookmarksResult, PixivFollowingResult, PixivFollowingVisibility,
