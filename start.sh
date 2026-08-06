@@ -44,6 +44,11 @@ check_bridge_sync() {
     printf '[start] 请先运行 ./codegen.sh 重新生成桥代码，再重新启动。\n'
     exit 1
   fi
+  if grep -q "ioDirectory: '../fvcore/target/release/'" "$FRONTEND_DIR/lib/src/rust/frb_generated.dart"; then
+    printf '[start] 错误：桥 loader 仍指向 CWD 相对 crate 构建路径，打包应用会加载旧库。\n'
+    printf '[start] 请运行 ./codegen.sh 重新生成（会自动应用打包加载补丁）。\n'
+    exit 1
+  fi
 }
 
 check_bridge_sync

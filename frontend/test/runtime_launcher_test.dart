@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:fletviewer_frontend/runtime_launcher.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -17,5 +19,20 @@ void main() {
       ),
       'v1-51f1b5ea12ef621d',
     );
+  });
+
+  test('generated bridge loader never resolves a CWD-relative crate build', () {
+    // Regression guard: the FRB codegen default points the packaged loader at
+    // `<crate>/target/release/` relative to the process CWD, which loaded a
+    // stale library and caused content-hash mismatch. codegen.sh patches it;
+    // this test fails if the generated file regresses.
+    final generated = File(
+      'lib/src/rust/frb_generated.dart',
+    ).readAsStringSync();
+    expect(
+      generated,
+      isNot(contains("ioDirectory: '../fvcore/target/release/'")),
+    );
+    expect(generated, contains('ioDirectory: null'));
   });
 }
