@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
+use url::Url;
 
 /// Operation categories exposed by the Core.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -149,6 +150,33 @@ pub struct EhPageFetchRequest {
     pub page: u32,
     /// Optional EH reload nonce returned by a previous resolution attempt.
     pub nl: Option<String>,
+}
+
+/// Request for one gallery cover image served by the EH cover CDN.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EhCoverFetchRequest {
+    /// Configured EH profile.
+    pub profile: ProfileKey,
+    /// Stable EH gallery identity.
+    pub gallery: EhGalleryRef,
+}
+
+/// Request for one gallery thumbnail image served by the EH cover CDN.
+///
+/// The URL is echoed back from the Core-provided thumbnail DTO; the Core re-validates
+/// it against the EH CDN allowlist and constructs the Referer itself.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EhThumbnailFetchRequest {
+    /// Configured EH profile.
+    pub profile: ProfileKey,
+    /// Stable EH gallery identity.
+    pub gallery: EhGalleryRef,
+    /// Zero-based gallery page index covered by this thumbnail.
+    pub page: u32,
+    /// Thumbnail URL previously parsed by the Core from the EH thumbnail page.
+    pub image_url: Url,
 }
 
 impl Default for FakeOperationRequest {

@@ -84,11 +84,27 @@ abstract class NativeCore implements RustOpaqueInterface {
   /// Requests graceful shutdown and waits for owned services to stop.
   Future<void> shutdown();
 
+  /// Starts one EH gallery cover fetch and returns the operation as JSON.
+  Future<String> startEhCoverFetchJson({
+    required String profile,
+    required BigInt gid,
+    required String token,
+  });
+
   /// Starts one EH web-viewer page image fetch and returns the operation as JSON.
   Future<String> startEhPageFetchJson({
     required String profile,
     required BigInt gid,
     required String token,
     required int page,
+  });
+
+  /// Starts one EH gallery thumbnail fetch and returns the operation as JSON.
+  Future<String> startEhThumbnailFetchJson({
+    required String profile,
+    required BigInt gid,
+    required String token,
+    required int page,
+    required String imageUrl,
   });
 }

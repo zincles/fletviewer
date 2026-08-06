@@ -2,10 +2,10 @@
 
 use crate::{
     ArchiveTaskSnapshot, BooruOriginalFetchRequest, CoreError, CoreEvent, CoreEventSubject,
-    EhPageFetchRequest, ErrorCode, ErrorSnapshot, EventBatch, EventConfig, FakeOperationRequest,
-    FakeOutcome, ImageDownloadTaskSnapshot, ImageResourceDescriptor, OperationConfig, OperationId,
-    OperationKind, OperationSnapshot, OperationState, PixivPageFetchRequest, ResourceKey,
-    RuntimeId,
+    EhCoverFetchRequest, EhPageFetchRequest, EhThumbnailFetchRequest, ErrorCode, ErrorSnapshot,
+    EventBatch, EventConfig, FakeOperationRequest, FakeOutcome, ImageDownloadTaskSnapshot,
+    ImageResourceDescriptor, OperationConfig, OperationId, OperationKind, OperationSnapshot,
+    OperationState, PixivPageFetchRequest, ProfileKey, ResourceKey, RuntimeId,
     image::{ContentMd5, ImageFetchAuthority, ImageFetchSpec, ImageProgress, ImageService},
     provider::booru::BooruService,
     provider::eh::EhService,
@@ -42,6 +42,8 @@ pub(crate) enum OperationRequest {
     BooruOriginal(BooruOriginalFetchRequest),
     PixivPage(PixivPageFetchRequest),
     EhPage(EhPageFetchRequest),
+    EhCover(EhCoverFetchRequest),
+    EhThumbnail(EhThumbnailFetchRequest),
 }
 
 #[derive(Clone)]
@@ -302,6 +304,53 @@ impl OperationService {
         )
     }
 
+    pub(crate) fn start_eh_cover(
+        &mut self,
+        request: EhCoverFetchRequest,
+        runtime_shutdown: &CancellationToken,
+    ) -> Result<OperationSnapshot, CoreError> {
+        if request.profile.provider != "eh" {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH cover fetch requires an EH profile",
+                false,
+            ));
+        }
+        self.start(
+            OperationKind::ImageFetch,
+            OperationRequest::EhCover(request),
+            runtime_shutdown,
+        )
+    }
+
+    pub(crate) fn start_eh_thumbnail(
+        &mut self,
+        request: EhThumbnailFetchRequest,
+        runtime_shutdown: &CancellationToken,
+    ) -> Result<OperationSnapshot, CoreError> {
+        if request.profile.provider != "eh" {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH thumbnail fetch requires an EH profile",
+                false,
+            ));
+        }
+        if !matches!(request.image_url.scheme(), "http" | "https")
+            || request.image_url.host_str().is_none()
+        {
+            return Err(CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH thumbnail URL must be an absolute HTTP(S) URL",
+                false,
+            ));
+        }
+        self.start(
+            OperationKind::ImageFetch,
+            OperationRequest::EhThumbnail(request),
+            runtime_shutdown,
+        )
+    }
+
     fn start(
         &mut self,
         kind: OperationKind,
@@ -401,6 +450,33 @@ impl OperationService {
         }
         self.active = self.active.saturating_sub(1);
         let snapshot = entry.snapshot.clone();
+        let profile = request_profile(&entry.request);
+        match (&snapshot.state, &snapshot.error) {
+            (OperationState::Completed, _) => tracing::info!(
+                operation_id = %snapshot.id,
+                operation_kind = ?snapshot.kind,
+                provider = ?profile,
+                source = ?snapshot.source,
+                bytes_done = snapshot.bytes_done,
+                "operation completed"
+            ),
+            (OperationState::Failed, Some(error)) => tracing::warn!(
+                operation_id = %snapshot.id,
+                operation_kind = ?snapshot.kind,
+                provider = ?profile,
+                error_code = %error.code,
+                error_message = %error.message,
+                retryable = error.retryable,
+                "operation failed"
+            ),
+            (OperationState::Cancelled, _) => tracing::info!(
+                operation_id = %snapshot.id,
+                operation_kind = ?snapshot.kind,
+                provider = ?profile,
+                "operation cancelled"
+            ),
+            _ => {}
+        }
         self.events.publish(self.runtime_id, &snapshot);
         self.retain_terminal(completion.id);
         self.schedule();
@@ -538,6 +614,50 @@ impl OperationService {
                             }),
                         }
                     }
+                    OperationRequest::EhCover(request) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(default_deadline),
+                            run_eh_cover(
+                                id,
+                                request,
+                                cancellation,
+                                sessions,
+                                images,
+                                message_tx.clone(),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => WorkerResult::Failed(ErrorSnapshot {
+                                code: ErrorCode::DeadlineExceeded,
+                                message: "operation deadline exceeded".to_owned(),
+                                retryable: true,
+                            }),
+                        }
+                    }
+                    OperationRequest::EhThumbnail(request) => {
+                        match tokio::time::timeout(
+                            Duration::from_secs(default_deadline),
+                            run_eh_thumbnail(
+                                id,
+                                request,
+                                cancellation,
+                                sessions,
+                                images,
+                                message_tx.clone(),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => WorkerResult::Failed(ErrorSnapshot {
+                                code: ErrorCode::DeadlineExceeded,
+                                message: "operation deadline exceeded".to_owned(),
+                                retryable: true,
+                            }),
+                        }
+                    }
                 };
                 let _ = message_tx
                     .send(OperationMessage::Completion { id, result })
@@ -566,6 +686,20 @@ fn operation_resource_key(request: &OperationRequest) -> Result<Option<ResourceK
             format!("{}:{}", request.gallery.gid, request.gallery.token),
             request.page,
             "viewer",
+        )
+        .map(Some),
+        OperationRequest::EhCover(request) => ResourceKey::new(
+            "eh",
+            format!("{}:{}", request.gallery.gid, request.gallery.token),
+            0,
+            "cover",
+        )
+        .map(Some),
+        OperationRequest::EhThumbnail(request) => ResourceKey::new(
+            "eh",
+            format!("{}:{}", request.gallery.gid, request.gallery.token),
+            request.page,
+            "thumb",
         )
         .map(Some),
         OperationRequest::BooruOriginal(request) => ResourceKey::new(
@@ -708,6 +842,7 @@ async fn run_booru_original(
                 resource_key,
                 expected_bytes: post.original.byte_length,
                 referer: Some(post.page_url),
+                cdn_referer_path: None,
             },
             cancellation,
             |progress| {
@@ -773,6 +908,7 @@ async fn run_pixiv_page(
                 resource_key: Some(resource_key),
                 expected_bytes: None,
                 referer: Some(illust.page_url),
+                cdn_referer_path: None,
             },
             cancellation,
             |progress| {
@@ -837,6 +973,7 @@ async fn run_eh_page(
                 resource_key: Some(resource_key),
                 expected_bytes: None,
                 referer: Some(resolved.referer),
+                cdn_referer_path: None,
             },
             cancellation,
             |progress| {
@@ -855,6 +992,142 @@ async fn run_eh_page(
     match result {
         Ok(resource) => WorkerResult::Completed(Some(resource.descriptor().clone())),
         Err(error) => worker_error(error),
+    }
+}
+
+async fn run_eh_cover(
+    id: OperationId,
+    request: EhCoverFetchRequest,
+    cancellation: CancellationToken,
+    sessions: Arc<SessionRegistry>,
+    images: Arc<ImageService>,
+    messages: mpsc::Sender<OperationMessage>,
+) -> WorkerResult {
+    let detail = match EhService::new(sessions)
+        .gallery_detail(
+            &request.profile,
+            request.gallery.clone(),
+            cancellation.child_token(),
+        )
+        .await
+    {
+        Ok(detail) => detail,
+        Err(error) => return worker_error(error),
+    };
+    let Some(url) = detail.cover_url else {
+        return worker_error(CoreError::new(
+            ErrorCode::UnexpectedResponse,
+            "EH gallery has no cover URL",
+            false,
+        ));
+    };
+    let resource_key = match ResourceKey::new(
+        "eh",
+        format!("{}:{}", request.gallery.gid, request.gallery.token),
+        0,
+        "cover",
+    ) {
+        Ok(key) => key,
+        Err(error) => return worker_error(error),
+    };
+    let mut last_phase = "";
+    let mut last_bytes = 0_u64;
+    let mut last_update = std::time::Instant::now();
+    let result = images
+        .fetch(
+            ImageFetchSpec {
+                profile: request.profile,
+                url,
+                authority: ImageFetchAuthority::EhViewerResponse,
+                expected_md5: None,
+                resource_key: Some(resource_key),
+                expected_bytes: None,
+                referer: Some(detail.page_url),
+                cdn_referer_path: None,
+            },
+            cancellation,
+            |progress| {
+                let publish = progress.phase != last_phase
+                    || progress.bytes_done.saturating_sub(last_bytes) >= 64 * 1024
+                    || last_update.elapsed() >= Duration::from_millis(100);
+                if publish {
+                    last_phase = progress.phase;
+                    last_bytes = progress.bytes_done;
+                    last_update = std::time::Instant::now();
+                    let _ = messages.try_send(OperationMessage::Progress { id, progress });
+                }
+            },
+        )
+        .await;
+    match result {
+        Ok(resource) => WorkerResult::Completed(Some(resource.descriptor().clone())),
+        Err(error) => worker_error(error),
+    }
+}
+
+async fn run_eh_thumbnail(
+    id: OperationId,
+    request: EhThumbnailFetchRequest,
+    cancellation: CancellationToken,
+    _sessions: Arc<SessionRegistry>,
+    images: Arc<ImageService>,
+    messages: mpsc::Sender<OperationMessage>,
+) -> WorkerResult {
+    let resource_key = match ResourceKey::new(
+        "eh",
+        format!("{}:{}", request.gallery.gid, request.gallery.token),
+        request.page,
+        "thumb",
+    ) {
+        Ok(key) => key,
+        Err(error) => return worker_error(error),
+    };
+    let mut last_phase = "";
+    let mut last_bytes = 0_u64;
+    let mut last_update = std::time::Instant::now();
+    let result = images
+        .fetch(
+            ImageFetchSpec {
+                profile: request.profile,
+                url: request.image_url,
+                authority: ImageFetchAuthority::EhThumbnail,
+                expected_md5: None,
+                resource_key: Some(resource_key),
+                expected_bytes: None,
+                referer: None,
+                cdn_referer_path: Some(format!(
+                    "g/{}/{}/",
+                    request.gallery.gid, request.gallery.token
+                )),
+            },
+            cancellation,
+            |progress| {
+                let publish = progress.phase != last_phase
+                    || progress.bytes_done.saturating_sub(last_bytes) >= 64 * 1024
+                    || last_update.elapsed() >= Duration::from_millis(100);
+                if publish {
+                    last_phase = progress.phase;
+                    last_bytes = progress.bytes_done;
+                    last_update = std::time::Instant::now();
+                    let _ = messages.try_send(OperationMessage::Progress { id, progress });
+                }
+            },
+        )
+        .await;
+    match result {
+        Ok(resource) => WorkerResult::Completed(Some(resource.descriptor().clone())),
+        Err(error) => worker_error(error),
+    }
+}
+
+fn request_profile(request: &OperationRequest) -> Option<&ProfileKey> {
+    match request {
+        OperationRequest::Fake(_) => None,
+        OperationRequest::BooruOriginal(request) => Some(&request.profile),
+        OperationRequest::PixivPage(request) => Some(&request.profile),
+        OperationRequest::EhPage(request) => Some(&request.profile),
+        OperationRequest::EhCover(request) => Some(&request.profile),
+        OperationRequest::EhThumbnail(request) => Some(&request.profile),
     }
 }
 

@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -840895270;
+  int get rustContentHash => 1169670296;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -152,12 +152,28 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiFlutterNativeCoreShutdown({required NativeCore that});
 
+  Future<String> crateApiFlutterNativeCoreStartEhCoverFetchJson({
+    required NativeCore that,
+    required String profile,
+    required BigInt gid,
+    required String token,
+  });
+
   Future<String> crateApiFlutterNativeCoreStartEhPageFetchJson({
     required NativeCore that,
     required String profile,
     required BigInt gid,
     required String token,
     required int page,
+  });
+
+  Future<String> crateApiFlutterNativeCoreStartEhThumbnailFetchJson({
+    required NativeCore that,
+    required String profile,
+    required BigInt gid,
+    required String token,
+    required int page,
+    required String imageUrl,
   });
 
   Future<void> crateApiFlutterInitApp();
@@ -726,6 +742,48 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "NativeCore_shutdown", argNames: ["that"]);
 
   @override
+  Future<String> crateApiFlutterNativeCoreStartEhCoverFetchJson({
+    required NativeCore that,
+    required String profile,
+    required BigInt gid,
+    required String token,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          sse_encode_u_64(gid, serializer);
+          sse_encode_String(token, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreStartEhCoverFetchJsonConstMeta,
+        argValues: [that, profile, gid, token],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCoreStartEhCoverFetchJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_start_eh_cover_fetch_json",
+        argNames: ["that", "profile", "gid", "token"],
+      );
+
+  @override
   Future<String> crateApiFlutterNativeCoreStartEhPageFetchJson({
     required NativeCore that,
     required String profile,
@@ -748,7 +806,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 16,
             port: port_,
           );
         },
@@ -770,6 +828,53 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<String> crateApiFlutterNativeCoreStartEhThumbnailFetchJson({
+    required NativeCore that,
+    required String profile,
+    required BigInt gid,
+    required String token,
+    required int page,
+    required String imageUrl,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          sse_encode_u_64(gid, serializer);
+          sse_encode_String(token, serializer);
+          sse_encode_u_32(page, serializer);
+          sse_encode_String(imageUrl, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 17,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreStartEhThumbnailFetchJsonConstMeta,
+        argValues: [that, profile, gid, token, page, imageUrl],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiFlutterNativeCoreStartEhThumbnailFetchJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_start_eh_thumbnail_fetch_json",
+        argNames: ["that", "profile", "gid", "token", "page", "imageUrl"],
+      );
+
+  @override
   Future<void> crateApiFlutterInitApp() {
     return handler.executeNormal(
       NormalTask(
@@ -778,7 +883,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 18,
             port: port_,
           );
         },
@@ -814,7 +919,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 19,
             port: port_,
           );
         },
@@ -1288,6 +1393,18 @@ class NativeCoreImpl extends RustOpaque implements NativeCore {
   Future<void> shutdown() =>
       RustLib.instance.api.crateApiFlutterNativeCoreShutdown(that: this);
 
+  /// Starts one EH gallery cover fetch and returns the operation as JSON.
+  Future<String> startEhCoverFetchJson({
+    required String profile,
+    required BigInt gid,
+    required String token,
+  }) => RustLib.instance.api.crateApiFlutterNativeCoreStartEhCoverFetchJson(
+    that: this,
+    profile: profile,
+    gid: gid,
+    token: token,
+  );
+
   /// Starts one EH web-viewer page image fetch and returns the operation as JSON.
   Future<String> startEhPageFetchJson({
     required String profile,
@@ -1300,5 +1417,21 @@ class NativeCoreImpl extends RustOpaque implements NativeCore {
     gid: gid,
     token: token,
     page: page,
+  );
+
+  /// Starts one EH gallery thumbnail fetch and returns the operation as JSON.
+  Future<String> startEhThumbnailFetchJson({
+    required String profile,
+    required BigInt gid,
+    required String token,
+    required int page,
+    required String imageUrl,
+  }) => RustLib.instance.api.crateApiFlutterNativeCoreStartEhThumbnailFetchJson(
+    that: this,
+    profile: profile,
+    gid: gid,
+    token: token,
+    page: page,
+    imageUrl: imageUrl,
   );
 }

@@ -2,11 +2,11 @@
 
 use crate::{
     ArchiveTaskSnapshot, BooruImageDownloadRequest, BooruOriginalFetchRequest, ContentMd5,
-    CoreConfig, CoreError, CoreSnapshot, EhArchiveDownloadRequest, EhPageFetchRequest, ErrorCode,
-    EventBatch, EventSubscription, FakeOperationRequest, ImageDownloadTaskSnapshot, ImageResource,
-    OperationId, OperationSnapshot, PixivImageDownloadRequest, PixivPageFetchRequest, ProfileKey,
-    ProfileProbeSnapshot, ProfileSnapshot, ProviderProfileConfig, RuntimeId, RuntimeState,
-    StorageSnapshot,
+    CoreConfig, CoreError, CoreSnapshot, EhArchiveDownloadRequest, EhCoverFetchRequest,
+    EhPageFetchRequest, EhThumbnailFetchRequest, ErrorCode, EventBatch, EventSubscription,
+    FakeOperationRequest, ImageDownloadTaskSnapshot, ImageResource, OperationId, OperationSnapshot,
+    PixivImageDownloadRequest, PixivPageFetchRequest, ProfileKey, ProfileProbeSnapshot,
+    ProfileSnapshot, ProviderProfileConfig, RuntimeId, RuntimeState, StorageSnapshot,
     archive::ArchiveService,
     control,
     gallery::GalleryService,
@@ -52,6 +52,14 @@ enum CoreCommand {
     },
     StartEhPage {
         request: EhPageFetchRequest,
+        reply: oneshot::Sender<Result<OperationSnapshot, CoreError>>,
+    },
+    StartEhCover {
+        request: EhCoverFetchRequest,
+        reply: oneshot::Sender<Result<OperationSnapshot, CoreError>>,
+    },
+    StartEhThumbnail {
+        request: EhThumbnailFetchRequest,
         reply: oneshot::Sender<Result<OperationSnapshot, CoreError>>,
     },
     GetOperation {
@@ -462,6 +470,24 @@ impl CoreHandle {
         request: EhPageFetchRequest,
     ) -> Result<OperationSnapshot, CoreError> {
         self.request(|reply| CoreCommand::StartEhPage { request, reply })
+            .await?
+    }
+
+    /// Starts a cancellable fetch of one EH gallery cover image.
+    pub async fn start_eh_cover_fetch(
+        &self,
+        request: EhCoverFetchRequest,
+    ) -> Result<OperationSnapshot, CoreError> {
+        self.request(|reply| CoreCommand::StartEhCover { request, reply })
+            .await?
+    }
+
+    /// Starts a cancellable fetch of one EH gallery thumbnail image.
+    pub async fn start_eh_thumbnail_fetch(
+        &self,
+        request: EhThumbnailFetchRequest,
+    ) -> Result<OperationSnapshot, CoreError> {
+        self.request(|reply| CoreCommand::StartEhThumbnail { request, reply })
             .await?
     }
 
@@ -1317,6 +1343,12 @@ async fn run_actor(
                 }
                 Some(CoreCommand::StartEhPage { request, reply }) => {
                     let _ = reply.send(data.operations.start_eh_page(request, &shutdown));
+                }
+                Some(CoreCommand::StartEhCover { request, reply }) => {
+                    let _ = reply.send(data.operations.start_eh_cover(request, &shutdown));
+                }
+                Some(CoreCommand::StartEhThumbnail { request, reply }) => {
+                    let _ = reply.send(data.operations.start_eh_thumbnail(request, &shutdown));
                 }
                 Some(CoreCommand::GetOperation { id, reply }) => {
                     let _ = reply.send(data.operations.get(id));
@@ -2962,7 +2994,9 @@ mod tests {
         )
         .unwrap();
         assert!(thumbs.starts_with("HTTP/1.1 200 OK"));
-        assert!(thumbs.contains("sprite.webp@x=200-300&y=0-140"));
+        assert!(thumbs.contains("https://ehgt.org/sprite.webp"));
+        assert!(thumbs.contains("sprite_x"));
+        assert!(!thumbs.contains("@x="));
         let webui = String::from_utf8(
             http_request(
                 listen,
@@ -3234,6 +3268,234 @@ mod tests {
         )
         .unwrap();
         assert!(outside.starts_with("HTTP/1.1 400 Bad Request"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn eh_cover_fetch_is_shared_and_content_addressed() {
+        const DETAIL: &str = include_str!("../tests/fixtures/eh/gallery_detail.html");
+        let image = Arc::new(test_jpeg());
+        let cover_requests = Arc::new(AtomicUsize::new(0));
+        let gallery_requests = Arc::new(AtomicUsize::new(0));
+        let cover_listener = tokio::net::TcpListener::bind("127.0.0.2:0").await.unwrap();
+        let cover_listen = cover_listener.local_addr().unwrap();
+        let cover_router = axum::Router::new().route(
+            "/fixture-cover.webp",
+            axum::routing::get({
+                let image = image.clone();
+                let cover_requests = cover_requests.clone();
+                move |headers: axum::http::HeaderMap| {
+                    let image = image.clone();
+                    let cover_requests = cover_requests.clone();
+                    async move {
+                        assert!(headers.get(axum::http::header::COOKIE).is_none());
+                        assert!(
+                            headers
+                                .get(axum::http::header::REFERER)
+                                .and_then(|value| value.to_str().ok())
+                                .is_some_and(|value| value.contains("/g/123456/abcdef1234/"))
+                        );
+                        cover_requests.fetch_add(1, Ordering::SeqCst);
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "image/webp")],
+                            image.as_ref().clone(),
+                        )
+                    }
+                }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(cover_listener, cover_router).await.unwrap() });
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        let fixture = DETAIL
+            .replace(
+                "https://e-hentai.org/",
+                &format!("http://{provider_listen}/"),
+            )
+            .replace("https://ehgt.org/", &format!("http://{cover_listen}/"));
+        let provider_router = axum::Router::new().route(
+            "/g/123456/abcdef1234/",
+            axum::routing::get({
+                let fixture = fixture.clone();
+                let gallery_requests = gallery_requests.clone();
+                move || {
+                    let fixture = fixture.clone();
+                    let gallery_requests = gallery_requests.clone();
+                    async move {
+                        gallery_requests.fetch_add(1, Ordering::SeqCst);
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                            fixture,
+                        )
+                    }
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(provider_listener, provider_router)
+                .await
+                .unwrap()
+        });
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config.operations.max_active = 1;
+        config.profiles.insert(
+            "eh".to_owned(),
+            ProviderProfileConfig {
+                provider: "eh".to_owned(),
+                base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                cookie: Some("eh_session=fixture-secret".to_owned()),
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let request = crate::EhCoverFetchRequest {
+            profile: ProfileKey::new("eh", "default"),
+            gallery: crate::EhGalleryRef {
+                gid: 123456,
+                token: "abcdef1234".to_owned(),
+            },
+        };
+        let first = runtime
+            .handle()
+            .start_eh_cover_fetch(request.clone())
+            .await
+            .unwrap();
+        let second = runtime
+            .handle()
+            .start_eh_cover_fetch(request)
+            .await
+            .unwrap();
+        let first = wait_terminal(&runtime.handle(), first.id).await;
+        let second = wait_terminal(&runtime.handle(), second.id).await;
+        assert_eq!(first.state, OperationState::Completed);
+        assert_eq!(second.state, OperationState::Completed);
+        let first_descriptor = first.resource.clone().unwrap();
+        let second_descriptor = second.resource.unwrap();
+        assert_eq!(first_descriptor.content_md5, second_descriptor.content_md5);
+        assert_eq!(second_descriptor.source, ResourceSource::Memory);
+        assert_eq!(cover_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(gallery_requests.load(Ordering::SeqCst), 2);
+        let bytes = runtime
+            .handle()
+            .image_resource(first_descriptor.content_md5, &first_descriptor.extension)
+            .await
+            .unwrap();
+        assert_eq!(bytes.bytes(), image.as_ref().as_slice());
+
+        let listen = runtime.control_listen().unwrap();
+        let api = String::from_utf8(
+            http_request(
+                listen,
+                b"POST /api/v1/providers/eh/default/galleries/123456/abcdef1234/cover/fetch HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(api.starts_with("HTTP/1.1 202 Accepted"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn eh_thumbnail_fetch_is_shared_and_content_addressed() {
+        let image = Arc::new(test_jpeg());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let image_listener = tokio::net::TcpListener::bind("127.0.0.2:0").await.unwrap();
+        let image_listen = image_listener.local_addr().unwrap();
+        let image_router = axum::Router::new().route(
+            "/direct.webp",
+            axum::routing::get({
+                let image = image.clone();
+                let requests = requests.clone();
+                move |headers: axum::http::HeaderMap| {
+                    let image = image.clone();
+                    let requests = requests.clone();
+                    async move {
+                        assert!(headers.get(axum::http::header::COOKIE).is_none());
+                        assert!(
+                            headers
+                                .get(axum::http::header::REFERER)
+                                .and_then(|value| value.to_str().ok())
+                                .is_some_and(|value| value.ends_with("/g/123456/abcdef1234/"))
+                        );
+                        requests.fetch_add(1, Ordering::SeqCst);
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "image/webp")],
+                            image.as_ref().clone(),
+                        )
+                    }
+                }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(image_listener, image_router).await.unwrap() });
+        let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(provider_listener, axum::Router::new())
+                .await
+                .unwrap()
+        });
+        let temp = TempDir::new().unwrap();
+        let mut config = config(&temp);
+        config.control.enabled = true;
+        config.control.listen = "127.0.0.1:0".parse().unwrap();
+        config.operations.max_active = 1;
+        config.profiles.insert(
+            "eh".to_owned(),
+            ProviderProfileConfig {
+                provider: "eh".to_owned(),
+                base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                cookie: Some("eh_session=fixture-secret".to_owned()),
+                ..ProviderProfileConfig::default()
+            },
+        );
+        let runtime = CoreBuilder::new(config).build().await.unwrap();
+        let request = crate::EhThumbnailFetchRequest {
+            profile: ProfileKey::new("eh", "default"),
+            gallery: crate::EhGalleryRef {
+                gid: 123456,
+                token: "abcdef1234".to_owned(),
+            },
+            page: 0,
+            image_url: Url::parse(&format!("http://{image_listen}/direct.webp")).unwrap(),
+        };
+        let first = runtime
+            .handle()
+            .start_eh_thumbnail_fetch(request.clone())
+            .await
+            .unwrap();
+        let second = runtime
+            .handle()
+            .start_eh_thumbnail_fetch(request)
+            .await
+            .unwrap();
+        let first = wait_terminal(&runtime.handle(), first.id).await;
+        let second = wait_terminal(&runtime.handle(), second.id).await;
+        assert_eq!(first.state, OperationState::Completed);
+        assert_eq!(second.state, OperationState::Completed);
+        let first_descriptor = first.resource.clone().unwrap();
+        let second_descriptor = second.resource.unwrap();
+        assert_eq!(first_descriptor.content_md5, second_descriptor.content_md5);
+        assert_eq!(second_descriptor.source, ResourceSource::Memory);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let bytes = runtime
+            .handle()
+            .image_resource(first_descriptor.content_md5, &first_descriptor.extension)
+            .await
+            .unwrap();
+        assert_eq!(bytes.bytes(), image.as_ref().as_slice());
+
+        let listen = runtime.control_listen().unwrap();
+        let body = format!(r#"{{"image_url":"http://{image_listen}/direct.webp"}}"#);
+        let api = format!(
+            "POST /api/v1/providers/eh/default/galleries/123456/abcdef1234/thumbnails/0/fetch HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let api = String::from_utf8(http_request(listen, api.as_bytes()).await).unwrap();
+        assert!(api.starts_with("HTTP/1.1 202 Accepted"));
         runtime.shutdown().await.unwrap();
     }
 
@@ -3904,7 +4166,13 @@ mod tests {
         assert_eq!(descriptor.extension, "jpg");
         assert_eq!(descriptor.source, ResourceSource::Network);
         assert!(!descriptor.cache_persisted);
-        let digest = ContentMd5::from_str(&digest).unwrap();
+        let descriptor_json = serde_json::to_value(&descriptor).unwrap();
+        assert_eq!(
+            descriptor_json["content_md5"].as_str(),
+            Some(digest.as_str())
+        );
+        let digest =
+            ContentMd5::from_str(descriptor_json["content_md5"].as_str().unwrap()).unwrap();
         assert_eq!(
             handle.image_resource(digest, "jpeg").await.unwrap().bytes(),
             image.as_ref().as_slice()

@@ -94,8 +94,7 @@ struct StoredAliases {
 }
 
 /// A real 128-bit image-content MD5 rendered as 32 lowercase hexadecimal characters.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ContentMd5([u8; 16]);
 
 impl ContentMd5 {
@@ -131,6 +130,15 @@ impl fmt::Display for ContentMd5 {
             write!(formatter, "{byte:02x}")?;
         }
         Ok(())
+    }
+}
+
+impl Serialize for ContentMd5 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
 
@@ -229,6 +237,7 @@ impl ImageResource {
 pub(crate) enum ImageFetchAuthority {
     Profile,
     EhViewerResponse,
+    EhThumbnail,
 }
 
 #[derive(Clone)]
@@ -240,6 +249,8 @@ pub(crate) struct ImageFetchSpec {
     pub(crate) resource_key: Option<ResourceKey>,
     pub(crate) expected_bytes: Option<u64>,
     pub(crate) referer: Option<Url>,
+    /// Relative referer path constructed by the worker for EH CDN fetches.
+    pub(crate) cdn_referer_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -651,6 +662,39 @@ impl ImageService {
                         &spec.profile,
                         &spec.url,
                         referer,
+                        crate::session::BodyLimit::budgeted(
+                            self.config.max_image_bytes,
+                            self.inflight_bytes.clone(),
+                        ),
+                        transfer.cancellation.clone(),
+                        |done, total| {
+                            state.send_replace(TransferState {
+                                progress: ImageProgress {
+                                    phase: "fetching",
+                                    bytes_done: done as u64,
+                                    bytes_total: total.or(spec.expected_bytes),
+                                    source: Some(ResourceSource::Network),
+                                    shared: shared(),
+                                },
+                                result: None,
+                            });
+                        },
+                    )
+                    .await?
+            }
+            ImageFetchAuthority::EhThumbnail => {
+                let referer_path = spec.cdn_referer_path.as_ref().ok_or_else(|| {
+                    CoreError::new(
+                        ErrorCode::InvalidInput,
+                        "EH thumbnail fetch requires its gallery referer path",
+                        false,
+                    )
+                })?;
+                self.sessions
+                    .get_eh_thumbnail_image(
+                        &spec.profile,
+                        &spec.url,
+                        referer_path,
                         crate::session::BodyLimit::budgeted(
                             self.config.max_image_bytes,
                             self.inflight_bytes.clone(),
@@ -1206,8 +1250,9 @@ fn io_error(action: &str, path: &Path, error: std::io::Error) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContentMd5, ResourceKey, StoredAliases, cache_path, detect_format, load_aliases,
-        remove_staging_files, scan_cache, semantic_snapshot,
+        ContentMd5, ImageResourceDescriptor, ResourceKey, ResourceSource, StoredAliases,
+        cache_path, detect_format, load_aliases, remove_staging_files, scan_cache,
+        semantic_snapshot,
     };
     use std::{path::Path, str::FromStr};
     use tempfile::TempDir;
@@ -1221,6 +1266,27 @@ mod tests {
             Path::new("Cache/files/d2/56/d256310bfab43e08b6422e311cd9b2c9.webp")
         );
         assert!(ContentMd5::from_str("not-md5").is_err());
+    }
+
+    #[test]
+    fn content_md5_and_resource_descriptor_serialize_as_hex_strings() {
+        let md5 = ContentMd5::from_str("D256310BFAB43E08B6422E311CD9B2C9").unwrap();
+        assert_eq!(
+            serde_json::to_value(md5).unwrap(),
+            serde_json::Value::String("d256310bfab43e08b6422e311cd9b2c9".to_owned())
+        );
+        let descriptor = ImageResourceDescriptor {
+            content_md5: md5,
+            extension: "jpg".to_owned(),
+            mime_type: "image/jpeg".to_owned(),
+            byte_length: 12,
+            source: ResourceSource::Memory,
+            cache_persisted: true,
+        };
+        assert_eq!(
+            serde_json::to_value(descriptor).unwrap()["content_md5"],
+            "d256310bfab43e08b6422e311cd9b2c9"
+        );
     }
 
     #[test]

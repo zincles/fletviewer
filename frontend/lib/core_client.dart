@@ -356,6 +356,8 @@ final class EhThumbnail {
     required this.page,
     required this.width,
     required this.height,
+    required this.spriteX,
+    required this.spriteY,
   });
 
   factory EhThumbnail.fromJson(Map<String, Object?> json) {
@@ -365,6 +367,8 @@ final class EhThumbnail {
       page: _integer(json, 'page'),
       width: _optionalInteger(json, 'width'),
       height: _optionalInteger(json, 'height'),
+      spriteX: _optionalInteger(json, 'sprite_x'),
+      spriteY: _optionalInteger(json, 'sprite_y'),
     );
   }
 
@@ -373,6 +377,8 @@ final class EhThumbnail {
   final int page;
   final int? width;
   final int? height;
+  final int? spriteX;
+  final int? spriteY;
 }
 
 final class EhThumbnailPage {
@@ -565,6 +571,23 @@ final class CoreOperation {
         key.page == page &&
         key.variant == 'viewer';
   }
+
+  bool belongsToEhCover(EhGalleryRef gallery) {
+    final key = resourceKey;
+    return key != null &&
+        key.provider == 'eh' &&
+        key.media == '${gallery.gid}:${gallery.token}' &&
+        key.variant == 'cover';
+  }
+
+  bool belongsToEhThumbnail(EhGalleryRef gallery, int page) {
+    final key = resourceKey;
+    return key != null &&
+        key.provider == 'eh' &&
+        key.media == '${gallery.gid}:${gallery.token}' &&
+        key.page == page &&
+        key.variant == 'thumb';
+  }
 }
 
 enum DownloadTaskStatus { queued, running, completed, failed, cancelled }
@@ -740,6 +763,18 @@ abstract interface class CoreClient {
     required int page,
   });
 
+  Future<CoreOperation> startEhCoverFetch({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+  });
+
+  Future<CoreOperation> startEhThumbnailFetch({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+    required int page,
+    required String imageUrl,
+  });
+
   Future<CoreOperation> operation(String id);
 
   Future<Uint8List> imageResource(String contentMd5, String extension);
@@ -846,6 +881,34 @@ final class HttpCoreClient implements CoreClient {
   }
 
   @override
+  Future<CoreOperation> startEhCoverFetch({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+  }) async {
+    final value = await _jsonRequest(
+      'POST',
+      '/api/v1/providers/eh/${Uri.encodeComponent(profile)}/galleries/${gallery.gid}/${Uri.encodeComponent(gallery.token)}/cover/fetch',
+    );
+    return CoreOperation.fromJson(_object(value, 'EH cover operation'));
+  }
+
+  @override
+  Future<CoreOperation> startEhThumbnailFetch({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+    required int page,
+    required String imageUrl,
+  }) async {
+    final value = await _jsonRequest(
+      'POST',
+      '/api/v1/providers/eh/${Uri.encodeComponent(profile)}/galleries/${gallery.gid}/${Uri.encodeComponent(gallery.token)}/thumbnails/$page/fetch',
+      null,
+      jsonEncode({'image_url': imageUrl}),
+    );
+    return CoreOperation.fromJson(_object(value, 'EH thumbnail operation'));
+  }
+
+  @override
   Future<CoreOperation> operation(String id) async {
     final value = await _jsonRequest(
       'GET',
@@ -919,8 +982,9 @@ final class HttpCoreClient implements CoreClient {
     String method,
     String path, [
     Map<String, String>? query,
+    String? body,
   ]) async {
-    final response = await _request(method, path, query);
+    final response = await _request(method, path, query, body);
     try {
       return jsonDecode(await utf8.decoder.bind(response).join());
     } on Object catch (error) {
@@ -932,11 +996,18 @@ final class HttpCoreClient implements CoreClient {
     String method,
     String path, [
     Map<String, String>? query,
+    String? body,
   ]) async {
     try {
       final request = await _http.openUrl(method, _uri(path, query));
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-      if (method == 'POST') request.contentLength = 0;
+      if (body != null) {
+        request.headers.contentType = ContentType.json;
+        request.contentLength = body.length;
+        request.write(body);
+      } else if (method == 'POST') {
+        request.contentLength = 0;
+      }
       final response = await request.close();
       if (response.statusCode < 200 || response.statusCode >= 300) {
         await _throwResponse(response);
@@ -1097,6 +1168,40 @@ final class NativeCoreClient implements CoreClient {
       ),
     );
     return CoreOperation.fromJson(_object(value, 'EH page operation'));
+  }
+
+  @override
+  Future<CoreOperation> startEhCoverFetch({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.startEhCoverFetchJson(
+        profile: profile,
+        gid: BigInt.from(gallery.gid),
+        token: gallery.token,
+      ),
+    );
+    return CoreOperation.fromJson(_object(value, 'EH cover operation'));
+  }
+
+  @override
+  Future<CoreOperation> startEhThumbnailFetch({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+    required int page,
+    required String imageUrl,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.startEhThumbnailFetchJson(
+        profile: profile,
+        gid: BigInt.from(gallery.gid),
+        token: gallery.token,
+        page: page,
+        imageUrl: imageUrl,
+      ),
+    );
+    return CoreOperation.fromJson(_object(value, 'EH thumbnail operation'));
   }
 
   @override

@@ -119,6 +119,18 @@ void main() {
             request.response.write(
               jsonEncode(_operationJson(completed: false)),
             );
+          case '/api/v1/providers/eh/default/galleries/123/fixture-token/cover/fetch':
+            request.response.statusCode = HttpStatus.accepted;
+            request.response.headers.contentType = ContentType.json;
+            request.response.write(
+              jsonEncode(_operationJson(completed: false)),
+            );
+          case '/api/v1/providers/eh/default/galleries/123/fixture-token/thumbnails/0/fetch':
+            request.response.statusCode = HttpStatus.accepted;
+            request.response.headers.contentType = ContentType.json;
+            request.response.write(
+              jsonEncode(_operationJson(completed: false)),
+            );
           case '/api/v1/operations/01989abc-def0-7000-8000-000000000099':
             request.response.headers.contentType = ContentType.json;
             request.response.write(jsonEncode(_operationJson(completed: true)));
@@ -136,6 +148,12 @@ void main() {
     final detail = await client.ehGalleryDetail(gallery: gallery);
     final thumbnails = await client.ehThumbnails(gallery: gallery, page: 1);
     final started = await client.startEhPageFetch(gallery: gallery, page: 0);
+    final coverStarted = await client.startEhCoverFetch(gallery: gallery);
+    final thumbStarted = await client.startEhThumbnailFetch(
+      gallery: gallery,
+      page: 0,
+      imageUrl: 'https://ehgt.org/thumb.webp',
+    );
     final completed = await client.operation(started.id);
     final resource = completed.resource!;
     final bytes = await client.imageResource(
@@ -148,7 +166,11 @@ void main() {
     expect(detail.comments.single.content, 'Fixture comment');
     expect(thumbnails.page, 1);
     expect(thumbnails.items.single.page, 0);
+    expect(thumbnails.items.single.spriteX, 200);
+    expect(thumbnails.items.single.spriteY, 0);
     expect(started.state, CoreOperationState.queued);
+    expect(coverStarted.state, CoreOperationState.queued);
+    expect(thumbStarted.state, CoreOperationState.queued);
     expect(completed.state, CoreOperationState.completed);
     expect(completed.belongsToEhPage(gallery, 0), isTrue);
     expect(resource.mimeType, 'image/png');
@@ -163,6 +185,18 @@ void main() {
       seen,
       contains(
         'POST /api/v1/providers/eh/default/galleries/123/fixture-token/pages/0/fetch',
+      ),
+    );
+    expect(
+      seen,
+      contains(
+        'POST /api/v1/providers/eh/default/galleries/123/fixture-token/cover/fetch',
+      ),
+    );
+    expect(
+      seen,
+      contains(
+        'POST /api/v1/providers/eh/default/galleries/123/fixture-token/thumbnails/0/fetch',
       ),
     );
   });
@@ -250,11 +284,13 @@ Map<String, Object?> _ehThumbnailJson() => {
   'page': 1,
   'items': [
     {
-      'image_url': 'https://ehgt.org/thumb.webp',
+      'image_url': 'https://ehgt.org/sprite.webp',
       'page_url': 'https://e-hentai.org/s/page-token/123-1',
       'page': 0,
       'width': 100,
       'height': 140,
+      'sprite_x': 200,
+      'sprite_y': 0,
     },
   ],
   'next_page': null,

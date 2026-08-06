@@ -980,7 +980,7 @@ class _EhBrowseToolbar extends StatelessWidget {
   }
 }
 
-class _EhGalleryCard extends StatelessWidget {
+class _EhGalleryCard extends StatefulWidget {
   const _EhGalleryCard({
     required this.client,
     required this.profile,
@@ -992,8 +992,62 @@ class _EhGalleryCard extends StatelessWidget {
   final EhGallerySummary gallery;
 
   @override
+  State<_EhGalleryCard> createState() => _EhGalleryCardState();
+}
+
+class _EhGalleryCardState extends State<_EhGalleryCard> {
+  Uint8List? _coverBytes;
+  int _requestRevision = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.gallery.coverUrl != null) {
+      unawaited(_loadCover());
+    }
+  }
+
+  @override
+  void dispose() {
+    _requestRevision++;
+    super.dispose();
+  }
+
+  Future<void> _loadCover() async {
+    final revision = ++_requestRevision;
+    try {
+      var operation = await widget.client.startEhCoverFetch(
+        profile: widget.profile,
+        gallery: widget.gallery.gallery,
+      );
+      if (!_isCurrent(revision)) return;
+      while (!operation.state.isTerminal) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        if (!_isCurrent(revision)) return;
+        operation = await widget.client.operation(operation.id);
+        if (!_isCurrent(revision)) return;
+      }
+      if (operation.state != CoreOperationState.completed) return;
+      final resource = operation.resource;
+      if (resource == null) return;
+      final bytes = await widget.client.imageResource(
+        resource.contentMd5,
+        resource.extension,
+      );
+      if (bytes.length != resource.byteLength) return;
+      if (!_isCurrent(revision)) return;
+      setState(() => _coverBytes = bytes);
+    } on Object {
+      // 封面加载失败不阻塞浏览，保留占位图；Core operation 仍会缓存可复用结果。
+    }
+  }
+
+  bool _isCurrent(int revision) => mounted && revision == _requestRevision;
+
+  @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final gallery = widget.gallery;
     final pages = gallery.pageCount;
     final tags = gallery.tags.take(3).join('  ');
     return Card(
@@ -1002,8 +1056,8 @@ class _EhGalleryCard extends StatelessWidget {
         onTap: () => Navigator.of(context).push<void>(
           MaterialPageRoute(
             builder: (_) => EhGalleryPage(
-              client: client,
-              profile: profile,
+              client: widget.client,
+              profile: widget.profile,
               summary: gallery,
             ),
           ),
@@ -1017,11 +1071,19 @@ class _EhGalleryCard extends StatelessWidget {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    Icon(
-                      Icons.collections_bookmark_outlined,
-                      size: 58,
-                      color: colors.onSurfaceVariant.withValues(alpha: 0.42),
-                    ),
+                    if (_coverBytes case final bytes?)
+                      Image.memory(
+                        bytes,
+                        key: Key('eh-cover-image-${gallery.gallery.gid}'),
+                        fit: BoxFit.cover,
+                        gaplessPlayback: true,
+                      )
+                    else
+                      Icon(
+                        Icons.collections_bookmark_outlined,
+                        size: 58,
+                        color: colors.onSurfaceVariant.withValues(alpha: 0.42),
+                      ),
                     Positioned(
                       left: 8,
                       top: 8,

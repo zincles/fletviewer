@@ -1,8 +1,9 @@
 //! Integrated HTTP control plane and minimal status page.
 
 use crate::{
-    BooruOriginalFetchRequest, ContentMd5, CoreError, CoreHandle, EhPageFetchRequest, ErrorCode,
-    EventStreamItem, FakeOperationRequest, OperationId, PixivPageFetchRequest, RuntimeState,
+    BooruOriginalFetchRequest, ContentMd5, CoreError, CoreHandle, EhCoverFetchRequest,
+    EhPageFetchRequest, EhThumbnailFetchRequest, ErrorCode, EventStreamItem, FakeOperationRequest,
+    OperationId, PixivPageFetchRequest, RuntimeState,
 };
 use axum::{
     Json, Router,
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, net::SocketAddr, str::FromStr, time::Duration};
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 pub(crate) struct ControlServer {
     pub(crate) listen: SocketAddr,
@@ -127,6 +129,12 @@ struct EhHomeQuery {
     search: Option<String>,
     direction: Option<crate::EhPageDirection>,
     gid: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EhThumbnailFetchInput {
+    image_url: String,
 }
 
 #[derive(Deserialize)]
@@ -353,8 +361,16 @@ pub(crate) async fn start(
             get(get_eh_thumbnails),
         )
         .route(
+            "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/thumbnails/{page}/fetch",
+            post(start_eh_thumbnail_fetch),
+        )
+        .route(
             "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/pages/{page}/fetch",
             post(start_eh_page_fetch),
+        )
+        .route(
+            "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/cover/fetch",
+            post(start_eh_cover_fetch),
         )
         .route(
             "/api/v1/providers/eh/{profile}/galleries/{gid}/{token}/archives",
@@ -1432,6 +1448,57 @@ async fn start_eh_page_fetch(
             gallery: crate::EhGalleryRef { gid, token },
             page,
             nl: None,
+        })
+        .await
+    {
+        Ok(operation) => {
+            with_security_headers((StatusCode::ACCEPTED, Json(operation)).into_response())
+        }
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn start_eh_cover_fetch(
+    State(state): State<ControlState>,
+    Path((profile, gid, token)): Path<(String, u64, String)>,
+) -> Response {
+    match state
+        .core
+        .start_eh_cover_fetch(EhCoverFetchRequest {
+            profile: crate::ProfileKey::new("eh", profile),
+            gallery: crate::EhGalleryRef { gid, token },
+        })
+        .await
+    {
+        Ok(operation) => {
+            with_security_headers((StatusCode::ACCEPTED, Json(operation)).into_response())
+        }
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn start_eh_thumbnail_fetch(
+    State(state): State<ControlState>,
+    Path((profile, gid, token, page)): Path<(String, u64, String, u32)>,
+    Json(input): Json<EhThumbnailFetchInput>,
+) -> Response {
+    let image_url = match Url::parse(&input.image_url) {
+        Ok(url) => url,
+        Err(_) => {
+            return error_response(&CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH thumbnail URL must be an absolute HTTP(S) URL",
+                false,
+            ));
+        }
+    };
+    match state
+        .core
+        .start_eh_thumbnail_fetch(EhThumbnailFetchRequest {
+            profile: crate::ProfileKey::new("eh", profile),
+            gallery: crate::EhGalleryRef { gid, token },
+            page,
+            image_url,
         })
         .await
     {

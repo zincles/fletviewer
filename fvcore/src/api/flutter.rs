@@ -188,6 +188,53 @@ impl NativeCore {
         )
     }
 
+    /// Starts one EH gallery cover fetch and returns the operation as JSON.
+    pub async fn start_eh_cover_fetch_json(
+        &self,
+        profile: String,
+        gid: u64,
+        token: String,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .start_eh_cover_fetch(crate::EhCoverFetchRequest {
+                    profile: ProfileKey::new("eh", profile),
+                    gallery: crate::EhGalleryRef { gid, token },
+                })
+                .await,
+        )
+    }
+
+    /// Starts one EH gallery thumbnail fetch and returns the operation as JSON.
+    pub async fn start_eh_thumbnail_fetch_json(
+        &self,
+        profile: String,
+        gid: u64,
+        token: String,
+        page: u32,
+        image_url: String,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        let image_url = url::Url::parse(&image_url).map_err(|_| {
+            bridge_error(CoreError::new(
+                ErrorCode::InvalidInput,
+                "EH thumbnail URL must be an absolute HTTP(S) URL",
+                false,
+            ))
+        })?;
+        to_json(
+            self.handle
+                .start_eh_thumbnail_fetch(crate::EhThumbnailFetchRequest {
+                    profile: ProfileKey::new("eh", profile),
+                    gallery: crate::EhGalleryRef { gid, token },
+                    page,
+                    image_url,
+                })
+                .await,
+        )
+    }
+
     /// Reads content-addressed image bytes.
     pub async fn image_resource_bytes(
         &self,

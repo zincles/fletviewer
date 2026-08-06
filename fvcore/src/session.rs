@@ -332,6 +332,24 @@ impl SessionRegistry {
             .await
     }
 
+    pub(crate) async fn get_eh_thumbnail_image<F>(
+        &self,
+        key: &ProfileKey,
+        url: &Url,
+        referer_path: &str,
+        limit: BodyLimit,
+        cancellation: CancellationToken,
+        progress: F,
+    ) -> Result<NetworkResponse, CoreError>
+    where
+        F: FnMut(usize, Option<u64>) + Send,
+    {
+        let session = self.session(key)?;
+        session
+            .get_eh_thumbnail_image(url, referer_path, limit, cancellation, progress)
+            .await
+    }
+
     pub(crate) async fn probe(
         &self,
         key: &ProfileKey,
@@ -490,7 +508,6 @@ impl SessionGeneration {
         if config.provider == "eh" && base_host.eq_ignore_ascii_case(EH_PUBLIC_HOST) {
             allowed_hosts.insert(EH_PUBLIC_API_HOST.to_owned());
         }
-        let redirect_hosts = allowed_hosts.clone();
         let base_scheme = config.base_url.scheme().to_owned();
         let redirect_limit = network.max_redirects;
         let mut client_builder = Client::builder()
@@ -501,11 +518,7 @@ impl SessionGeneration {
                 if attempt.previous().len() >= redirect_limit {
                     return attempt.error("fvcore_redirect_limit");
                 }
-                let allowed = attempt
-                    .url()
-                    .host_str()
-                    .is_some_and(|host| redirect_hosts.contains(&host.to_ascii_lowercase()));
-                if allowed && attempt.url().scheme() == base_scheme {
+                if attempt.url().scheme() == base_scheme {
                     attempt.follow()
                 } else {
                     attempt.error(REDIRECT_DENIED)
@@ -694,7 +707,7 @@ impl SessionGeneration {
     where
         F: FnMut(usize, Option<u64>) + Send,
     {
-        self.validate_eh_viewer_image(url, referer)?;
+        self.validate_eh_image(url, referer)?;
         let mut request = self
             .client
             .get(url.clone())
@@ -712,6 +725,27 @@ impl SessionGeneration {
             progress,
         )
         .await
+    }
+
+    /// Fetches one EH gallery thumbnail from any host returned by the EH pages.
+    ///
+    /// The Referer is constructed by the Core as the owning gallery page, and Cookie is
+    /// only sent when the target host is the profile origin itself. The response is
+    /// validated as image content by the caller.
+    async fn get_eh_thumbnail_image<F>(
+        &self,
+        url: &Url,
+        referer_path: &str,
+        limit: BodyLimit,
+        cancellation: CancellationToken,
+        progress: F,
+    ) -> Result<NetworkResponse, CoreError>
+    where
+        F: FnMut(usize, Option<u64>) + Send,
+    {
+        let referer = safe_join(&self.config.base_url, referer_path)?;
+        self.get_eh_viewer_image(url, &referer, limit, cancellation, progress)
+            .await
     }
 
     async fn post_eh_api(
@@ -916,15 +950,16 @@ impl SessionGeneration {
         })
     }
 
-    fn validate_eh_viewer_image(&self, url: &Url, referer: &Url) -> Result<(), CoreError> {
+    fn validate_eh_image(&self, url: &Url, referer: &Url) -> Result<(), CoreError> {
         if self.key.provider != "eh" {
             return Err(CoreError::new(
                 ErrorCode::InvalidInput,
-                "EH viewer image requests require an EH profile",
+                "EH image requests require an EH profile",
                 false,
             ));
         }
         self.validate_absolute(referer, None)?;
+        let host = url.host_str().unwrap_or("<missing host>");
         if url.scheme() != self.config.base_url.scheme()
             || url.host_str().is_none()
             || !url.username().is_empty()
@@ -932,7 +967,7 @@ impl SessionGeneration {
         {
             return Err(CoreError::new(
                 ErrorCode::AccessDenied,
-                "EH viewer image URL violates secure origin requirements",
+                format!("EH image URL host {host} violates secure origin requirements"),
                 false,
             ));
         }
@@ -940,6 +975,7 @@ impl SessionGeneration {
     }
 
     fn validate_absolute(&self, url: &Url, referer: Option<&Url>) -> Result<(), CoreError> {
+        let host = url.host_str().unwrap_or("<missing host>");
         if url.scheme() != self.config.base_url.scheme()
             || !url
                 .host_str()
@@ -949,7 +985,7 @@ impl SessionGeneration {
         {
             return Err(CoreError::new(
                 ErrorCode::AccessDenied,
-                "URL is outside the Provider profile's allowed origin policy",
+                format!("URL host {host} is outside the Provider profile's allowed origin policy"),
                 false,
             ));
         }
@@ -1343,10 +1379,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_cross_host_redirect() {
+    async fn rejects_scheme_changing_redirect() {
         let listen = server(Router::new().route(
             "/redirect",
-            get(|| async { Redirect::temporary("http://localhost:9/denied") }),
+            get(|| async { Redirect::temporary("https://localhost:9/denied") }),
         ))
         .await;
         let registry = registry(profile(listen), NetworkConfig::default());
@@ -1375,7 +1411,7 @@ mod tests {
             )
             .route(
                 "/redirect",
-                get(|| async { Redirect::temporary("http://127.0.0.3:9/denied") }),
+                get(|| async { Redirect::temporary("https://127.0.0.3:9/denied") }),
             );
         tokio::spawn(async move { axum::serve(image_listener, image_router).await.unwrap() });
 
@@ -1432,6 +1468,165 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), ErrorCode::RedirectDenied);
+    }
+
+    #[tokio::test]
+    async fn eh_cover_images_accept_provider_returned_hosts() {
+        let image_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
+        let image_listen = image_listener.local_addr().unwrap();
+        let image_router = Router::new().route(
+            "/cover.webp",
+            get(|headers: axum::http::HeaderMap| async move {
+                assert!(headers.get(axum::http::header::COOKIE).is_none());
+                assert!(
+                    headers
+                        .get(axum::http::header::REFERER)
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|value| value.contains("/g/123456/abcdef1234/"))
+                );
+                "cover"
+            }),
+        );
+        tokio::spawn(async move { axum::serve(image_listener, image_router).await.unwrap() });
+
+        let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(provider_listener, Router::new()).await.unwrap() });
+        let base_url = Url::parse(&format!("http://{provider_listen}/")).unwrap();
+        let profile = ProviderProfileConfig {
+            provider: "eh".to_owned(),
+            base_url: base_url.clone(),
+            cookie: Some("eh_session=fixture-secret".to_owned()),
+            ..ProviderProfileConfig::default()
+        };
+        let profiles = BTreeMap::from([
+            ("eh/default".to_owned(), profile),
+            (
+                "danbooru/default".to_owned(),
+                ProviderProfileConfig {
+                    provider: "danbooru".to_owned(),
+                    base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                    ..ProviderProfileConfig::default()
+                },
+            ),
+        ]);
+        let registry = SessionRegistry::new(&profiles, &NetworkConfig::default()).unwrap();
+        let key = ProfileKey::new("eh", "default");
+        let gallery_page =
+            Url::parse(&format!("http://{provider_listen}/g/123456/abcdef1234/")).unwrap();
+        let cover_url = Url::parse(&format!("http://{image_listen}/cover.webp")).unwrap();
+        let response = registry
+            .get_eh_viewer_image(
+                &key,
+                &cover_url,
+                &gallery_page,
+                BodyLimit::bounded(128),
+                CancellationToken::new(),
+                |_, _| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.body.as_ref(), b"cover");
+
+        let with_credentials =
+            Url::parse(&format!("http://user:pass@{image_listen}/cover.webp")).unwrap();
+        let error = registry
+            .get_eh_viewer_image(
+                &key,
+                &with_credentials,
+                &gallery_page,
+                BodyLimit::bounded(128),
+                CancellationToken::new(),
+                |_, _| {},
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::AccessDenied);
+
+        let wrong_profile = ProfileKey::new("danbooru", "default");
+        let error = registry
+            .get_eh_viewer_image(
+                &wrong_profile,
+                &cover_url,
+                &gallery_page,
+                BodyLimit::bounded(128),
+                CancellationToken::new(),
+                |_, _| {},
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn eh_thumbnail_images_use_core_constructed_referer() {
+        let image_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
+        let image_listen = image_listener.local_addr().unwrap();
+        let image_router = Router::new().route(
+            "/thumb.webp",
+            get(|headers: axum::http::HeaderMap| async move {
+                assert!(headers.get(axum::http::header::COOKIE).is_none());
+                assert!(
+                    headers
+                        .get(axum::http::header::REFERER)
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|value| value.ends_with("/g/123456/abcdef1234/"))
+                );
+                "thumb"
+            }),
+        );
+        tokio::spawn(async move { axum::serve(image_listener, image_router).await.unwrap() });
+
+        let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_listen = provider_listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(provider_listener, Router::new()).await.unwrap() });
+        let base_url = Url::parse(&format!("http://{provider_listen}/")).unwrap();
+        let profile = ProviderProfileConfig {
+            provider: "eh".to_owned(),
+            base_url: base_url.clone(),
+            cookie: Some("eh_session=fixture-secret".to_owned()),
+            ..ProviderProfileConfig::default()
+        };
+        let profiles = BTreeMap::from([
+            ("eh/default".to_owned(), profile),
+            (
+                "danbooru/default".to_owned(),
+                ProviderProfileConfig {
+                    provider: "danbooru".to_owned(),
+                    base_url: Url::parse(&format!("http://{provider_listen}/")).unwrap(),
+                    ..ProviderProfileConfig::default()
+                },
+            ),
+        ]);
+        let registry = SessionRegistry::new(&profiles, &NetworkConfig::default()).unwrap();
+        let key = ProfileKey::new("eh", "default");
+        let thumb_url = Url::parse(&format!("http://{image_listen}/thumb.webp")).unwrap();
+        let response = registry
+            .get_eh_thumbnail_image(
+                &key,
+                &thumb_url,
+                "g/123456/abcdef1234/",
+                BodyLimit::bounded(128),
+                CancellationToken::new(),
+                |_, _| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.body.as_ref(), b"thumb");
+
+        let wrong_profile = ProfileKey::new("danbooru", "default");
+        let error = registry
+            .get_eh_thumbnail_image(
+                &wrong_profile,
+                &thumb_url,
+                "g/123456/abcdef1234/",
+                BodyLimit::bounded(128),
+                CancellationToken::new(),
+                |_, _| {},
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
     }
 
     #[tokio::test]

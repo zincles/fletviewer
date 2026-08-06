@@ -52,9 +52,10 @@ pub use image_download::{
     ImageDownloadTaskSnapshot, PixivImageDownloadRequest,
 };
 pub use operation::{
-    BooruOriginalFetchRequest, CoreEvent, CoreEventSubject, EhPageFetchRequest, ErrorSnapshot,
-    EventBatch, EventStreamItem, EventSubscription, FakeOperationRequest, FakeOutcome,
-    OperationKind, OperationSnapshot, OperationState, PixivPageFetchRequest,
+    BooruOriginalFetchRequest, CoreEvent, CoreEventSubject, EhCoverFetchRequest,
+    EhPageFetchRequest, EhThumbnailFetchRequest, ErrorSnapshot, EventBatch, EventStreamItem,
+    EventSubscription, FakeOperationRequest, FakeOutcome, OperationKind, OperationSnapshot,
+    OperationState, PixivPageFetchRequest,
 };
 pub use provider::booru::{
     BooruPost, BooruSearchResult, BooruTagSuggestion, BooruTagSuggestions, ImageVariant,

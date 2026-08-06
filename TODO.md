@@ -21,7 +21,7 @@ Flutter Web / NAS / CLI -> HTTP + SSE + binary resource/stream -> fvcore executa
 ## 当前状态
 
 - `fvcore` 已经是可运行后端，不是脚手架：Provider 查询、图像与内容缓存、EH Archive、Booru/Pixiv 持久单图下载、本地 ZIP 画廊、HTTP/SSE/resource 和调试 WebUI 均形成首轮纵向闭环。
-- `frontend/` Flutter desktop 工程已存在，并在应用标题中明确标记为实验性 GUI；当前下载页已形成首条 UI 链路，但浏览、本地画廊和设置页仍有占位内容。
+- `frontend/` Flutter desktop 工程已存在，并在应用标题中明确标记为实验性 GUI；下载页已形成 UI 链路，EH 浏览（搜索、首页封面、详情、缩略图索引、reader）已真实接通，本地画廊和设置页仍有占位内容。
 - `app/fvcore_sidecar.py` 及 Dart executable launcher 只保留为历史 transport 探针，不再是本地产品路径；完成 FRB 切换后删除。
 - 当前阶段是：先用 FRB 在 Linux desktop 跑通进程内 Runtime、snapshot、下载列表/命令、事件和图片 bytes，再复用同一 binding 接 Android arm64。
 - 不再安排 Flet 页面重做或“先把 Rust 下载页接回 Flet”的过渡工作。
@@ -88,10 +88,11 @@ Flutter Web / NAS / CLI -> HTTP + SSE + binary resource/stream -> fvcore executa
 - [x] 接入 FRB build/codegen，在 Linux desktop 启动进程内 `CoreRuntime` 并显示真实 snapshot。
 - [x] 将统一下载列表、cancel/retry/delete、event invalidation 和图片 bytes 切到 FRB；本地 loopback client 与 executable launcher 不再是 Linux desktop 默认路径。
 - [x] 把浏览页的第一个 Provider 搜索、详情和 reader 从占位内容替换为真实 Rust 调用；详情、缩略索引、operation 轮询和 content-addressed image resource 已覆盖。
+- [x] EH 首页封面与详情页缩略图已接通：封面/缩略图走受限 EH 图片 operation 与内容缓存；缩略图解析为 sprite 整图 + 偏移（EH 无 `@x` 裁剪服务），Flutter 端按偏移裁剪显示，同页共享一次下载。
 - [ ] 把本地画廊 inventory/detail/page 从占位内容替换为真实 Rust 调用。
 - [x] `flutter analyze`、`flutter test`、Rust gate、Python sidecar probe 和真实 Linux desktop smoke 全部通过。
 - [ ] Flutter Web 复用同一 Dart domain model 连接 server `fvcore`；明确服务器存储、反向代理和文件下载语义。
-- [ ] Android arm64 打包同一 FRB library，真机验证 private storage、后台/返回键、进程回收和持久任务恢复。
+- [x] Android 平台工程已生成（`flutter create --platforms=android`，INTERNET 权限），`flutter build apk --release` 产出含三 ABI `libfvcore.so` 的 APK；真机验证 private storage、后台/返回键、进程回收和持久任务恢复仍待办。
 
 ## Python/Flet 退役顺序
 

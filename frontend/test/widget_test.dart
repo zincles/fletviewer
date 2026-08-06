@@ -20,12 +20,15 @@ void main() {
 
     await tester.pumpWidget(FletViewerApp(client: client));
     await tester.pump();
+    await tester.pump();
 
     expect(find.text('FletViewer · 实验性 GUI · 发现'), findsOneWidget);
     expect(find.text('E-Hentai'), findsWidgets);
     expect(find.text('主页'), findsWidgets);
     expect(find.byType(SearchBar), findsOneWidget);
     expect(find.text('Rust 查询 fixture'), findsOneWidget);
+    expect(find.byKey(const Key('eh-cover-image-123')), findsOneWidget);
+    expect(client.coverRequests, 1);
   });
 
   testWidgets('mobile navigation opens downloads without overflow', (
@@ -82,6 +85,7 @@ void main() {
     expect(find.byKey(const Key('eh-detail-title')), findsOneWidget);
     expect(find.text('artist:fixture'), findsOneWidget);
     expect(find.byKey(const Key('eh-thumbnail-0')), findsOneWidget);
+    expect(client.thumbnailRequests, 1);
 
     await tester.tap(find.byKey(const Key('eh-start-reader')));
     await tester.pump();
@@ -118,6 +122,8 @@ final class _FakeCoreClient implements CoreClient {
   );
 
   int? startedPage;
+  int coverRequests = 0;
+  int thumbnailRequests = 0;
   (String, String)? resourceRequest;
 
   @override
@@ -147,7 +153,7 @@ final class _FakeCoreClient implements CoreClient {
           rating: 4.5,
           language: 'Chinese',
           tags: ['artist:fixture'],
-          coverUrl: null,
+          coverUrl: 'https://ehgt.org/fixture.webp',
           coverWidth: null,
           coverHeight: null,
         ),
@@ -205,11 +211,13 @@ final class _FakeCoreClient implements CoreClient {
       page: page,
       items: const [
         EhThumbnail(
-          imageUrl: 'https://ehgt.org/thumb.webp',
+          imageUrl: 'https://ehgt.org/sprite.webp',
           pageUrl: 'https://e-hentai.org/s/page-token/123-1',
           page: 0,
           width: 100,
           height: 140,
+          spriteX: 200,
+          spriteY: 0,
         ),
       ],
       nextPage: null,
@@ -224,6 +232,26 @@ final class _FakeCoreClient implements CoreClient {
   }) async {
     startedPage = page;
     return _operation(CoreOperationState.queued, page);
+  }
+
+  @override
+  Future<CoreOperation> startEhCoverFetch({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+  }) async {
+    coverRequests++;
+    return _operation(CoreOperationState.completed, 0);
+  }
+
+  @override
+  Future<CoreOperation> startEhThumbnailFetch({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+    required int page,
+    required String imageUrl,
+  }) async {
+    thumbnailRequests++;
+    return _operation(CoreOperationState.completed, page);
   }
 
   @override

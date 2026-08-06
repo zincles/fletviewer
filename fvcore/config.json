@@ -57,7 +57,9 @@
       "profile": "default",
       "base_url": "https://e-hentai.org/",
       "user_agent": "fvcore/0.1.0",
-      "allowed_redirect_hosts": [],
+      "allowed_redirect_hosts": [
+        "api.e-hentai.org"
+      ],
       "cookie_env": null,
       "api_user_env": null,
       "api_key_env": null,

@@ -731,6 +731,7 @@ impl ImageDownloadService {
                     resource_key,
                     expected_bytes,
                     referer,
+                    cdn_referer_path: None,
                 },
                 cancellation,
                 move |progress| {

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -339,8 +340,11 @@ class _EhGalleryPageState extends State<EhGalleryPage> {
               itemCount: page.items.length,
               itemBuilder: (context, index) {
                 final item = page.items[index];
-                return _PageIndexTile(
-                  page: item.page,
+                return _ThumbnailTile(
+                  client: widget.client,
+                  profile: widget.profile,
+                  gallery: detail.gallery,
+                  item: item,
                   onTap: _loadingThumbnails
                       ? null
                       : () => _openReader(item.page),
@@ -792,28 +796,176 @@ class _MetadataField extends StatelessWidget {
   }
 }
 
-class _PageIndexTile extends StatelessWidget {
-  const _PageIndexTile({required this.page, required this.onTap});
+class _ThumbnailTile extends StatefulWidget {
+  const _ThumbnailTile({
+    required this.client,
+    required this.profile,
+    required this.gallery,
+    required this.item,
+    required this.onTap,
+  });
 
-  final int page;
+  final CoreClient client;
+  final String profile;
+  final EhGalleryRef gallery;
+  final EhThumbnail item;
   final VoidCallback? onTap;
+
+  @override
+  State<_ThumbnailTile> createState() => _ThumbnailTileState();
+}
+
+class _ThumbnailTileState extends State<_ThumbnailTile> {
+  Uint8List? _bytes;
+  ui.Image? _spriteImage;
+  bool _loaded = false;
+  int _requestRevision = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _requestRevision++;
+    _spriteImage?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final revision = ++_requestRevision;
+    try {
+      var operation = await widget.client.startEhThumbnailFetch(
+        profile: widget.profile,
+        gallery: widget.gallery,
+        page: widget.item.page,
+        imageUrl: widget.item.imageUrl,
+      );
+      if (!_isCurrent(revision)) return;
+      while (!operation.state.isTerminal) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        if (!_isCurrent(revision)) return;
+        operation = await widget.client.operation(operation.id);
+        if (!_isCurrent(revision)) return;
+      }
+      if (!_isCurrent(revision)) return;
+      setState(() => _loaded = true);
+      if (operation.state != CoreOperationState.completed) return;
+      final resource = operation.resource;
+      if (resource == null) return;
+      final bytes = await widget.client.imageResource(
+        resource.contentMd5,
+        resource.extension,
+      );
+      if (bytes.length != resource.byteLength) return;
+      if (!_isCurrent(revision)) return;
+      if (widget.item.spriteX != null && widget.item.spriteY != null) {
+        // Sprite tiles share one whole sprite image; decode once and crop by offset.
+        final codec = await ui.instantiateImageCodec(bytes);
+        final frame = await codec.getNextFrame();
+        if (!_isCurrent(revision)) return;
+        setState(() {
+          _bytes = bytes;
+          _spriteImage = frame.image;
+        });
+      } else {
+        setState(() => _bytes = bytes);
+      }
+    } on Object {
+      // 缩略图失败保留页号占位；翻页重建格子时会自动重试。
+    }
+  }
+
+  bool _isCurrent(int revision) => mounted && revision == _requestRevision;
+
+  Widget _buildImage(Uint8List bytes) {
+    final item = widget.item;
+    final spriteX = item.spriteX;
+    final spriteY = item.spriteY;
+    final image = _spriteImage;
+    if (spriteX == null || spriteY == null || image == null) {
+      return Image.memory(
+        bytes,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        filterQuality: FilterQuality.medium,
+      );
+    }
+    final tileWidth = (item.width ?? 100).toDouble();
+    final tileHeight = (item.height ?? 140).toDouble();
+    return FittedBox(
+      fit: BoxFit.cover,
+      child: SizedBox(
+        width: tileWidth,
+        height: tileHeight,
+        child: RawImage(
+          image: image,
+          fit: BoxFit.none,
+          filterQuality: FilterQuality.medium,
+          alignment: Alignment(
+            -1 + 2 * (spriteX + tileWidth / 2) / image.width,
+            -1 + 2 * (spriteY + tileHeight / 2) / image.height,
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final bytes = _bytes;
     return Material(
       color: colors.surfaceContainerHighest,
       borderRadius: BorderRadius.circular(6),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        key: Key('eh-thumbnail-$page'),
-        onTap: onTap,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+        key: Key('eh-thumbnail-${widget.item.page}'),
+        onTap: widget.onTap,
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            const Icon(Icons.image_outlined),
-            const SizedBox(height: 4),
-            Text('第 ${page + 1} 页'),
+            if (bytes != null)
+              _buildImage(bytes)
+            else
+              Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.image_outlined,
+                    color: colors.onSurfaceVariant.withValues(alpha: 0.6),
+                  ),
+                  if (!_loaded) ...[
+                    const SizedBox(height: 8),
+                    const SizedBox.square(
+                      dimension: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ],
+                ],
+              ),
+            Positioned(
+              left: 4,
+              bottom: 4,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: colors.surface.withValues(alpha: 0.85),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 2,
+                  ),
+                  child: Text(
+                    '${widget.item.page + 1}',
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ),
+              ),
+            ),
           ],
         ),
       ),

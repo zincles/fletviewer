@@ -164,7 +164,7 @@ pub struct EhGalleryDetail {
 /// One gallery page thumbnail.
 #[derive(Clone, Debug, Serialize)]
 pub struct EhThumbnail {
-    /// Thumbnail URL. Sprite crops append the local `@x=...&y=...` directive.
+    /// Directly fetchable image URL. For sprite tiles this is the whole sprite image.
     pub image_url: String,
     /// EH image page URL.
     pub page_url: Url,
@@ -174,6 +174,10 @@ pub struct EhThumbnail {
     pub width: Option<u32>,
     /// Display height supplied by EH.
     pub height: Option<u32>,
+    /// Sprite tile origin on the X axis, when this thumbnail is a sprite tile.
+    pub sprite_x: Option<u32>,
+    /// Sprite tile origin on the Y axis, when this thumbnail is a sprite tile.
+    pub sprite_y: Option<u32>,
 }
 
 /// One zero-based page of EH gallery thumbnails.
@@ -834,10 +838,13 @@ fn parse_gallery_detail(
                 .map(|position| (position / 19) as u8)
         })
         .filter(|_| is_favorite);
+    // tl 0.7 不实现后代组合选择器匹配（`#a #b` 恒为空），这里用单 ID + 显式后代遍历。
     let cover_url = dom
-        .query_selector("#gleft #gd1 div")
+        .query_selector("#gd1")
         .and_then(|mut nodes| nodes.next())
         .and_then(|node| node.get(parser).and_then(tl::Node::as_tag))
+        .and_then(|tag| descendants(tag, parser, "div"))
+        .and_then(|mut nodes| nodes.next())
         .and_then(|tag| attribute(tag, "style", parser))
         .and_then(|style| first_http_url(&style))
         .and_then(|value| Url::parse(&value).ok());
@@ -1017,7 +1024,7 @@ fn parse_thumbnails(
             let parsed = direct
                 .and_then(|tag| parse_direct_thumbnail(tag, parser))
                 .or_else(|| sprite.and_then(|tag| parse_sprite_thumbnail(tag, parser)));
-            if let Some((image_url, width, height)) = parsed {
+            if let Some((image_url, width, height, sprite_x, sprite_y)) = parsed {
                 let Some(page) = parse_gallery_page_index(&page_url) else {
                     continue;
                 };
@@ -1027,6 +1034,8 @@ fn parse_thumbnails(
                     page,
                     width,
                     height,
+                    sprite_x,
+                    sprite_y,
                 });
             }
         }
@@ -1056,46 +1065,42 @@ fn parse_gallery_page_index(url: &Url) -> Option<u32> {
         .and_then(|page| page.checked_sub(1))
 }
 
+type ParsedThumbnail = (String, Option<u32>, Option<u32>, Option<u32>, Option<u32>);
+
 fn parse_direct_thumbnail(
     tag: &tl::HTMLTag<'_>,
     parser: &tl::Parser<'_>,
-) -> Option<(String, Option<u32>, Option<u32>)> {
+) -> Option<ParsedThumbnail> {
     let source = attribute(tag, "src", parser).and_then(nonempty)?;
     let style = attribute(tag, "style", parser).unwrap_or_default();
     Some((
         source,
         dimension(tag, parser, "width", &style),
         dimension(tag, parser, "height", &style),
+        None,
+        None,
     ))
 }
 
 fn parse_sprite_thumbnail(
     tag: &tl::HTMLTag<'_>,
     parser: &tl::Parser<'_>,
-) -> Option<(String, Option<u32>, Option<u32>)> {
+) -> Option<ParsedThumbnail> {
     let style = attribute(tag, "style", parser)?;
-    let mut source = Regex::new(r#"url\([\"']?([^)'\"]+)"#)
+    let source = Regex::new(r#"url\([\"']?([^)'\"]+)"#)
         .expect("static EH sprite URL regex is valid")
         .captures(&style)?[1]
         .to_owned();
     let width = dimension(tag, parser, "width", &style);
     let height = dimension(tag, parser, "height", &style);
-    let position = Regex::new(r"url\([^)]+\)\s*-(\d+)px")
+    // `background: transparent url(...) -200px 0 no-repeat` positions the tile inside
+    // the whole sprite image; the tile origin is recovered as a positive offset.
+    let position = Regex::new(r"url\([^)]+\)\s+(-?\d+)px\s+(-?\d+)(?:px)?")
         .expect("static EH sprite position regex is valid")
-        .captures(&style)
-        .and_then(|captures| captures[1].parse::<u32>().ok());
-    let mut ranges = Vec::new();
-    if let (Some(position), Some(width)) = (position, width) {
-        ranges.push(format!("x={position}-{}", position.saturating_add(width)));
-    }
-    if let Some(height) = height {
-        ranges.push(format!("y=0-{height}"));
-    }
-    if !ranges.is_empty() {
-        source.push('@');
-        source.push_str(&ranges.join("&"));
-    }
-    Some((source, width, height))
+        .captures(&style)?;
+    let x = position[1].parse::<i32>().ok()?.unsigned_abs();
+    let y = position[2].parse::<i32>().ok()?.unsigned_abs();
+    Some((source, width, height, Some(x), Some(y)))
 }
 
 fn document_text(dom: &tl::VDom<'_>, selector: &str) -> Option<String> {
@@ -1655,6 +1660,10 @@ mod tests {
         assert_eq!(detail.favorite_category, Some(2));
         assert_eq!(detail.favorite_count, 1234);
         assert_eq!(detail.page_token.as_deref(), Some("page-token"));
+        assert_eq!(
+            detail.cover_url.as_ref().map(|url| url.as_str()),
+            Some("https://ehgt.org/fixture-cover.webp")
+        );
         assert_eq!(detail.tags["artist"], ["artist:fixture artist"]);
         assert_eq!(detail.comments[0].id, "77");
         assert_eq!(detail.comments[0].vote_status, 1);
@@ -1669,13 +1678,15 @@ mod tests {
         let base = Url::parse("https://e-hentai.org/g/123456/abcdef1234/").unwrap();
         let (items, next) = parse_thumbnails(THUMBNAILS, &base, 0).unwrap();
         assert_eq!(items.len(), 2);
-        assert_eq!(
-            items[0].image_url,
-            "https://ehgt.org/sprite.webp@x=200-300&y=0-140"
-        );
+        assert_eq!(items[0].image_url, "https://ehgt.org/sprite.webp");
         assert_eq!(items[0].width, Some(100));
+        assert_eq!(items[0].height, Some(140));
+        assert_eq!(items[0].sprite_x, Some(200));
+        assert_eq!(items[0].sprite_y, Some(0));
         assert_eq!(items[1].image_url, "https://ehgt.org/direct.webp");
         assert_eq!(items[1].height, Some(160));
+        assert_eq!(items[1].sprite_x, None);
+        assert_eq!(items[1].sprite_y, None);
         assert_eq!(next, Some(1));
     }
 

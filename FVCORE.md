@@ -308,7 +308,7 @@ Runtime snapshot 至少公开生命周期、Provider generation/认证状态、�
 ## 安全边界
 
 - 默认 `#![forbid(unsafe_code)]`；本 crate 不为假设中的未来 binding 预留 unsafe。
-- Provider 返回 URL 必须经过 scheme、host/redirect 和凭据传播策略，不能把 Core 变成任意 URL 下载器或 SSRF 代理。
+- Provider 页面/API URL 必须经过 scheme、origin/redirect 和凭据传播策略；EH 画廊图片（封面、缩略图、viewer 页图）为适配官方 CDN 与 H@H 节点直链，接受 Provider 返回或 DTO 回传的任何 HTTP(S) 图片 URL，不做 host 白名单，但凭据只发往 profile 原站、redirect 保留次数与 scheme 一致性限制、响应必须通过图片格式/大小/MD5 校验才进入共享缓存。
 - 外部不能提交任意绝对输出路径；只提交类型化资源和受控目标，Core 在 Storage roots 内解析安全相对路径。
 - 图片响应检查 HTTP 状态、长度、Content-Type、magic bytes、大小和 MD5，再进入共享缓存。
 - 原子发布使用同域 staging、flush 和 rename；关键 Data/Downloads 操作失败不得先删除源。
