@@ -100,6 +100,7 @@ Flutter Web / NAS / CLI -> HTTP + SSE + binary resource/stream -> fvcore executa
 - [x] EH 热门（`/popular`）与本地浏览历史接通：详情查询自动记录（EH 画廊与 Pixiv 作品，按 media 幂等、500 条上限），历史列表/清除 + 点击回跳详情。
 - [x] 设置页支持 Pixiv Cookie 内存级配置（embedded Runtime 不落盘；executable 模式持久化到 `config.json`，HTTP 路由 `POST /api/v1/profiles/{provider}/{profile}/cookie`）。
 - [ ] 本地画廊 inventory/detail/page 从占位内容替换为真实 Rust 调用（本地端下一步）。
+- [ ] 持续完善 UI 操作逻辑：浏览/阅读/下载的交互细节、状态反馈与桌面体验（长列表性能、键盘操作、图片缩放、错误重试路径）。
 - [x] `flutter analyze`、`flutter test`、Rust gate、Python sidecar probe 和真实 Linux desktop smoke 全部通过。
 - [ ] Flutter Web 复用同一 Dart domain model 连接 server `fvcore`（**推迟**，见"当前产品范围决策"；Web/NAS 是保留的后续方向）。
 - [x] Android 平台工程已生成（`flutter create --platforms=android`，INTERNET 权限），`flutter build apk --release` 产出含三 ABI `libfvcore.so` 的 APK；真机验证 private storage、后台/返回键、进程回收和持久任务恢复仍待办。
