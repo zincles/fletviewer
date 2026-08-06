@@ -18,6 +18,13 @@ Flutter Web / NAS / CLI -> HTTP + SSE + binary resource/stream -> fvcore executa
 - Python `app/` / `core/` 只作为迁移源、fixture 和临时行为基线，不再产品化；迁移完成后连同 Flet 入口、依赖、测试和文档副本一起删除。
 - Dart 不复制 Rust 业务状态机；同一组 Data、Cache、Downloads、Temp 同时只能有一个 Runtime owner，禁止 Python/Rust 双写或按 Provider/页面局部切换。
 
+## 当前产品范围决策
+
+- 快速出可用成品阶段：**只维护本地端两条路径**——Linux desktop（FRB 进程内 Runtime）与 Android（同一 FRB library 打包 APK）。
+- **Web/NAS 模式保留为架构方向，本轮推迟**：Flutter Web 复用同一 Dart domain model 连接 server `fvcore` 的目标不变，但不在本阶段投入；server 存储、反向代理与 CORS 语义待后续单独立项。
+- **Windows 暂不考虑**：不投入平台打包与验收；Rust/Dart 代码继续避免平台耦合，未来需要时再补。
+- 其余 Provider/图像/下载/画廊能力优先服务本地桌面与 Android 场景。
+
 ## 当前状态
 
 - `fvcore` 已经是可运行后端，不是脚手架：Provider 查询、图像与内容缓存、EH Archive、Booru/Pixiv 持久单图下载、本地 ZIP 画廊、HTTP/SSE/resource 和调试 WebUI 均形成首轮纵向闭环。
@@ -89,9 +96,9 @@ Flutter Web / NAS / CLI -> HTTP + SSE + binary resource/stream -> fvcore executa
 - [x] 将统一下载列表、cancel/retry/delete、event invalidation 和图片 bytes 切到 FRB；本地 loopback client 与 executable launcher 不再是 Linux desktop 默认路径。
 - [x] 把浏览页的第一个 Provider 搜索、详情和 reader 从占位内容替换为真实 Rust 调用；详情、缩略索引、operation 轮询和 content-addressed image resource 已覆盖。
 - [x] EH 首页封面与详情页缩略图已接通：封面/缩略图走受限 EH 图片 operation 与内容缓存；缩略图解析为 sprite 整图 + 偏移（EH 无 `@x` 裁剪服务），Flutter 端按偏移裁剪显示，同页共享一次下载。
-- [ ] 把本地画廊 inventory/detail/page 从占位内容替换为真实 Rust 调用。
+- [ ] 本地画廊 inventory/detail/page 从占位内容替换为真实 Rust 调用（本地端下一步）。
 - [x] `flutter analyze`、`flutter test`、Rust gate、Python sidecar probe 和真实 Linux desktop smoke 全部通过。
-- [ ] Flutter Web 复用同一 Dart domain model 连接 server `fvcore`；明确服务器存储、反向代理和文件下载语义。
+- [ ] Flutter Web 复用同一 Dart domain model 连接 server `fvcore`（**推迟**，见"当前产品范围决策"；Web/NAS 是保留的后续方向）。
 - [x] Android 平台工程已生成（`flutter create --platforms=android`，INTERNET 权限），`flutter build apk --release` 产出含三 ABI `libfvcore.so` 的 APK；真机验证 private storage、后台/返回键、进程回收和持久任务恢复仍待办。
 
 ## Python/Flet 退役顺序
@@ -108,6 +115,8 @@ Flutter Web / NAS / CLI -> HTTP + SSE + binary resource/stream -> fvcore executa
 - 不创建 Dart Provider parser、下载状态机、缓存数据库或第二套任务 registry。
 - 不按 Provider/tab 局部切换存储，不允许 Python/Rust 双写。
 - 不实现 Camoufox、Playwright、challenge bypass、WASM、Pixiv 批量/ugoira，或未经 Android 真机证据支持的 JNI/FFI。
+- Windows 平台打包与验收（暂缓，见"当前产品范围决策"）。
+- Flutter Web 客户端与 server 部署语义（暂缓，方向保留）。
 
 ## 当前验证命令
 
