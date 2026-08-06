@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 /// Top-level destinations preserved from the current Flet information architecture.
-enum AppSection { browse, local, downloads, settings }
+enum AppSection { browse, local, downloads, settings, debug }
 
 extension AppSectionPresentation on AppSection {
   String get label => switch (this) {
@@ -9,6 +9,7 @@ extension AppSectionPresentation on AppSection {
     AppSection.local => '本地',
     AppSection.downloads => '下载',
     AppSection.settings => '设置',
+    AppSection.debug => '调试',
   };
 
   String get title => switch (this) {
@@ -16,6 +17,7 @@ extension AppSectionPresentation on AppSection {
     AppSection.local => '本地画廊',
     AppSection.downloads => '下载任务',
     AppSection.settings => '设置',
+    AppSection.debug => '调试',
   };
 
   IconData get icon => switch (this) {
@@ -23,6 +25,7 @@ extension AppSectionPresentation on AppSection {
     AppSection.local => Icons.folder_outlined,
     AppSection.downloads => Icons.download_outlined,
     AppSection.settings => Icons.settings_outlined,
+    AppSection.debug => Icons.bug_report_outlined,
   };
 
   IconData get selectedIcon => switch (this) {
@@ -30,6 +33,7 @@ extension AppSectionPresentation on AppSection {
     AppSection.local => Icons.folder,
     AppSection.downloads => Icons.download,
     AppSection.settings => Icons.settings,
+    AppSection.debug => Icons.bug_report,
   };
 }
 

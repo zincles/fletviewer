@@ -102,6 +102,9 @@ abstract class NativeCore implements RustOpaqueInterface {
   /// Returns recent browse history as JSON.
   Future<String> historyJson();
 
+  /// Returns image cache accounting as JSON.
+  Future<String> imageCacheJson();
+
   /// Reads content-addressed image bytes.
   Future<Uint8List> imageResourceBytes({
     required String contentMd5,
@@ -113,6 +116,9 @@ abstract class NativeCore implements RustOpaqueInterface {
 
   /// Returns one operation snapshot as JSON.
   Future<String> operationJson({required String id});
+
+  /// Returns active and retained operation snapshots as JSON.
+  Future<String> operationsJson();
 
   /// Returns one authenticated Pixiv bookmark slice as JSON.
   Future<String> pixivBookmarksJson({
@@ -152,10 +158,13 @@ abstract class NativeCore implements RustOpaqueInterface {
     required int page,
   });
 
+  /// Returns safe snapshots of all configured Provider sessions as JSON.
+  Future<String> profilesJson();
+
   /// Retries one persistent download task and returns its updated JSON view.
   Future<String> retryDownloadTaskJson({required String id});
 
-  /// Returns a stable JSON Runtime snapshot.
+  /// Returns the stable JSON Runtime snapshot.
   Future<String> runtimeJson();
 
   /// Requests graceful shutdown and waits for owned services to stop.

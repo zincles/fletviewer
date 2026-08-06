@@ -430,6 +430,10 @@ Map<String, Object?> _runtimeJson({int apiProtocolVersion = 1}) => {
   'runtime_id': 'runtime-1',
   'instance_name': 'fvcore',
   'state': 'ready',
+  'uptime_seconds': 12,
+  'queued_commands': 0,
+  'active_operations': 0,
+  'latest_event_sequence': 0,
   'storage': {
     'schema_version': 3,
     'data_identity': 'v1-data',

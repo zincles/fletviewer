@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'app_navigation.dart';
 import 'core_client.dart';
+import 'debug_page.dart';
 import 'eh_extra_pages.dart';
 import 'eh_gallery_pages.dart';
 import 'history_page.dart';
@@ -224,6 +225,7 @@ class _FletViewerShellState extends State<FletViewerShell> {
             provider: _provider,
             onProviderSelected: _selectProvider,
           ),
+          AppSection.debug => DebugPage(client: _client),
         };
         return Scaffold(
           body: SafeArea(

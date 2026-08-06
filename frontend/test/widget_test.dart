@@ -138,6 +138,26 @@ void main() {
     expect(find.textContaining('配置浏览器 Cookie'), findsOneWidget);
   });
 
+  testWidgets('debug section shows runtime and profile diagnostics', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(420, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FletViewerApp(client: client));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('nav-debug')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('调试'), findsWidgets);
+    expect(find.text('runtime-test'), findsWidgets);
+    expect(find.text('Provider 会话'), findsOneWidget);
+    expect(find.textContaining('Cookie: 未配置'), findsOneWidget);
+    expect(find.text('图片缓存'), findsOneWidget);
+  });
+
   testWidgets('EH favorites tab shows signed-out guidance', (tester) async {
     tester.view.physicalSize = const Size(1280, 800);
     tester.view.devicePixelRatio = 1;
@@ -169,6 +189,10 @@ final class _FakeCoreClient implements CoreClient {
       tempIdentity: 'temp-test',
       databaseBytes: 4096,
     ),
+    uptimeSeconds: 42,
+    queuedCommands: 0,
+    activeOperations: 0,
+    latestEventSequence: 0,
   );
 
   static final imageBytes = base64Decode(
@@ -482,6 +506,40 @@ final class _FakeCoreClient implements CoreClient {
       hasApiCredentials: false,
     );
   }
+
+  @override
+  Future<List<ProfileSnapshot>> profiles() async {
+    return const [
+      ProfileSnapshot(
+        provider: 'eh',
+        profile: 'default',
+        generation: 1,
+        baseUrl: 'https://e-hentai.org/',
+        hasCookie: false,
+        hasApiCredentials: false,
+      ),
+    ];
+  }
+
+  @override
+  Future<ImageCacheSnapshot> imageCache() async {
+    return const ImageCacheSnapshot(
+      memoryBytes: 0,
+      memoryLimitBytes: 134217728,
+      memoryEntries: 0,
+      inflightBytes: 0,
+      inflightLimitBytes: 134217728,
+      aliasCount: 0,
+      diskBlobCount: 0,
+      diskBytes: 0,
+      resourceCount: 0,
+      pageCount: 0,
+      byProvider: {},
+    );
+  }
+
+  @override
+  Future<List<OperationSnapshotView>> operations() async => const [];
 
   @override
   Future<EhFavoritesPage> ehFavorites({String profile = 'default'}) async {

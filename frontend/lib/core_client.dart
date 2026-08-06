@@ -79,6 +79,10 @@ final class CoreSnapshot {
     required this.instanceName,
     required this.state,
     required this.storage,
+    required this.uptimeSeconds,
+    required this.queuedCommands,
+    required this.activeOperations,
+    required this.latestEventSequence,
   });
 
   factory CoreSnapshot.fromJson(Map<String, Object?> json) {
@@ -89,6 +93,10 @@ final class CoreSnapshot {
       instanceName: _string(json, 'instance_name'),
       state: _string(json, 'state'),
       storage: StorageSnapshot.fromJson(_object(json['storage'], 'storage')),
+      uptimeSeconds: _integer(json, 'uptime_seconds'),
+      queuedCommands: _integer(json, 'queued_commands'),
+      activeOperations: _integer(json, 'active_operations'),
+      latestEventSequence: _integer(json, 'latest_event_sequence'),
     );
   }
 
@@ -98,6 +106,10 @@ final class CoreSnapshot {
   final String instanceName;
   final String state;
   final StorageSnapshot storage;
+  final int uptimeSeconds;
+  final int queuedCommands;
+  final int activeOperations;
+  final int latestEventSequence;
 }
 
 final class EhPageCursor {
@@ -1037,6 +1049,79 @@ final class FavoriteSearch {
   final String query;
 }
 
+final class ImageCacheSnapshot {
+  const ImageCacheSnapshot({
+    required this.memoryBytes,
+    required this.memoryLimitBytes,
+    required this.memoryEntries,
+    required this.inflightBytes,
+    required this.inflightLimitBytes,
+    required this.aliasCount,
+    required this.diskBlobCount,
+    required this.diskBytes,
+    required this.resourceCount,
+    required this.pageCount,
+    required this.byProvider,
+  });
+
+  factory ImageCacheSnapshot.fromJson(Map<String, Object?> json) {
+    final semantic = _object(json['semantic'], 'semantic snapshot');
+    return ImageCacheSnapshot(
+      memoryBytes: _integer(json, 'memory_bytes'),
+      memoryLimitBytes: _integer(json, 'memory_limit_bytes'),
+      memoryEntries: _integer(json, 'memory_entries'),
+      inflightBytes: _integer(json, 'inflight_bytes'),
+      inflightLimitBytes: _integer(json, 'inflight_limit_bytes'),
+      aliasCount: _integer(json, 'alias_count'),
+      diskBlobCount: _integer(json, 'disk_blob_count'),
+      diskBytes: _integer(json, 'disk_bytes'),
+      resourceCount: _integer(semantic, 'resource_count'),
+      pageCount: _integer(semantic, 'page_count'),
+      byProvider: Map<String, int>.unmodifiable(
+        _object(
+          semantic['by_provider'],
+          'by provider',
+        ).map((key, value) => MapEntry(key, (value as num).toInt())),
+      ),
+    );
+  }
+
+  final int memoryBytes;
+  final int memoryLimitBytes;
+  final int memoryEntries;
+  final int inflightBytes;
+  final int inflightLimitBytes;
+  final int aliasCount;
+  final int diskBlobCount;
+  final int diskBytes;
+  final int resourceCount;
+  final int pageCount;
+  final Map<String, int> byProvider;
+}
+
+final class OperationSnapshotView {
+  const OperationSnapshotView({
+    required this.id,
+    required this.kind,
+    required this.state,
+    required this.phase,
+  });
+
+  factory OperationSnapshotView.fromJson(Map<String, Object?> json) {
+    return OperationSnapshotView(
+      id: _string(json, 'id'),
+      kind: _string(json, 'kind'),
+      state: _string(json, 'state'),
+      phase: _string(json, 'phase'),
+    );
+  }
+
+  final String id;
+  final String kind;
+  final String state;
+  final String phase;
+}
+
 final class ImageResourceKey {
   const ImageResourceKey({
     required this.provider,
@@ -1477,6 +1562,12 @@ abstract interface class CoreClient {
     required String profile,
     required String? cookie,
   });
+
+  Future<List<ProfileSnapshot>> profiles();
+
+  Future<ImageCacheSnapshot> imageCache();
+
+  Future<List<OperationSnapshotView>> operations();
 
   Future<EhFavoritesPage> ehFavorites({String profile = 'default'});
 
@@ -1947,6 +2038,32 @@ final class HttpCoreClient implements CoreClient {
     );
     await response.drain<void>();
     return true;
+  }
+
+  @override
+  Future<List<ProfileSnapshot>> profiles() async {
+    final value = await _jsonRequest('GET', '/api/v1/profiles');
+    final list = value is List ? value : const <Object?>[];
+    return List<ProfileSnapshot>.unmodifiable(
+      list.map((item) => ProfileSnapshot.fromJson(_object(item, 'profile'))),
+    );
+  }
+
+  @override
+  Future<ImageCacheSnapshot> imageCache() async {
+    final value = await _jsonRequest('GET', '/api/v1/cache/images');
+    return ImageCacheSnapshot.fromJson(_object(value, 'image cache'));
+  }
+
+  @override
+  Future<List<OperationSnapshotView>> operations() async {
+    final value = await _jsonRequest('GET', '/api/v1/operations');
+    final list = value is List ? value : const <Object?>[];
+    return List<OperationSnapshotView>.unmodifiable(
+      list.map(
+        (item) => OperationSnapshotView.fromJson(_object(item, 'operation')),
+      ),
+    );
   }
 
   Future<Object?> _jsonRequest(
@@ -2430,6 +2547,32 @@ final class NativeCoreClient implements CoreClient {
   @override
   Future<bool> deleteFavoriteSearch(String id) =>
       _call(() => _core.deleteFavoriteSearchJson(id: id));
+
+  @override
+  Future<List<ProfileSnapshot>> profiles() async {
+    final value = await _jsonCall(() => _core.profilesJson());
+    final list = value is List ? value : const <Object?>[];
+    return List<ProfileSnapshot>.unmodifiable(
+      list.map((item) => ProfileSnapshot.fromJson(_object(item, 'profile'))),
+    );
+  }
+
+  @override
+  Future<ImageCacheSnapshot> imageCache() async {
+    final value = await _jsonCall(() => _core.imageCacheJson());
+    return ImageCacheSnapshot.fromJson(_object(value, 'image cache'));
+  }
+
+  @override
+  Future<List<OperationSnapshotView>> operations() async {
+    final value = await _jsonCall(() => _core.operationsJson());
+    final list = value is List ? value : const <Object?>[];
+    return List<OperationSnapshotView>.unmodifiable(
+      list.map(
+        (item) => OperationSnapshotView.fromJson(_object(item, 'operation')),
+      ),
+    );
+  }
 
   @override
   Stream<CoreEventSignal> events({int cursor = 0}) async* {

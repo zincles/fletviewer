@@ -66,7 +66,25 @@ pub async fn start_native_core(
 }
 
 impl NativeCore {
-    /// Returns a stable JSON Runtime snapshot.
+    /// Returns safe snapshots of all configured Provider sessions as JSON.
+    pub async fn profiles_json(&self) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(self.handle.profiles())
+    }
+
+    /// Returns image cache accounting as JSON.
+    pub async fn image_cache_json(&self) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(self.handle.image_cache_snapshot().await)
+    }
+
+    /// Returns active and retained operation snapshots as JSON.
+    pub async fn operations_json(&self) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(self.handle.operations().await)
+    }
+
+    /// Returns the stable JSON Runtime snapshot.
     pub async fn runtime_json(&self) -> Result<String, String> {
         self.ensure_running().await?;
         to_json(self.handle.snapshot().await)
