@@ -66,15 +66,11 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -242711507;
+  int get rustContentHash => -353750426;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
         stem: 'fvcore',
-        // Patch from codegen default `../fvcore/target/release/`: that path is
-        // resolved against the process CWD and can load a stale crate build in
-        // packaged apps (content-hash mismatch). `null` forces dlopen search,
-        // which resolves to the bundled library via RUNPATH.
         ioDirectory: null,
         webPrefix: 'pkg/',
         wasmBindgenName: 'wasm_bindgen',
@@ -91,7 +87,20 @@ abstract class RustLibApi extends BaseApi {
     required NativeCore that,
   });
 
+  Future<String> crateApiFlutterNativeCoreCreateFavoriteSearchJson({
+    required NativeCore that,
+    required String provider,
+    required String profile,
+    required String name,
+    required String query,
+  });
+
   Future<void> crateApiFlutterNativeCoreDeleteDownloadTask({
+    required NativeCore that,
+    required String id,
+  });
+
+  Future<bool> crateApiFlutterNativeCoreDeleteFavoriteSearchJson({
     required NativeCore that,
     required String id,
   });
@@ -103,6 +112,18 @@ abstract class RustLibApi extends BaseApi {
 
   Future<String> crateApiFlutterNativeCoreDownloadTasksJson({
     required NativeCore that,
+  });
+
+  Future<String> crateApiFlutterNativeCoreEhArchiveOptionsJson({
+    required NativeCore that,
+    required String profile,
+    required BigInt gid,
+    required String token,
+  });
+
+  Future<String> crateApiFlutterNativeCoreEhFavoritesJson({
+    required NativeCore that,
+    required String profile,
   });
 
   Future<String> crateApiFlutterNativeCoreEhGalleryDetailJson({
@@ -136,6 +157,10 @@ abstract class RustLibApi extends BaseApi {
   Future<String> crateApiFlutterNativeCoreEventsAfterJson({
     required NativeCore that,
     required BigInt cursor,
+  });
+
+  Future<String> crateApiFlutterNativeCoreFavoriteSearchesJson({
+    required NativeCore that,
   });
 
   Future<String> crateApiFlutterNativeCoreHistoryJson({
@@ -208,6 +233,14 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<void> crateApiFlutterNativeCoreShutdown({required NativeCore that});
+
+  Future<String> crateApiFlutterNativeCoreStartEhArchiveDownloadJson({
+    required NativeCore that,
+    required String profile,
+    required BigInt gid,
+    required String token,
+    required String variant,
+  });
 
   Future<String> crateApiFlutterNativeCoreStartEhCoverFetchJson({
     required NativeCore that,
@@ -356,6 +389,51 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<String> crateApiFlutterNativeCoreCreateFavoriteSearchJson({
+    required NativeCore that,
+    required String provider,
+    required String profile,
+    required String name,
+    required String query,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(provider, serializer);
+          sse_encode_String(profile, serializer);
+          sse_encode_String(name, serializer);
+          sse_encode_String(query, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 3,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreCreateFavoriteSearchJsonConstMeta,
+        argValues: [that, provider, profile, name, query],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiFlutterNativeCoreCreateFavoriteSearchJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_create_favorite_search_json",
+        argNames: ["that", "provider", "profile", "name", "query"],
+      );
+
+  @override
   Future<void> crateApiFlutterNativeCoreDeleteDownloadTask({
     required NativeCore that,
     required String id,
@@ -372,7 +450,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 4,
             port: port_,
           );
         },
@@ -394,6 +472,45 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<bool> crateApiFlutterNativeCoreDeleteFavoriteSearchJson({
+    required NativeCore that,
+    required String id,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(id, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 5,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreDeleteFavoriteSearchJsonConstMeta,
+        argValues: [that, id],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiFlutterNativeCoreDeleteFavoriteSearchJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_delete_favorite_search_json",
+        argNames: ["that", "id"],
+      );
+
+  @override
   Future<String> crateApiFlutterNativeCoreDownloadTaskJson({
     required NativeCore that,
     required String id,
@@ -410,7 +527,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 6,
             port: port_,
           );
         },
@@ -446,7 +563,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 7,
             port: port_,
           );
         },
@@ -465,6 +582,86 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(
         debugName: "NativeCore_download_tasks_json",
         argNames: ["that"],
+      );
+
+  @override
+  Future<String> crateApiFlutterNativeCoreEhArchiveOptionsJson({
+    required NativeCore that,
+    required String profile,
+    required BigInt gid,
+    required String token,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          sse_encode_u_64(gid, serializer);
+          sse_encode_String(token, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 8,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreEhArchiveOptionsJsonConstMeta,
+        argValues: [that, profile, gid, token],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCoreEhArchiveOptionsJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_eh_archive_options_json",
+        argNames: ["that", "profile", "gid", "token"],
+      );
+
+  @override
+  Future<String> crateApiFlutterNativeCoreEhFavoritesJson({
+    required NativeCore that,
+    required String profile,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 9,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreEhFavoritesJsonConstMeta,
+        argValues: [that, profile],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCoreEhFavoritesJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_eh_favorites_json",
+        argNames: ["that", "profile"],
       );
 
   @override
@@ -488,7 +685,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 10,
             port: port_,
           );
         },
@@ -526,7 +723,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 11,
             port: port_,
           );
         },
@@ -570,7 +767,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 12,
             port: port_,
           );
         },
@@ -614,7 +811,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 13,
             port: port_,
           );
         },
@@ -652,7 +849,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 14,
             port: port_,
           );
         },
@@ -674,6 +871,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<String> crateApiFlutterNativeCoreFavoriteSearchesJson({
+    required NativeCore that,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiFlutterNativeCoreFavoriteSearchesJsonConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiFlutterNativeCoreFavoriteSearchesJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_favorite_searches_json",
+        argNames: ["that"],
+      );
+
+  @override
   Future<String> crateApiFlutterNativeCoreHistoryJson({
     required NativeCore that,
   }) {
@@ -688,7 +921,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 16,
             port: port_,
           );
         },
@@ -728,7 +961,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 17,
             port: port_,
           );
         },
@@ -766,7 +999,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 18,
             port: port_,
           );
         },
@@ -804,7 +1037,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 19,
             port: port_,
           );
         },
@@ -846,7 +1079,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 20,
             port: port_,
           );
         },
@@ -888,7 +1121,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 21,
             port: port_,
           );
         },
@@ -928,7 +1161,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 22,
             port: port_,
           );
         },
@@ -972,7 +1205,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 23,
             port: port_,
           );
         },
@@ -1010,7 +1243,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 24,
             port: port_,
           );
         },
@@ -1053,7 +1286,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 25,
             port: port_,
           );
         },
@@ -1091,7 +1324,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 26,
             port: port_,
           );
         },
@@ -1127,7 +1360,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 27,
             port: port_,
           );
         },
@@ -1161,7 +1394,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 28,
             port: port_,
           );
         },
@@ -1178,6 +1411,52 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiFlutterNativeCoreShutdownConstMeta =>
       const TaskConstMeta(debugName: "NativeCore_shutdown", argNames: ["that"]);
+
+  @override
+  Future<String> crateApiFlutterNativeCoreStartEhArchiveDownloadJson({
+    required NativeCore that,
+    required String profile,
+    required BigInt gid,
+    required String token,
+    required String variant,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
+            that,
+            serializer,
+          );
+          sse_encode_String(profile, serializer);
+          sse_encode_u_64(gid, serializer);
+          sse_encode_String(token, serializer);
+          sse_encode_String(variant, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 29,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta:
+            kCrateApiFlutterNativeCoreStartEhArchiveDownloadJsonConstMeta,
+        argValues: [that, profile, gid, token, variant],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta
+  get kCrateApiFlutterNativeCoreStartEhArchiveDownloadJsonConstMeta =>
+      const TaskConstMeta(
+        debugName: "NativeCore_start_eh_archive_download_json",
+        argNames: ["that", "profile", "gid", "token", "variant"],
+      );
 
   @override
   Future<String> crateApiFlutterNativeCoreStartEhCoverFetchJson({
@@ -1200,7 +1479,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 30,
             port: port_,
           );
         },
@@ -1244,7 +1523,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1290,7 +1569,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1333,7 +1612,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1378,7 +1657,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1422,7 +1701,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1453,7 +1732,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 36,
             port: port_,
           );
         },
@@ -1489,7 +1768,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 37,
             port: port_,
           );
         },
@@ -1550,6 +1829,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   String dco_decode_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as String;
+  }
+
+  @protected
+  bool dco_decode_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as bool;
   }
 
   @protected
@@ -1650,6 +1935,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  bool sse_decode_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getUint8() != 0;
+  }
+
+  @protected
   BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_u_64(deserializer));
@@ -1720,12 +2011,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  bool sse_decode_bool(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint8() != 0;
-  }
-
-  @protected
   void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNativeCore(
     NativeCore self,
@@ -1768,6 +2053,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_String(String self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_list_prim_u_8_strict(utf8.encoder.convert(self), serializer);
+  }
+
+  @protected
+  void sse_encode_bool(bool self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putUint8(self ? 1 : 0);
   }
 
   @protected
@@ -1840,12 +2131,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putInt32(self);
   }
-
-  @protected
-  void sse_encode_bool(bool self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putUint8(self ? 1 : 0);
-  }
 }
 
 @sealed
@@ -1877,9 +2162,29 @@ class NativeCoreImpl extends RustOpaque implements NativeCore {
   Future<void> clearHistory() =>
       RustLib.instance.api.crateApiFlutterNativeCoreClearHistory(that: this);
 
+  /// Saves one provider-scoped favorite search and returns it as JSON.
+  Future<String> createFavoriteSearchJson({
+    required String provider,
+    required String profile,
+    required String name,
+    required String query,
+  }) => RustLib.instance.api.crateApiFlutterNativeCoreCreateFavoriteSearchJson(
+    that: this,
+    provider: provider,
+    profile: profile,
+    name: name,
+    query: query,
+  );
+
   /// Deletes one terminal download task record when the owning family allows it.
   Future<void> deleteDownloadTask({required String id}) => RustLib.instance.api
       .crateApiFlutterNativeCoreDeleteDownloadTask(that: this, id: id);
+
+  /// Deletes one favorite search by ID.
+  Future<bool> deleteFavoriteSearchJson({required String id}) => RustLib
+      .instance
+      .api
+      .crateApiFlutterNativeCoreDeleteFavoriteSearchJson(that: this, id: id);
 
   /// Returns one unified persistent download task as JSON.
   Future<String> downloadTaskJson({required String id}) => RustLib.instance.api
@@ -1888,6 +2193,24 @@ class NativeCoreImpl extends RustOpaque implements NativeCore {
   /// Returns unified persistent download tasks as JSON.
   Future<String> downloadTasksJson() => RustLib.instance.api
       .crateApiFlutterNativeCoreDownloadTasksJson(that: this);
+
+  /// Returns official EH Archive options for one gallery as JSON.
+  Future<String> ehArchiveOptionsJson({
+    required String profile,
+    required BigInt gid,
+    required String token,
+  }) => RustLib.instance.api.crateApiFlutterNativeCoreEhArchiveOptionsJson(
+    that: this,
+    profile: profile,
+    gid: gid,
+    token: token,
+  );
+
+  /// Returns the authenticated EH favorites listing for one profile as JSON.
+  Future<String> ehFavoritesJson({required String profile}) => RustLib
+      .instance
+      .api
+      .crateApiFlutterNativeCoreEhFavoritesJson(that: this, profile: profile);
 
   /// Returns parsed metadata for one EH gallery as JSON.
   Future<String> ehGalleryDetailJson({
@@ -1940,6 +2263,10 @@ class NativeCoreImpl extends RustOpaque implements NativeCore {
       .instance
       .api
       .crateApiFlutterNativeCoreEventsAfterJson(that: this, cursor: cursor);
+
+  /// Lists provider-scoped favorite searches as JSON.
+  Future<String> favoriteSearchesJson() => RustLib.instance.api
+      .crateApiFlutterNativeCoreFavoriteSearchesJson(that: this);
 
   /// Returns recent browse history as JSON.
   Future<String> historyJson() =>
@@ -2043,6 +2370,21 @@ class NativeCoreImpl extends RustOpaque implements NativeCore {
   /// Requests graceful shutdown and waits for owned services to stop.
   Future<void> shutdown() =>
       RustLib.instance.api.crateApiFlutterNativeCoreShutdown(that: this);
+
+  /// Starts one EH Archive download task and returns the task snapshot as JSON.
+  Future<String> startEhArchiveDownloadJson({
+    required String profile,
+    required BigInt gid,
+    required String token,
+    required String variant,
+  }) =>
+      RustLib.instance.api.crateApiFlutterNativeCoreStartEhArchiveDownloadJson(
+        that: this,
+        profile: profile,
+        gid: gid,
+        token: token,
+        variant: variant,
+      );
 
   /// Starts one EH gallery cover fetch and returns the operation as JSON.
   Future<String> startEhCoverFetchJson({

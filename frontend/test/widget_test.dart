@@ -86,6 +86,13 @@ void main() {
     expect(find.text('artist:fixture'), findsOneWidget);
     expect(find.byKey(const Key('eh-thumbnail-0')), findsOneWidget);
     expect(client.thumbnailRequests, 1);
+    expect(find.byKey(const Key('eh-archive-original')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('eh-archive-original')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('eh-archive-original')));
+    await tester.pump();
+    expect(client.archiveStartedVariant, 'original');
+    expect(find.textContaining('Archive 任务已创建'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('eh-start-reader')));
     await tester.pump();
@@ -97,6 +104,21 @@ void main() {
     expect(client.startedPage, 0);
     expect(client.resourceRequest, ('0123456789abcdef0123456789abcdef', 'png'));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('EH favorites tab shows signed-out guidance', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FletViewerApp(client: client));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('reading-tab-4')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('E-Hentai 需要登录'), findsOneWidget);
+    expect(find.textContaining('配置浏览器 Cookie'), findsOneWidget);
   });
 }
 
@@ -124,6 +146,7 @@ final class _FakeCoreClient implements CoreClient {
   int? startedPage;
   int coverRequests = 0;
   int thumbnailRequests = 0;
+  String? archiveStartedVariant;
   (String, String)? resourceRequest;
 
   @override
@@ -394,6 +417,70 @@ final class _FakeCoreClient implements CoreClient {
       hasApiCredentials: false,
     );
   }
+
+  @override
+  Future<EhFavoritesPage> ehFavorites({String profile = 'default'}) async {
+    throw CoreApiException(
+      statusCode: 401,
+      code: 'authentication_required',
+      message: 'EH favorites requires a logged-in browser Cookie',
+      retryable: false,
+    );
+  }
+
+  @override
+  Future<EhArchiveOptions> ehArchiveOptions({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+  }) async {
+    return const EhArchiveOptions(
+      profile: 'default',
+      generation: 1,
+      gallery: EhGalleryRef(gid: 123, token: 'fixture-token'),
+      options: [
+        EhArchiveOption(
+          id: 'original',
+          title: 'Original Archive',
+          estimatedSize: '45.67 MiB',
+          cost: '250 GP',
+          delivery: EhArchiveDelivery.archive,
+          locallyDownloadable: true,
+          variant: EhArchiveVariant.original,
+        ),
+      ],
+    );
+  }
+
+  @override
+  Future<ArchiveTaskSnapshot> startEhArchiveDownload({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+    required EhArchiveVariant variant,
+  }) async {
+    archiveStartedVariant = variant.name;
+    return const ArchiveTaskSnapshot(
+      id: '01989abc-def0-7000-8000-000000000001',
+      state: 'queued',
+      variant: 'original',
+      title: 'Fixture Gallery',
+    );
+  }
+
+  @override
+  Future<List<FavoriteSearch>> favoriteSearches() async => const [];
+
+  @override
+  Future<FavoriteSearch> createFavoriteSearch({
+    required String provider,
+    required String profile,
+    required String name,
+    required String query,
+  }) async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<bool> deleteFavoriteSearch(String id) async => true;
 
   @override
   Future<CoreOperation> operation(String id) async {

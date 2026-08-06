@@ -161,6 +161,30 @@ pub struct EhGalleryDetail {
     pub newer_versions: Vec<EhGalleryVersion>,
 }
 
+/// One gallery from the authenticated EH favorites listing.
+#[derive(Clone, Debug, Serialize)]
+pub struct EhFavoriteItem {
+    /// Stable gallery identity.
+    pub gallery: EhGalleryRef,
+    /// Display title.
+    pub title: String,
+    /// Cover thumbnail URL when EH supplied one.
+    pub thumbnail_url: Option<String>,
+    /// Posted timestamp text when EH supplied one.
+    pub posted: Option<String>,
+}
+
+/// One authenticated EH favorites listing page.
+#[derive(Clone, Debug, Serialize)]
+pub struct EhFavoritesPage {
+    /// Profile that executed the request.
+    pub profile: String,
+    /// Immutable authenticated session generation used for the response body.
+    pub generation: u64,
+    /// Favorited galleries in page order.
+    pub items: Vec<EhFavoriteItem>,
+}
+
 /// One gallery page thumbnail.
 #[derive(Clone, Debug, Serialize)]
 pub struct EhThumbnail {
@@ -217,7 +241,7 @@ enum EhImageKey {
 }
 
 /// Stable EH gallery identity accepted by Archive methods.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EhGalleryRef {
     /// Numeric gallery ID.
@@ -283,6 +307,8 @@ pub struct EhArchiveOption {
     pub delivery: EhArchiveDelivery,
     /// Whether this option can create a local fvcore download task.
     pub locally_downloadable: bool,
+    /// Official Archive variant when this option maps to one.
+    pub variant: Option<EhArchiveVariant>,
 }
 
 /// Archive options returned for one gallery.
@@ -399,6 +425,36 @@ impl EhService {
             galleries,
             previous,
             next,
+        })
+    }
+
+    pub(crate) async fn favorites(
+        &self,
+        key: &ProfileKey,
+        cancellation: CancellationToken,
+    ) -> Result<EhFavoritesPage, CoreError> {
+        ensure_eh(key)?;
+        if !self.sessions.has_cookie(key)? {
+            return Err(CoreError::new(
+                ErrorCode::AuthenticationRequired,
+                "EH favorites requires a logged-in browser Cookie",
+                false,
+            ));
+        }
+        let response = self
+            .sessions
+            .get(key, "favorites.php", cancellation)
+            .await?;
+        ensure_html(&response.content_type, "EH favorites page")?;
+        let generation = response.generation;
+        let final_url = response.final_url;
+        let html = std::str::from_utf8(&response.body)
+            .map_err(|_| unexpected("EH favorites page returned invalid UTF-8"))?;
+        let items = parse_favorites(html, &final_url)?;
+        Ok(EhFavoritesPage {
+            profile: key.profile.clone(),
+            generation,
+            items,
         })
     }
 
@@ -1154,6 +1210,66 @@ fn first_http_url(value: &str) -> Option<String> {
         .map(|value| value.as_str().to_owned())
 }
 
+fn parse_favorites(html: &str, base_url: &Url) -> Result<Vec<EhFavoriteItem>, CoreError> {
+    let dom = tl::parse(html, tl::ParserOptions::default())
+        .map_err(|_| unexpected("EH favorites page contains malformed HTML"))?;
+    let parser = dom.parser();
+    let links: Vec<&tl::HTMLTag<'_>> = dom
+        .query_selector("a")
+        .into_iter()
+        .flatten()
+        .filter_map(|node| node.get(parser).and_then(tl::Node::as_tag))
+        .collect();
+    let mut thumbnails = std::collections::HashMap::new();
+    for link in &links {
+        let Some(gallery) = attribute(link, "href", parser)
+            .and_then(|href| resolve_same_origin(base_url, &href))
+            .and_then(|url| parse_gallery_path(&url))
+        else {
+            continue;
+        };
+        let Some(thumbnail) = descendants(link, parser, "img")
+            .and_then(|mut nodes| nodes.next())
+            .and_then(|image| attribute(image, "src", parser))
+            .filter(|value| !value.starts_with("data:"))
+        else {
+            continue;
+        };
+        thumbnails
+            .entry((gallery.gid, gallery.token))
+            .or_insert(thumbnail);
+    }
+    let mut items: Vec<EhFavoriteItem> = Vec::new();
+    for link in &links {
+        let Some(href) = attribute(link, "href", parser) else {
+            continue;
+        };
+        let Some(url) = resolve_same_origin(base_url, &href) else {
+            continue;
+        };
+        let Some(gallery) = parse_gallery_path(&url) else {
+            continue;
+        };
+        if items.iter().any(|item| item.gallery == gallery) {
+            continue;
+        }
+        let title = clean_text(&link.inner_text(parser));
+        if title.is_empty() {
+            continue;
+        }
+        let thumbnail_url = thumbnails
+            .get(&(gallery.gid, gallery.token.clone()))
+            .cloned();
+        items.push(EhFavoriteItem {
+            gallery,
+            title,
+            thumbnail_url,
+            posted: None,
+        });
+    }
+    Ok(items)
+}
+
 fn parse_home(html: &str, base_url: &Url) -> Result<ParsedHome, CoreError> {
     if html.trim().is_empty() {
         return Err(unexpected("EH front page returned an empty response"));
@@ -1496,6 +1612,7 @@ fn parse_hath_options(source: &str, options: &mut Vec<EhArchiveOption>) -> Resul
             cost: paragraphs.get(2).cloned().and_then(nonempty),
             delivery: EhArchiveDelivery::Hath,
             locally_downloadable: false,
+            variant: None,
         });
     }
     Ok(())
@@ -1527,6 +1644,11 @@ fn parse_direct_options(text: &str, options: &mut Vec<EhArchiveOption>) -> Resul
             cost: nonempty(clean_text(&details[1])),
             delivery: EhArchiveDelivery::Archive,
             locally_downloadable: true,
+            variant: Some(if original {
+                EhArchiveVariant::Original
+            } else {
+                EhArchiveVariant::Resample
+            }),
         });
     }
     Ok(())
@@ -1605,6 +1727,7 @@ mod tests {
     const IMAGE_MPV: &str = include_str!("../../tests/fixtures/eh/image_mpv.html");
     const API_SHOWPAGE: &str = include_str!("../../tests/fixtures/eh/api_showpage.json");
     const API_IMAGEDISPATCH: &str = include_str!("../../tests/fixtures/eh/api_imagedispatch.json");
+    const FAVORITES: &str = include_str!("../../tests/fixtures/eh/favorites.html");
 
     #[test]
     fn parses_gallery_urls_strictly() {
@@ -1613,6 +1736,22 @@ mod tests {
         assert_eq!(gallery.token, "abcdef1234");
         assert!(EhGalleryRef::parse("https://example.com/g/123456/abcdef1234/").is_err());
         assert!(EhGalleryRef::parse("https://e-hentai.org/g/0/not-token/").is_err());
+    }
+
+    #[test]
+    fn parses_favorites_fixture() {
+        let base = Url::parse("https://e-hentai.org/").unwrap();
+        let items = super::parse_favorites(FAVORITES, &base).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].gallery.gid, 123456);
+        assert_eq!(items[0].gallery.token, "abcdef1234");
+        assert_eq!(items[0].title, "Favorite Gallery One");
+        assert_eq!(
+            items[0].thumbnail_url.as_deref(),
+            Some("https://ehgt.org/fav-one.webp")
+        );
+        assert_eq!(items[1].gallery.gid, 654321);
+        assert_eq!(items[1].title, "Favorite Gallery Two");
     }
 
     #[test]

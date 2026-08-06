@@ -25,15 +25,63 @@ class EhGalleryPage extends StatefulWidget {
 class _EhGalleryPageState extends State<EhGalleryPage> {
   EhGalleryDetail? _detail;
   EhThumbnailPage? _thumbnails;
+  EhArchiveOptions? _archiveOptions;
   String? _error;
   String? _thumbnailError;
+  String? _archiveError;
+  String? _archiveStatus;
   bool _loading = true;
   bool _loadingThumbnails = false;
+  bool _startingDownload = false;
 
   @override
   void initState() {
     super.initState();
     unawaited(_load());
+    unawaited(_loadArchive());
+  }
+
+  Future<void> _loadArchive() async {
+    try {
+      final options = await widget.client.ehArchiveOptions(
+        profile: widget.profile,
+        gallery: widget.summary.gallery,
+      );
+      if (!mounted) return;
+      setState(() => _archiveOptions = options);
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() => _archiveError = '$error');
+    }
+  }
+
+  Future<void> _startDownload(EhArchiveOption option) async {
+    final variant = option.variant;
+    if (!option.locallyDownloadable || variant == null) return;
+    setState(() {
+      _startingDownload = true;
+      _archiveError = null;
+      _archiveStatus = null;
+    });
+    try {
+      final task = await widget.client.startEhArchiveDownload(
+        profile: widget.profile,
+        gallery: widget.summary.gallery,
+        variant: variant,
+      );
+      if (!mounted) return;
+      setState(() {
+        _startingDownload = false;
+        _archiveStatus =
+            'Archive 任务已创建（${task.title}，${task.state}）；可在「下载」页查看进度。';
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _startingDownload = false;
+        _archiveError = '$error';
+      });
+    }
   }
 
   Future<void> _load() async {
@@ -269,6 +317,16 @@ class _EhGalleryPageState extends State<EhGalleryPage> {
               : null,
           child: _buildPages(context, detail),
         ),
+        _DetailSection(
+          title: 'Archive 下载',
+          trailing: _startingDownload
+              ? const SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : null,
+          child: _buildArchive(context),
+        ),
         if (detail.comments.isNotEmpty)
           _DetailSection(
             title: '评论',
@@ -303,6 +361,102 @@ class _EhGalleryPageState extends State<EhGalleryPage> {
               ],
             ),
           ),
+      ],
+    );
+  }
+
+  Widget _buildArchive(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final options = _archiveOptions;
+    if (_archiveError != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _InlineMessage(message: _archiveError!),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _loadArchive,
+            icon: const Icon(Icons.refresh),
+            label: const Text('重试'),
+          ),
+        ],
+      );
+    }
+    if (options == null) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 12),
+        child: Center(
+          child: SizedBox.square(
+            dimension: 22,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+    if (options.options.isEmpty) {
+      return Text(
+        'fvcore 未解析到 Archive 选项。',
+        style: TextStyle(color: colors.onSurfaceVariant),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final option in options.options)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Icon(
+                    option.delivery == EhArchiveDelivery.archive
+                        ? Icons.archive_outlined
+                        : Icons.computer_outlined,
+                    color: colors.primary,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          option.title,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        Text(
+                          [
+                            if (option.estimatedSize != null)
+                              option.estimatedSize!,
+                            if (option.cost != null) option.cost!,
+                            if (!option.locallyDownloadable) 'H@H 仅展示',
+                          ].join(' · '),
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: colors.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (option.locallyDownloadable && option.variant != null)
+                    FilledButton.tonal(
+                      key: Key('eh-archive-${option.variant!.name}'),
+                      onPressed: _startingDownload
+                          ? null
+                          : () => _startDownload(option),
+                      child: const Text('下载'),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        if (_archiveStatus != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            _archiveStatus!,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: colors.primary),
+          ),
+        ],
       ],
     );
   }

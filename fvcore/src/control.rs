@@ -356,6 +356,10 @@ pub(crate) async fn start(
             "/api/v1/providers/eh/{profile}/popular",
             get(get_eh_popular),
         )
+        .route(
+            "/api/v1/providers/eh/{profile}/favorites",
+            get(get_eh_favorites),
+        )
         .route("/api/v1/history", get(get_history).delete(clear_history))
         .route(
             "/api/v1/favorite-searches",
@@ -1623,6 +1627,17 @@ async fn get_history(State(state): State<ControlState>) -> Response {
 async fn clear_history(State(state): State<ControlState>) -> Response {
     match state.core.clear_history() {
         Ok(()) => with_security_headers(StatusCode::NO_CONTENT.into_response()),
+        Err(error) => error_response(&error),
+    }
+}
+
+async fn get_eh_favorites(
+    State(state): State<ControlState>,
+    Path(profile): Path<String>,
+) -> Response {
+    let key = crate::ProfileKey::new("eh", profile);
+    match state.core.eh_favorites(&key).await {
+        Ok(page) => with_security_headers(Json(page).into_response()),
         Err(error) => error_response(&error),
     }
 }

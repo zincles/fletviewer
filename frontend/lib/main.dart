@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'app_navigation.dart';
 import 'core_client.dart';
+import 'eh_extra_pages.dart';
 import 'eh_gallery_pages.dart';
 import 'history_page.dart';
 import 'pixiv_pages.dart';
@@ -831,13 +832,22 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
     if (_isEhHistory) {
       return HistoryPage(client: widget.client);
     }
+    if (widget.provider == ProviderFamily.ehentai && widget.tab == '收藏') {
+      return EhFavoritesView(client: widget.client, profile: widget.profile);
+    }
+    if (widget.provider == ProviderFamily.ehentai && widget.tab == '订阅') {
+      return EhFavoriteSearchesPage(
+        client: widget.client,
+        profile: widget.profile,
+      );
+    }
     if (!_isEhHome) {
-      final ehentaiUnwired = const ['订阅', '排行榜', '收藏'].contains(widget.tab);
+      final ehentaiUnwired = const ['排行榜'].contains(widget.tab);
       return _EmptySection(
         icon: Icons.construction_outlined,
         title: '${widget.provider.label} · ${widget.tab}',
         message: ehentaiUnwired
-            ? '该数据源尚未接入后端；当前已接通 E-Hentai 主页、热门与本地历史。订阅/排行榜依赖 EH 账号体系，收藏页后端未接入。'
+            ? 'E-Hentai 没有排行榜页面；热门即为其周期热度列表。'
             : '此页尚未接入 Rust 查询接口；当前只启用 E-Hentai 主页/热门与 Pixiv 浏览作为浏览链路。',
         actionLabel: '等待接入',
       );

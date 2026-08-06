@@ -826,6 +826,166 @@ final class ProfileSnapshot {
   final bool hasApiCredentials;
 }
 
+enum EhArchiveDelivery { archive, hath }
+
+final class EhArchiveOption {
+  const EhArchiveOption({
+    required this.id,
+    required this.title,
+    required this.estimatedSize,
+    required this.cost,
+    required this.delivery,
+    required this.locallyDownloadable,
+    required this.variant,
+  });
+
+  factory EhArchiveOption.fromJson(Map<String, Object?> json) {
+    final variant = _optionalString(json, 'variant');
+    return EhArchiveOption(
+      id: _string(json, 'id'),
+      title: _string(json, 'title'),
+      estimatedSize: _optionalString(json, 'estimated_size'),
+      cost: _optionalString(json, 'cost'),
+      delivery: EhArchiveDelivery.values.byName(_string(json, 'delivery')),
+      locallyDownloadable: _boolean(json, 'locally_downloadable'),
+      variant: variant == null ? null : EhArchiveVariant.values.byName(variant),
+    );
+  }
+
+  final String id;
+  final String title;
+  final String? estimatedSize;
+  final String? cost;
+  final EhArchiveDelivery delivery;
+  final bool locallyDownloadable;
+  final EhArchiveVariant? variant;
+}
+
+final class EhArchiveOptions {
+  const EhArchiveOptions({
+    required this.profile,
+    required this.generation,
+    required this.gallery,
+    required this.options,
+  });
+
+  factory EhArchiveOptions.fromJson(Map<String, Object?> json) {
+    return EhArchiveOptions(
+      profile: _string(json, 'profile'),
+      generation: _integer(json, 'generation'),
+      gallery: EhGalleryRef.fromJson(_object(json['gallery'], 'gallery')),
+      options: List<EhArchiveOption>.unmodifiable(
+        _list(json, 'options').map(
+          (item) => EhArchiveOption.fromJson(_object(item, 'archive option')),
+        ),
+      ),
+    );
+  }
+
+  final String profile;
+  final int generation;
+  final EhGalleryRef gallery;
+  final List<EhArchiveOption> options;
+}
+
+enum EhArchiveVariant { original, resample }
+
+final class EhFavoriteItem {
+  const EhFavoriteItem({
+    required this.gallery,
+    required this.title,
+    required this.thumbnailUrl,
+    required this.posted,
+  });
+
+  factory EhFavoriteItem.fromJson(Map<String, Object?> json) {
+    return EhFavoriteItem(
+      gallery: EhGalleryRef.fromJson(_object(json['gallery'], 'gallery')),
+      title: _string(json, 'title'),
+      thumbnailUrl: _optionalString(json, 'thumbnail_url'),
+      posted: _optionalString(json, 'posted'),
+    );
+  }
+
+  final EhGalleryRef gallery;
+  final String title;
+  final String? thumbnailUrl;
+  final String? posted;
+}
+
+final class EhFavoritesPage {
+  const EhFavoritesPage({
+    required this.profile,
+    required this.generation,
+    required this.items,
+  });
+
+  factory EhFavoritesPage.fromJson(Map<String, Object?> json) {
+    return EhFavoritesPage(
+      profile: _string(json, 'profile'),
+      generation: _integer(json, 'generation'),
+      items: List<EhFavoriteItem>.unmodifiable(
+        _list(json, 'items').map(
+          (item) => EhFavoriteItem.fromJson(_object(item, 'favorite item')),
+        ),
+      ),
+    );
+  }
+
+  final String profile;
+  final int generation;
+  final List<EhFavoriteItem> items;
+}
+
+final class ArchiveTaskSnapshot {
+  const ArchiveTaskSnapshot({
+    required this.id,
+    required this.state,
+    required this.variant,
+    required this.title,
+  });
+
+  factory ArchiveTaskSnapshot.fromJson(Map<String, Object?> json) {
+    return ArchiveTaskSnapshot(
+      id: _string(json, 'id'),
+      state: _string(json, 'state'),
+      variant: _string(json, 'variant'),
+      title: _string(json, 'title'),
+    );
+  }
+
+  final String id;
+  final String state;
+  final String variant;
+  final String title;
+}
+
+final class FavoriteSearch {
+  const FavoriteSearch({
+    required this.id,
+    required this.provider,
+    required this.profile,
+    required this.name,
+    required this.query,
+  });
+
+  factory FavoriteSearch.fromJson(Map<String, Object?> json) {
+    return FavoriteSearch(
+      id: _string(json, 'id'),
+      provider: _string(json, 'provider'),
+      profile: _string(json, 'profile'),
+      name: _string(json, 'name'),
+      query: _string(json, 'query'),
+    );
+  }
+
+  final String id;
+  final String provider;
+  final String profile;
+  final String name;
+  final String query;
+}
+
 final class ImageResourceKey {
   const ImageResourceKey({
     required this.provider,
@@ -1263,6 +1423,30 @@ abstract interface class CoreClient {
     required String? cookie,
   });
 
+  Future<EhFavoritesPage> ehFavorites({String profile = 'default'});
+
+  Future<EhArchiveOptions> ehArchiveOptions({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+  });
+
+  Future<ArchiveTaskSnapshot> startEhArchiveDownload({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+    required EhArchiveVariant variant,
+  });
+
+  Future<List<FavoriteSearch>> favoriteSearches();
+
+  Future<FavoriteSearch> createFavoriteSearch({
+    required String provider,
+    required String profile,
+    required String name,
+    required String query,
+  });
+
+  Future<bool> deleteFavoriteSearch(String id);
+
   Future<CoreOperation> operation(String id);
 
   Future<Uint8List> imageResource(String contentMd5, String extension);
@@ -1613,6 +1797,82 @@ final class HttpCoreClient implements CoreClient {
       jsonEncode({'cookie': cookie}),
     );
     return ProfileSnapshot.fromJson(_object(value, 'profile snapshot'));
+  }
+
+  @override
+  Future<EhFavoritesPage> ehFavorites({String profile = 'default'}) async {
+    final value = await _jsonRequest(
+      'GET',
+      '/api/v1/providers/eh/${Uri.encodeComponent(profile)}/favorites',
+    );
+    return EhFavoritesPage.fromJson(_object(value, 'EH favorites'));
+  }
+
+  @override
+  Future<EhArchiveOptions> ehArchiveOptions({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+  }) async {
+    final value = await _jsonRequest(
+      'GET',
+      '/api/v1/providers/eh/${Uri.encodeComponent(profile)}/galleries/${gallery.gid}/${Uri.encodeComponent(gallery.token)}/archives',
+    );
+    return EhArchiveOptions.fromJson(_object(value, 'EH Archive options'));
+  }
+
+  @override
+  Future<ArchiveTaskSnapshot> startEhArchiveDownload({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+    required EhArchiveVariant variant,
+  }) async {
+    final value = await _jsonRequest(
+      'POST',
+      '/api/v1/providers/eh/${Uri.encodeComponent(profile)}/galleries/${gallery.gid}/${Uri.encodeComponent(gallery.token)}/archives/${variant.name}/download',
+    );
+    return ArchiveTaskSnapshot.fromJson(_object(value, 'Archive task'));
+  }
+
+  @override
+  Future<List<FavoriteSearch>> favoriteSearches() async {
+    final value = await _jsonRequest('GET', '/api/v1/favorite-searches');
+    final list = value is List ? value : const <Object?>[];
+    return List<FavoriteSearch>.unmodifiable(
+      list.map(
+        (item) => FavoriteSearch.fromJson(_object(item, 'favorite search')),
+      ),
+    );
+  }
+
+  @override
+  Future<FavoriteSearch> createFavoriteSearch({
+    required String provider,
+    required String profile,
+    required String name,
+    required String query,
+  }) async {
+    final value = await _jsonRequest(
+      'POST',
+      '/api/v1/favorite-searches',
+      null,
+      jsonEncode({
+        'provider': provider,
+        'profile': profile,
+        'name': name,
+        'query': query,
+      }),
+    );
+    return FavoriteSearch.fromJson(_object(value, 'favorite search'));
+  }
+
+  @override
+  Future<bool> deleteFavoriteSearch(String id) async {
+    final response = await _request(
+      'DELETE',
+      '/api/v1/favorite-searches/${Uri.encodeComponent(id)}',
+    );
+    await response.drain<void>();
+    return true;
   }
 
   Future<Object?> _jsonRequest(
@@ -2009,6 +2269,79 @@ final class NativeCoreClient implements CoreClient {
       ),
     );
   }
+
+  @override
+  Future<EhFavoritesPage> ehFavorites({String profile = 'default'}) async {
+    final value = await _jsonCall(
+      () => _core.ehFavoritesJson(profile: profile),
+    );
+    return EhFavoritesPage.fromJson(_object(value, 'EH favorites'));
+  }
+
+  @override
+  Future<EhArchiveOptions> ehArchiveOptions({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.ehArchiveOptionsJson(
+        profile: profile,
+        gid: BigInt.from(gallery.gid),
+        token: gallery.token,
+      ),
+    );
+    return EhArchiveOptions.fromJson(_object(value, 'EH Archive options'));
+  }
+
+  @override
+  Future<ArchiveTaskSnapshot> startEhArchiveDownload({
+    String profile = 'default',
+    required EhGalleryRef gallery,
+    required EhArchiveVariant variant,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.startEhArchiveDownloadJson(
+        profile: profile,
+        gid: BigInt.from(gallery.gid),
+        token: gallery.token,
+        variant: variant.name,
+      ),
+    );
+    return ArchiveTaskSnapshot.fromJson(_object(value, 'Archive task'));
+  }
+
+  @override
+  Future<List<FavoriteSearch>> favoriteSearches() async {
+    final value = await _jsonCall(() => _core.favoriteSearchesJson());
+    final list = value is List ? value : const <Object?>[];
+    return List<FavoriteSearch>.unmodifiable(
+      list.map(
+        (item) => FavoriteSearch.fromJson(_object(item, 'favorite search')),
+      ),
+    );
+  }
+
+  @override
+  Future<FavoriteSearch> createFavoriteSearch({
+    required String provider,
+    required String profile,
+    required String name,
+    required String query,
+  }) async {
+    final value = await _jsonCall(
+      () => _core.createFavoriteSearchJson(
+        provider: provider,
+        profile: profile,
+        name: name,
+        query: query,
+      ),
+    );
+    return FavoriteSearch.fromJson(_object(value, 'favorite search'));
+  }
+
+  @override
+  Future<bool> deleteFavoriteSearch(String id) =>
+      _call(() => _core.deleteFavoriteSearchJson(id: id));
 
   @override
   Stream<CoreEventSignal> events({int cursor = 0}) async* {

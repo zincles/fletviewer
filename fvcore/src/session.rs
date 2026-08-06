@@ -489,6 +489,11 @@ impl SessionRegistry {
             )
         })
     }
+
+    /// Whether the active generation for this profile loaded a Cookie secret.
+    pub(crate) fn has_cookie(&self, key: &ProfileKey) -> Result<bool, CoreError> {
+        Ok(self.session(key)?.cookie.is_some())
+    }
 }
 
 fn pixiv_authentication_required() -> CoreError {

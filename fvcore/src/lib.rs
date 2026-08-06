@@ -62,8 +62,9 @@ pub use provider::booru::{
 };
 pub use provider::eh::{
     EhArchiveDelivery, EhArchiveOption, EhArchiveOptions, EhArchiveVariant, EhComment,
-    EhGalleryDetail, EhGalleryRef, EhGallerySummary, EhGalleryVersion, EhHomePage,
-    EhImageResolution, EhPageCursor, EhPageDirection, EhThumbnail, EhThumbnailPage,
+    EhFavoriteItem, EhFavoritesPage, EhGalleryDetail, EhGalleryRef, EhGallerySummary,
+    EhGalleryVersion, EhHomePage, EhImageResolution, EhPageCursor, EhPageDirection, EhThumbnail,
+    EhThumbnailPage,
 };
 pub use provider::pixiv::{
     PixivBookmarkVisibility, PixivBookmarksResult, PixivFollowingResult, PixivFollowingVisibility,

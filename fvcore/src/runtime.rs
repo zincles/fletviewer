@@ -1095,6 +1095,16 @@ impl CoreHandle {
             .await
     }
 
+    /// Fetches the authenticated EH favorites listing using the shared profile session.
+    pub async fn eh_favorites(
+        &self,
+        key: &ProfileKey,
+    ) -> Result<crate::EhFavoritesPage, CoreError> {
+        EhService::new(self.sessions.clone())
+            .favorites(key, self.shutdown.child_token())
+            .await
+    }
+
     /// Lists provider-scoped favorite searches.
     pub fn favorite_searches(&self) -> Result<Vec<crate::FavoriteSearch>, CoreError> {
         self.favorite_searches.list()

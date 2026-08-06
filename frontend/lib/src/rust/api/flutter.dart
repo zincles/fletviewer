@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `bridge_error`, `ensure_running`, `parse_eh_cursor`, `parse_operation_id`, `parse_pixiv_bookmark_visibility`, `parse_pixiv_following_visibility`, `parse_uuid`, `serialization_error`, `to_json`
+// These functions are ignored because they are not marked as `pub`: `bridge_error`, `ensure_running`, `parse_eh_archive_variant`, `parse_eh_cursor`, `parse_operation_id`, `parse_pixiv_bookmark_visibility`, `parse_pixiv_following_visibility`, `parse_uuid`, `serialization_error`, `to_json`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeError`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `fmt`
 
@@ -31,14 +31,35 @@ abstract class NativeCore implements RustOpaqueInterface {
   /// Clears all recorded browse history.
   Future<void> clearHistory();
 
+  /// Saves one provider-scoped favorite search and returns it as JSON.
+  Future<String> createFavoriteSearchJson({
+    required String provider,
+    required String profile,
+    required String name,
+    required String query,
+  });
+
   /// Deletes one terminal download task record when the owning family allows it.
   Future<void> deleteDownloadTask({required String id});
+
+  /// Deletes one favorite search by ID.
+  Future<bool> deleteFavoriteSearchJson({required String id});
 
   /// Returns one unified persistent download task as JSON.
   Future<String> downloadTaskJson({required String id});
 
   /// Returns unified persistent download tasks as JSON.
   Future<String> downloadTasksJson();
+
+  /// Returns official EH Archive options for one gallery as JSON.
+  Future<String> ehArchiveOptionsJson({
+    required String profile,
+    required BigInt gid,
+    required String token,
+  });
+
+  /// Returns the authenticated EH favorites listing for one profile as JSON.
+  Future<String> ehFavoritesJson({required String profile});
 
   /// Returns parsed metadata for one EH gallery as JSON.
   Future<String> ehGalleryDetailJson({
@@ -68,6 +89,9 @@ abstract class NativeCore implements RustOpaqueInterface {
 
   /// Replays retained Runtime events after a cursor as JSON.
   Future<String> eventsAfterJson({required BigInt cursor});
+
+  /// Lists provider-scoped favorite searches as JSON.
+  Future<String> favoriteSearchesJson();
 
   /// Returns recent browse history as JSON.
   Future<String> historyJson();
@@ -130,6 +154,14 @@ abstract class NativeCore implements RustOpaqueInterface {
 
   /// Requests graceful shutdown and waits for owned services to stop.
   Future<void> shutdown();
+
+  /// Starts one EH Archive download task and returns the task snapshot as JSON.
+  Future<String> startEhArchiveDownloadJson({
+    required String profile,
+    required BigInt gid,
+    required String token,
+    required String variant,
+  });
 
   /// Starts one EH gallery cover fetch and returns the operation as JSON.
   Future<String> startEhCoverFetchJson({

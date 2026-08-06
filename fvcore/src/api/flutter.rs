@@ -143,6 +143,83 @@ impl NativeCore {
         )
     }
 
+    /// Returns the authenticated EH favorites listing for one profile as JSON.
+    pub async fn eh_favorites_json(&self, profile: String) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .eh_favorites(&ProfileKey::new("eh", profile))
+                .await,
+        )
+    }
+
+    /// Returns official EH Archive options for one gallery as JSON.
+    pub async fn eh_archive_options_json(
+        &self,
+        profile: String,
+        gid: u64,
+        token: String,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .eh_archive_options(
+                    &ProfileKey::new("eh", profile),
+                    crate::EhGalleryRef { gid, token },
+                )
+                .await,
+        )
+    }
+
+    /// Starts one EH Archive download task and returns the task snapshot as JSON.
+    pub async fn start_eh_archive_download_json(
+        &self,
+        profile: String,
+        gid: u64,
+        token: String,
+        variant: String,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        let variant = parse_eh_archive_variant(&variant)?;
+        to_json(
+            self.handle
+                .start_eh_archive_download(crate::EhArchiveDownloadRequest {
+                    profile: ProfileKey::new("eh", profile),
+                    gallery: crate::EhGalleryRef { gid, token },
+                    variant,
+                })
+                .await,
+        )
+    }
+
+    /// Lists provider-scoped favorite searches as JSON.
+    pub async fn favorite_searches_json(&self) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(self.handle.favorite_searches())
+    }
+
+    /// Saves one provider-scoped favorite search and returns it as JSON.
+    pub async fn create_favorite_search_json(
+        &self,
+        provider: String,
+        profile: String,
+        name: String,
+        query: String,
+    ) -> Result<String, String> {
+        self.ensure_running().await?;
+        to_json(
+            self.handle
+                .create_favorite_search(provider, profile, name, query),
+        )
+    }
+
+    /// Deletes one favorite search by ID.
+    pub async fn delete_favorite_search_json(&self, id: String) -> Result<bool, String> {
+        self.ensure_running().await?;
+        let id = parse_uuid(&id)?;
+        self.handle.delete_favorite_search(id).map_err(bridge_error)
+    }
+
     /// Returns recent browse history as JSON.
     pub async fn history_json(&self) -> Result<String, String> {
         self.ensure_running().await?;
@@ -493,6 +570,18 @@ fn parse_operation_id(input: &str) -> Result<crate::OperationId, String> {
             false,
         ))
     })
+}
+
+fn parse_eh_archive_variant(variant: &str) -> Result<crate::EhArchiveVariant, String> {
+    match variant {
+        "original" => Ok(crate::EhArchiveVariant::Original),
+        "resample" => Ok(crate::EhArchiveVariant::Resample),
+        _ => Err(bridge_error(CoreError::new(
+            ErrorCode::InvalidInput,
+            "EH Archive variant must be original or resample",
+            false,
+        ))),
+    }
 }
 
 fn parse_pixiv_following_visibility(
