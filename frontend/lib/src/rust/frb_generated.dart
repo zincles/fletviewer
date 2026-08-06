@@ -71,7 +71,11 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
         stem: 'fvcore',
-        ioDirectory: '../fvcore/target/release/',
+        // Patch from codegen default `../fvcore/target/release/`: that path is
+        // resolved against the process CWD and can load a stale crate build in
+        // packaged apps (content-hash mismatch). `null` forces dlopen search,
+        // which resolves to the bundled library via RUNPATH.
+        ioDirectory: null,
         webPrefix: 'pkg/',
         wasmBindgenName: 'wasm_bindgen',
       );

@@ -44,10 +44,14 @@ pub async fn start_native_core(
     config.storage.cache = PathBuf::from(cache_dir);
     config.storage.downloads = PathBuf::from(downloads_dir);
     config.storage.temp = PathBuf::from(temp_dir);
-    let runtime = CoreBuilder::new(config)
-        .build()
-        .await
-        .map_err(bridge_error)?;
+    let runtime = CoreBuilder::new(config).build().await.map_err(|error| {
+        tracing::error!(
+            code = %error.code(),
+            message = %error.message(),
+            "embedded fvcore failed to start"
+        );
+        bridge_error(error)
+    })?;
     let handle = runtime.handle();
     let snapshot = handle.snapshot().await.map_err(bridge_error)?;
     tracing::info!(

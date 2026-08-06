@@ -7,6 +7,16 @@ import 'package:path_provider/path_provider.dart';
 import 'core_client.dart';
 import 'src/rust/frb_generated.dart';
 
+/// Prints startup progress and failures to stderr so CLI users (and the
+/// diagnostic pipeline) can see why the embedded Runtime failed.
+void logStartup(String message) {
+  try {
+    stderr.writeln('[fvcore] $message');
+  } on Object {
+    // stderr may be unavailable on some platforms; ignore.
+  }
+}
+
 final class RuntimeLaunchException implements Exception {
   RuntimeLaunchException(this.message, [this.cause]);
 
@@ -72,14 +82,17 @@ Future<void> initializeRustBridge() async {
     await existing;
     return;
   }
+  logStartup('正在初始化 Rust bridge（flutter_rust_bridge）…');
   final initialization = RustLib.init();
   _rustInitialization = initialization;
   try {
     await initialization;
-  } on Object {
+    logStartup('Rust bridge 就绪');
+  } on Object catch (error) {
     if (identical(_rustInitialization, initialization)) {
       _rustInitialization = null;
     }
+    logStartup('Rust bridge 初始化失败：$error');
     rethrow;
   }
 }
@@ -122,8 +135,10 @@ final class NativeRuntimeLauncher {
   Future<RuntimeConnection> _connectOnce() async {
     CoreClient? started;
     try {
+      logStartup('正在启动本地 fvcore Runtime…');
       await _bridgeInitializer();
       final storage = await _pathResolver();
+      logStartup('存储路径：${storage.domains.values.join(', ')}');
       started = await _coreStarter(storage);
       final snapshot = await started.runtime();
       _validateSnapshot(snapshot, storage);
@@ -137,18 +152,25 @@ final class NativeRuntimeLauncher {
       );
       _client = started;
       _connection = connection;
+      logStartup(
+        'Runtime 初始化完毕：${snapshot.runtimeId}（Core ${snapshot.coreVersion}，实例 ${snapshot.instanceName}，API v${snapshot.apiProtocolVersion}）',
+      );
       return connection;
-    } on RuntimeLaunchException {
+    } on RuntimeLaunchException catch (error) {
       if (started != null) await _closeQuietly(started);
+      logStartup('Runtime 启动失败：$error');
       rethrow;
     } on CoreApiException catch (error) {
       if (started != null) await _closeQuietly(started);
+      logStartup('Runtime 启动失败（${error.code}）：${error.message}');
       throw RuntimeLaunchException(_startupMessage(error), error);
     } on CoreTransportException catch (error) {
       if (started != null) await _closeQuietly(started);
+      logStartup('Runtime bridge 调用失败：$error');
       throw RuntimeLaunchException('无法调用本地 fvcore bridge', error);
     } on Object catch (error) {
       if (started != null) await _closeQuietly(started);
+      logStartup('Runtime 启动失败（未知错误）：$error');
       throw RuntimeLaunchException('无法启动本地 fvcore Runtime', error);
     } finally {
       _pending = null;

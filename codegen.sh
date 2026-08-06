@@ -34,6 +34,9 @@ cd -- "$FRONTEND_DIR"
   --dart-output lib/src/rust \
   --no-web
 rm -f lib/src/rust/frb_generated.web.dart
+# 覆盖 codegen 默认的 CWD 相对加载路径：打包应用必须经 dlopen/RUNPATH
+# 加载 bundle 内库，而不是 stale 的 <crate>/target/release 产物。
+sed -i "s|ioDirectory: '../fvcore/target/release/',|ioDirectory: null,|" lib/src/rust/frb_generated.dart
 printf '[codegen] 格式化 Rust 生成物\n'
 cd -- "$ROOT_DIR/fvcore"
 cargo fmt --all

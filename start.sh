@@ -48,6 +48,29 @@ check_bridge_sync() {
 
 check_bridge_sync
 
+force_rebuild_rust_if_stale() {
+  local generated mtime libs stale
+  generated="$(stat -c %Y "$ROOT_DIR/fvcore/src/frb_generated.rs" 2>/dev/null || echo 0)"
+  libs="$(find "$FRONTEND_DIR/build" -path "*plugins/fvcore/cargokit_build*/release/deps/libfvcore.so" 2>/dev/null || true)"
+  [[ -z "$libs" ]] && return 0
+  stale=0
+  for lib in $libs; do
+    mtime="$(stat -c %Y "$lib" 2>/dev/null || echo 0)"
+    if [[ "$mtime" -lt "$generated" ]]; then
+      stale=1
+      break
+    fi
+  done
+  if [[ "$stale" == "1" ]]; then
+    printf '[start] 桥代码更新于 Rust 产物之后，清理 cargokit 缓存以强制重编（首次较慢）\n'
+    rm -rf \
+      "$FRONTEND_DIR/build/linux/x64/release/plugins/fvcore/cargokit_build" \
+      "$FRONTEND_DIR/build/linux/x64/debug/plugins/fvcore/cargokit_build"
+  fi
+}
+
+force_rebuild_rust_if_stale
+
 if [[ "$restart" == "1" ]]; then
   local_pids="$(pgrep -f "$APP_PATTERN" 2>/dev/null || true)"
   if [[ -n "$local_pids" ]]; then
