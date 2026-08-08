@@ -34,16 +34,20 @@ class FletViewerApp extends StatefulWidget {
 
 class _FletViewerAppState extends State<FletViewerApp> {
   ThemeMode _themeMode = ThemeMode.system;
+  GalleryListPreference _galleryPreference = const GalleryListPreference();
 
   @override
   void initState() {
     super.initState();
-    unawaited(_loadTheme());
+    unawaited(_loadPreferences());
   }
 
-  Future<void> _loadTheme() async {
+  Future<void> _loadPreferences() async {
     final prefs = await SharedPreferences.getInstance();
     final stored = prefs.getString('theme_mode');
+    final galleryLayout = prefs.getString('gallery_layout');
+    final galleryColumns = prefs.getString('gallery_columns_mode');
+    final fixedColumns = prefs.getInt('gallery_fixed_columns') ?? 3;
     if (!mounted) return;
     setState(() {
       _themeMode = switch (stored) {
@@ -51,6 +55,17 @@ class _FletViewerAppState extends State<FletViewerApp> {
         'dark' => ThemeMode.dark,
         _ => ThemeMode.system,
       };
+      _galleryPreference = GalleryListPreference(
+        layout: switch (galleryLayout) {
+          'grid' => GalleryLayoutMode.grid,
+          _ => GalleryLayoutMode.masonry,
+        },
+        columnsMode: switch (galleryColumns) {
+          'fixed' => GalleryColumnsMode.fixed,
+          _ => GalleryColumnsMode.auto,
+        },
+        fixedColumns: fixedColumns.clamp(2, 5),
+      );
     });
   }
 
@@ -60,6 +75,20 @@ class _FletViewerAppState extends State<FletViewerApp> {
       SharedPreferences.getInstance().then(
         (prefs) => prefs.setString('theme_mode', mode.name),
       ),
+    );
+  }
+
+  void _setGalleryPreference(GalleryListPreference preference) {
+    setState(() => _galleryPreference = preference);
+    unawaited(
+      SharedPreferences.getInstance().then((prefs) async {
+        await prefs.setString('gallery_layout', preference.layout.name);
+        await prefs.setString(
+          'gallery_columns_mode',
+          preference.columnsMode.name,
+        );
+        await prefs.setInt('gallery_fixed_columns', preference.fixedColumns);
+      }),
     );
   }
 
@@ -88,11 +117,15 @@ class _FletViewerAppState extends State<FletViewerApp> {
               client: widget.client,
               onThemeModeChanged: _setThemeMode,
               initialThemeMode: _themeMode,
+              galleryPreference: _galleryPreference,
+              onGalleryPreferenceChanged: _setGalleryPreference,
             )
           : _RuntimeBootstrap(
               launcher: widget.launcher!,
               onThemeModeChanged: _setThemeMode,
               initialThemeMode: _themeMode,
+              galleryPreference: _galleryPreference,
+              onGalleryPreferenceChanged: _setGalleryPreference,
             ),
     );
   }
@@ -103,11 +136,15 @@ class _RuntimeBootstrap extends StatefulWidget {
     required this.launcher,
     required this.onThemeModeChanged,
     required this.initialThemeMode,
+    required this.galleryPreference,
+    required this.onGalleryPreferenceChanged,
   });
 
   final NativeRuntimeLauncher launcher;
   final ValueChanged<ThemeMode> onThemeModeChanged;
   final ThemeMode initialThemeMode;
+  final GalleryListPreference galleryPreference;
+  final ValueChanged<GalleryListPreference> onGalleryPreferenceChanged;
 
   @override
   State<_RuntimeBootstrap> createState() => _RuntimeBootstrapState();
@@ -164,6 +201,8 @@ class _RuntimeBootstrapState extends State<_RuntimeBootstrap> {
         connection: connection,
         onThemeModeChanged: widget.onThemeModeChanged,
         initialThemeMode: widget.initialThemeMode,
+        galleryPreference: widget.galleryPreference,
+        onGalleryPreferenceChanged: widget.onGalleryPreferenceChanged,
       );
     }
     final colors = Theme.of(context).colorScheme;
@@ -224,12 +263,16 @@ class FletViewerShell extends StatefulWidget {
     this.connection,
     this.onThemeModeChanged,
     this.initialThemeMode = ThemeMode.system,
+    this.galleryPreference = const GalleryListPreference(),
+    this.onGalleryPreferenceChanged,
   });
 
   final CoreClient? client;
   final RuntimeConnection? connection;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
   final ThemeMode initialThemeMode;
+  final GalleryListPreference galleryPreference;
+  final ValueChanged<GalleryListPreference>? onGalleryPreferenceChanged;
 
   @override
   State<FletViewerShell> createState() => _FletViewerShellState();
@@ -283,6 +326,7 @@ class _FletViewerShellState extends State<FletViewerShell> {
             onTabSelected: (index) => setState(() => _readingTab = index),
             onProviderSelected: _selectProvider,
             showProviderRail: !wide,
+            galleryPreference: widget.galleryPreference,
           ),
           AppSection.local => const _LocalGalleryPage(),
           AppSection.downloads => DownloadPage(client: _client),
@@ -292,6 +336,8 @@ class _FletViewerShellState extends State<FletViewerShell> {
             onProviderSelected: _selectProvider,
             themeMode: widget.initialThemeMode,
             onThemeModeChanged: widget.onThemeModeChanged,
+            galleryPreference: widget.galleryPreference,
+            onGalleryPreferenceChanged: widget.onGalleryPreferenceChanged,
           ),
           AppSection.debug => DebugPage(client: _client),
         };
@@ -663,6 +709,7 @@ class _BrowsePage extends StatelessWidget {
     required this.onTabSelected,
     required this.onProviderSelected,
     required this.showProviderRail,
+    required this.galleryPreference,
   });
 
   final CoreClient client;
@@ -671,6 +718,7 @@ class _BrowsePage extends StatelessWidget {
   final ValueChanged<int> onTabSelected;
   final ValueChanged<ProviderFamily> onProviderSelected;
   final bool showProviderRail;
+  final GalleryListPreference galleryPreference;
 
   @override
   Widget build(BuildContext context) {
@@ -690,6 +738,7 @@ class _BrowsePage extends StatelessWidget {
             provider: provider,
             tab: provider.tabs[selectedTab.clamp(0, provider.tabs.length - 1)],
             profile: 'default',
+            galleryPreference: galleryPreference,
           ),
         ),
       ],
@@ -806,12 +855,14 @@ class _GalleryBrowser extends StatefulWidget {
     required this.provider,
     required this.tab,
     this.profile = 'default',
+    this.galleryPreference = const GalleryListPreference(),
   });
 
   final CoreClient client;
   final ProviderFamily provider;
   final String tab;
   final String profile;
+  final GalleryListPreference galleryPreference;
 
   @override
   State<_GalleryBrowser> createState() => _GalleryBrowserState();
@@ -898,6 +949,7 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
       return PixivFeedPage(
         client: widget.client,
         profile: widget.profile,
+        galleryPreference: widget.galleryPreference,
         kind: switch (widget.tab) {
           '推荐' => PixivFeedKind.recommendations,
           '关注' => PixivFeedKind.following,
@@ -930,13 +982,15 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
     }
     return LayoutBuilder(
       builder: (context, constraints) {
-        final columns = constraints.maxWidth >= 1200
+        final autoColumns = constraints.maxWidth >= 1200
             ? 5
             : constraints.maxWidth >= 900
             ? 4
             : constraints.maxWidth >= 620
             ? 3
             : 2;
+        final columns = widget.galleryPreference.resolveColumns(autoColumns);
+        final preference = widget.galleryPreference;
         final page = _page;
         return CustomScrollView(
           slivers: [
@@ -989,17 +1043,32 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
                 ),
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
-                sliver: SliverMasonryGrid.count(
-                  crossAxisCount: columns,
-                  mainAxisSpacing: 14,
-                  crossAxisSpacing: 14,
-                  childCount: page.galleries.length,
-                  itemBuilder: (context, index) => _EhGalleryCard(
-                    client: widget.client,
-                    profile: page.profile,
-                    gallery: page.galleries[index],
-                  ),
-                ),
+                sliver: preference.layout == GalleryLayoutMode.masonry
+                    ? SliverMasonryGrid.count(
+                        crossAxisCount: columns,
+                        mainAxisSpacing: 14,
+                        crossAxisSpacing: 14,
+                        childCount: page.galleries.length,
+                        itemBuilder: (context, index) => _EhGalleryCard(
+                          client: widget.client,
+                          profile: page.profile,
+                          gallery: page.galleries[index],
+                        ),
+                      )
+                    : SliverGrid.builder(
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: columns,
+                          mainAxisSpacing: 14,
+                          crossAxisSpacing: 14,
+                          childAspectRatio: 0.72,
+                        ),
+                        itemCount: page.galleries.length,
+                        itemBuilder: (context, index) => _EhGalleryCard(
+                          client: widget.client,
+                          profile: page.profile,
+                          gallery: page.galleries[index],
+                        ),
+                      ),
               ),
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(18, 0, 18, 100),
@@ -1376,6 +1445,8 @@ class _SettingsPage extends StatefulWidget {
     required this.onProviderSelected,
     required this.themeMode,
     required this.onThemeModeChanged,
+    required this.galleryPreference,
+    required this.onGalleryPreferenceChanged,
   });
 
   final CoreClient client;
@@ -1383,6 +1454,8 @@ class _SettingsPage extends StatefulWidget {
   final ValueChanged<ProviderFamily> onProviderSelected;
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode>? onThemeModeChanged;
+  final GalleryListPreference galleryPreference;
+  final ValueChanged<GalleryListPreference>? onGalleryPreferenceChanged;
 
   @override
   State<_SettingsPage> createState() => _SettingsPageState();
@@ -1466,6 +1539,106 @@ class _SettingsPageState extends State<_SettingsPage> {
                 ),
               ),
             ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.grid_view_outlined),
+                    SizedBox(width: 16),
+                    Text('画廊列表'),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const SizedBox(width: 40, child: Text('布局')),
+                    SegmentedButton<GalleryLayoutMode>(
+                      segments: const [
+                        ButtonSegment(
+                          value: GalleryLayoutMode.masonry,
+                          icon: Icon(Icons.waterfall_chart_outlined),
+                          label: Text('瀑布流'),
+                        ),
+                        ButtonSegment(
+                          value: GalleryLayoutMode.grid,
+                          icon: Icon(Icons.grid_view),
+                          label: Text('网格'),
+                        ),
+                      ],
+                      selected: {widget.galleryPreference.layout},
+                      onSelectionChanged:
+                          widget.onGalleryPreferenceChanged == null
+                          ? null
+                          : (selection) => widget.onGalleryPreferenceChanged!(
+                              widget.galleryPreference.copyWith(
+                                layout: selection.first,
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const SizedBox(width: 40, child: Text('列数')),
+                    SegmentedButton<GalleryColumnsMode>(
+                      segments: const [
+                        ButtonSegment(
+                          value: GalleryColumnsMode.auto,
+                          label: Text('自适应'),
+                        ),
+                        ButtonSegment(
+                          value: GalleryColumnsMode.fixed,
+                          label: Text('固定'),
+                        ),
+                      ],
+                      selected: {widget.galleryPreference.columnsMode},
+                      onSelectionChanged:
+                          widget.onGalleryPreferenceChanged == null
+                          ? null
+                          : (selection) => widget.onGalleryPreferenceChanged!(
+                              widget.galleryPreference.copyWith(
+                                columnsMode: selection.first,
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+                if (widget.galleryPreference.columnsMode ==
+                    GalleryColumnsMode.fixed) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      const SizedBox(width: 40, child: Text('固定列')),
+                      SegmentedButton<int>(
+                        segments: const [
+                          ButtonSegment(value: 2, label: Text('2')),
+                          ButtonSegment(value: 3, label: Text('3')),
+                          ButtonSegment(value: 4, label: Text('4')),
+                          ButtonSegment(value: 5, label: Text('5')),
+                        ],
+                        selected: {widget.galleryPreference.fixedColumns},
+                        onSelectionChanged:
+                            widget.onGalleryPreferenceChanged == null
+                            ? null
+                            : (selection) => widget.onGalleryPreferenceChanged!(
+                                widget.galleryPreference.copyWith(
+                                  fixedColumns: selection.first,
+                                ),
+                              ),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
           ),
         ),
         const SizedBox(height: 16),

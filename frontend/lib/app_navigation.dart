@@ -1,5 +1,40 @@
 import 'package:flutter/material.dart';
 
+/// Gallery list layout preference shared by all browsing pages.
+enum GalleryLayoutMode { masonry, grid }
+
+/// Column strategy for gallery grids.
+enum GalleryColumnsMode { auto, fixed }
+
+/// Persisted gallery list appearance.
+class GalleryListPreference {
+  const GalleryListPreference({
+    this.layout = GalleryLayoutMode.masonry,
+    this.columnsMode = GalleryColumnsMode.auto,
+    this.fixedColumns = 3,
+  });
+
+  final GalleryLayoutMode layout;
+  final GalleryColumnsMode columnsMode;
+  final int fixedColumns;
+
+  int resolveColumns(int autoColumns) {
+    return columnsMode == GalleryColumnsMode.fixed ? fixedColumns : autoColumns;
+  }
+
+  GalleryListPreference copyWith({
+    GalleryLayoutMode? layout,
+    GalleryColumnsMode? columnsMode,
+    int? fixedColumns,
+  }) {
+    return GalleryListPreference(
+      layout: layout ?? this.layout,
+      columnsMode: columnsMode ?? this.columnsMode,
+      fixedColumns: fixedColumns ?? this.fixedColumns,
+    );
+  }
+}
+
 /// Top-level destinations preserved from the current Flet information architecture.
 enum AppSection { browse, local, downloads, settings, debug }
 

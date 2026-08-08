@@ -155,13 +155,17 @@ void main() {
     await tester.tap(find.byKey(const Key('nav-settings')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Pixiv Cookie'), findsWidgets);
-    expect(find.text('E-Hentai Cookie'), findsWidgets);
+    expect(find.text('画廊列表'), findsOneWidget);
+    expect(find.text('瀑布流'), findsOneWidget);
     expect(find.text('外观主题'), findsOneWidget);
     expect(find.text('浅色'), findsOneWidget);
     await tester.tap(find.text('深色'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+    await tester.fling(find.byType(ListView), const Offset(0, -3000), 2000);
+    await tester.pumpAndSettle();
+    expect(find.text('Pixiv Cookie'), findsWidgets);
+    expect(find.text('E-Hentai Cookie'), findsWidgets);
   });
 
   testWidgets('debug section shows runtime and profile diagnostics', (

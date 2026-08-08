@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 
+import 'app_navigation.dart';
 import 'core_client.dart';
 import 'core_image_view.dart';
 
@@ -15,11 +17,13 @@ class PixivFeedPage extends StatefulWidget {
     required this.client,
     required this.profile,
     required this.kind,
+    this.galleryPreference = const GalleryListPreference(),
   });
 
   final CoreClient client;
   final String profile;
   final PixivFeedKind kind;
+  final GalleryListPreference galleryPreference;
 
   @override
   State<PixivFeedPage> createState() => _PixivFeedPageState();
@@ -175,13 +179,15 @@ class _PixivFeedPageState extends State<PixivFeedPage> {
     }
     return LayoutBuilder(
       builder: (context, constraints) {
-        final columns = constraints.maxWidth >= 1200
+        final autoColumns = constraints.maxWidth >= 1200
             ? 6
             : constraints.maxWidth >= 900
             ? 5
             : constraints.maxWidth >= 620
             ? 4
             : 3;
+        final columns = widget.galleryPreference.resolveColumns(autoColumns);
+        final preference = widget.galleryPreference;
         return CustomScrollView(
           slivers: [
             SliverPadding(
@@ -209,23 +215,40 @@ class _PixivFeedPageState extends State<PixivFeedPage> {
             else ...[
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
-                sliver: SliverGrid.builder(
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: columns,
-                    mainAxisSpacing: 14,
-                    crossAxisSpacing: 14,
-                    childAspectRatio: 0.68,
-                  ),
-                  itemCount: _items.length,
-                  itemBuilder: (context, index) => _PixivCard(
-                    client: widget.client,
-                    profile: widget.profile,
-                    item: _items[index],
-                    rank: widget.kind == PixivFeedKind.ranking
-                        ? _rankBase + index + 1
-                        : null,
-                  ),
-                ),
+                sliver: preference.layout == GalleryLayoutMode.masonry
+                    ? SliverMasonryGrid.count(
+                        crossAxisCount: columns,
+                        mainAxisSpacing: 14,
+                        crossAxisSpacing: 14,
+                        childCount: _items.length,
+                        itemBuilder: (context, index) => _PixivCard(
+                          client: widget.client,
+                          profile: widget.profile,
+                          item: _items[index],
+                          rank: widget.kind == PixivFeedKind.ranking
+                              ? _rankBase + index + 1
+                              : null,
+                          masonry: true,
+                        ),
+                      )
+                    : SliverGrid.builder(
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: columns,
+                          mainAxisSpacing: 14,
+                          crossAxisSpacing: 14,
+                          childAspectRatio: 0.68,
+                        ),
+                        itemCount: _items.length,
+                        itemBuilder: (context, index) => _PixivCard(
+                          client: widget.client,
+                          profile: widget.profile,
+                          item: _items[index],
+                          rank: widget.kind == PixivFeedKind.ranking
+                              ? _rankBase + index + 1
+                              : null,
+                          masonry: false,
+                        ),
+                      ),
               ),
               if (_hasMore || (_page > 1 && !_isSearch))
                 SliverPadding(
@@ -347,12 +370,34 @@ class _PixivCard extends StatelessWidget {
     required this.profile,
     required this.item,
     required this.rank,
+    this.masonry = false,
   });
 
   final CoreClient client;
   final String profile;
   final PixivSearchItem item;
   final int? rank;
+  final bool masonry;
+
+  Widget _cover(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return ColoredBox(
+      color: colors.surfaceContainerHighest,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          PixivCover(
+            client: client,
+            profile: profile,
+            illustId: item.id,
+            thumbnailUrl: item.thumbnailUrl,
+          ),
+          if (rank != null)
+            Positioned(left: 8, top: 8, child: _RankBadge(rank: rank!)),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -372,28 +417,10 @@ class _PixivCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(
-              child: ColoredBox(
-                color: colors.surfaceContainerHighest,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    PixivCover(
-                      client: client,
-                      profile: profile,
-                      illustId: item.id,
-                      thumbnailUrl: item.thumbnailUrl,
-                    ),
-                    if (rank != null)
-                      Positioned(
-                        left: 8,
-                        top: 8,
-                        child: _RankBadge(rank: rank!),
-                      ),
-                  ],
-                ),
-              ),
-            ),
+            if (masonry)
+              AspectRatio(aspectRatio: 1, child: _cover(context))
+            else
+              Expanded(child: _cover(context)),
             Padding(
               padding: const EdgeInsets.all(10),
               child: Column(
