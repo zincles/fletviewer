@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'core_client.dart';
+import 'core_image_view.dart';
 
 enum PixivFeedKind { recommendations, following, ranking, search, bookmarks }
 
@@ -531,19 +532,13 @@ class _PixivCoverState extends State<PixivCover> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final bytes = _bytes;
-    if (bytes != null) {
-      return Image.memory(
-        bytes,
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
-        filterQuality: FilterQuality.medium,
-      );
-    }
-    return Icon(
-      Icons.brush_outlined,
-      size: 48,
-      color: colors.onSurfaceVariant.withValues(alpha: 0.45),
+    return FadeInImageBox(
+      bytes: _bytes,
+      placeholder: Icon(
+        Icons.brush_outlined,
+        size: 48,
+        color: colors.onSurfaceVariant.withValues(alpha: 0.45),
+      ),
     );
   }
 }

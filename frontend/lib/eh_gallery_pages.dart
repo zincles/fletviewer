@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import 'core_client.dart';
+import 'core_image_view.dart';
 
 class EhGalleryPage extends StatefulWidget {
   const EhGalleryPage({
@@ -1040,11 +1041,10 @@ class _ThumbnailTileState extends State<_ThumbnailTile> {
     final spriteY = item.spriteY;
     final image = _spriteImage;
     if (spriteX == null || spriteY == null || image == null) {
-      return Image.memory(
-        bytes,
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
-        filterQuality: FilterQuality.medium,
+      return FadeInImageBox(
+        bytes: bytes,
+        placeholder: const Icon(Icons.image_outlined),
+        cacheWidth: 320,
       );
     }
     final tileWidth = (item.width ?? 100).toDouble();

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'core_client.dart';
+import 'core_image_view.dart';
 import 'eh_gallery_pages.dart';
 import 'pixiv_pages.dart' show AuthRequiredView;
 
@@ -474,13 +475,9 @@ class _FavoriteCoverState extends State<_FavoriteCover> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final bytes = _bytes;
-    if (bytes != null) {
-      return Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true);
-    }
-    return ColoredBox(
-      color: colors.surfaceContainerHighest,
-      child: Icon(
+    return FadeInImageBox(
+      bytes: _bytes,
+      placeholder: Icon(
         Icons.collections_bookmark_outlined,
         color: colors.onSurfaceVariant.withValues(alpha: 0.5),
       ),

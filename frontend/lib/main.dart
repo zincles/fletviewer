@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_navigation.dart';
 import 'core_client.dart';
+import 'core_image_view.dart';
 import 'debug_page.dart';
 import 'eh_extra_pages.dart';
 import 'eh_gallery_pages.dart';
@@ -1009,6 +1010,7 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
                     previous: page.previous,
                     next: page.next,
                     onPage: (cursor) => _load(cursor: cursor),
+                    enabled: !_loading,
                   ),
                 ),
               ),
@@ -1189,19 +1191,15 @@ class _EhGalleryCardState extends State<_EhGalleryCard> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    if (_coverBytes case final bytes?)
-                      Image.memory(
-                        bytes,
-                        key: Key('eh-cover-image-${gallery.gallery.gid}'),
-                        fit: BoxFit.cover,
-                        gaplessPlayback: true,
-                      )
-                    else
-                      Icon(
+                    FadeInImageBox(
+                      bytes: _coverBytes,
+                      imageKey: Key('eh-cover-image-${gallery.gallery.gid}'),
+                      placeholder: Icon(
                         Icons.collections_bookmark_outlined,
                         size: 58,
                         color: colors.onSurfaceVariant.withValues(alpha: 0.42),
                       ),
+                    ),
                     Positioned(
                       left: 8,
                       top: 8,
@@ -1289,11 +1287,13 @@ class _EhPager extends StatelessWidget {
     required this.previous,
     required this.next,
     required this.onPage,
+    this.enabled = true,
   });
 
   final EhPageCursor? previous;
   final EhPageCursor? next;
   final ValueChanged<EhPageCursor> onPage;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -1301,13 +1301,15 @@ class _EhPager extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
         OutlinedButton.icon(
-          onPressed: previous == null ? null : () => onPage(previous!),
+          onPressed: previous == null || !enabled
+              ? null
+              : () => onPage(previous!),
           icon: const Icon(Icons.chevron_left),
           label: const Text('上一页'),
         ),
         const SizedBox(width: 8),
         FilledButton.tonalIcon(
-          onPressed: next == null ? null : () => onPage(next!),
+          onPressed: next == null || !enabled ? null : () => onPage(next!),
           icon: const Icon(Icons.chevron_right),
           label: const Text('下一页'),
         ),
