@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_navigation.dart';
@@ -988,14 +989,11 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
                 ),
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
-                sliver: SliverGrid.builder(
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: columns,
-                    mainAxisSpacing: 14,
-                    crossAxisSpacing: 14,
-                    childAspectRatio: 0.72,
-                  ),
-                  itemCount: page.galleries.length,
+                sliver: SliverMasonryGrid.count(
+                  crossAxisCount: columns,
+                  mainAxisSpacing: 14,
+                  crossAxisSpacing: 14,
+                  childCount: page.galleries.length,
                   itemBuilder: (context, index) => _EhGalleryCard(
                     client: widget.client,
                     profile: page.profile,
@@ -1164,6 +1162,14 @@ class _EhGalleryCardState extends State<_EhGalleryCard> {
 
   bool _isCurrent(int revision) => mounted && revision == _requestRevision;
 
+  /// Waterfall layout uses the parsed cover dimensions; falls back to 3:4.
+  double _coverAspectRatio(EhGallerySummary gallery) {
+    final width = gallery.coverWidth;
+    final height = gallery.coverHeight;
+    if (width == null || height == null || height == 0) return 3 / 4;
+    return width / height;
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -1185,7 +1191,8 @@ class _EhGalleryCardState extends State<_EhGalleryCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(
+            AspectRatio(
+              aspectRatio: _coverAspectRatio(gallery),
               child: ColoredBox(
                 color: colors.surfaceContainerHighest,
                 child: Stack(
