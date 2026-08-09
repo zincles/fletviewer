@@ -49,6 +49,7 @@ class _FletViewerAppState extends State<FletViewerApp> {
     final galleryColumns = prefs.getString('gallery_columns_mode');
     final fixedColumns = prefs.getInt('gallery_fixed_columns') ?? 3;
     final hideText = prefs.getBool('gallery_masonry_hide_text');
+    final infiniteScroll = prefs.getBool('gallery_infinite_scroll');
     if (!mounted) return;
     setState(() {
       _themeMode = switch (stored) {
@@ -67,6 +68,7 @@ class _FletViewerAppState extends State<FletViewerApp> {
         },
         fixedColumns: fixedColumns.clamp(2, 5),
         hideTextInMasonry: hideText ?? true,
+        infiniteScroll: infiniteScroll ?? true,
       );
     });
   }
@@ -93,6 +95,10 @@ class _FletViewerAppState extends State<FletViewerApp> {
         await prefs.setBool(
           'gallery_masonry_hide_text',
           preference.hideTextInMasonry,
+        );
+        await prefs.setBool(
+          'gallery_infinite_scroll',
+          preference.infiniteScroll,
         );
       }),
     );
@@ -746,11 +752,6 @@ class _BrowsePageState extends State<_BrowsePage> {
       // Provider switch: a fresh page group replaces the previous one.
       _controller.dispose();
       _controller = PageController(initialPage: widget.selectedTab);
-    } else if (oldWidget.selectedTab != widget.selectedTab &&
-        _controller.hasClients &&
-        widget.selectedTab != _controller.page?.round()) {
-      // External selection (e.g. provider reset) follows the tab bar.
-      _controller.jumpToPage(widget.selectedTab);
     }
   }
 
@@ -761,7 +762,6 @@ class _BrowsePageState extends State<_BrowsePage> {
   }
 
   void _selectTab(int index) {
-    widget.onTabSelected(index);
     if (_controller.hasClients) {
       _controller.animateToPage(
         index,
@@ -769,6 +769,7 @@ class _BrowsePageState extends State<_BrowsePage> {
         curve: Curves.easeOutCubic,
       );
     }
+    widget.onTabSelected(index);
   }
 
   @override
@@ -955,7 +956,11 @@ class _GalleryBrowser extends StatefulWidget {
 class _GalleryBrowserState extends State<_GalleryBrowser> {
   final TextEditingController _searchController = TextEditingController();
   EhHomePage? _page;
+  List<EhGallerySummary> _galleries = const [];
+  EhPageCursor? _prevCursor;
+  EhPageCursor? _nextCursor;
   bool _loading = false;
+  bool _loadingMore = false;
   bool _authRequired = false;
   String? _error;
   String _activeSearch = '';
@@ -980,6 +985,9 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.provider != widget.provider || oldWidget.tab != widget.tab) {
       _page = null;
+      _galleries = const [];
+      _prevCursor = null;
+      _nextCursor = null;
       _error = null;
       _activeSearch = '';
       _searchController.clear();
@@ -994,9 +1002,18 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
   }
 
   Future<void> _load({String? search, EhPageCursor? cursor}) async {
-    if (!_isEhHome) return;
+    if (!_isEhHome || _loading || _loadingMore) return;
+    final append =
+        cursor == null &&
+        _galleries.isNotEmpty &&
+        widget.galleryPreference.infiniteScroll &&
+        search == null;
     setState(() {
-      _loading = true;
+      if (append) {
+        _loadingMore = true;
+      } else {
+        _loading = true;
+      }
       _authRequired = false;
       _error = null;
     });
@@ -1005,18 +1022,39 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
       final page = switch (widget.tab) {
         '热门' => await widget.client.ehPopular(profile: widget.profile),
         '订阅' => await widget.client.ehWatched(profile: widget.profile),
-        _ => await widget.client.ehSearch(search: query, cursor: cursor),
+        _ => await widget.client.ehSearch(
+          search: query,
+          cursor: append ? _nextCursor : cursor,
+        ),
       };
       if (!mounted) return;
       setState(() {
-        _page = page;
-        _activeSearch = query;
-        _loading = false;
+        if (append) {
+          final merged = [..._galleries];
+          for (final gallery in page.galleries) {
+            if (!merged.any(
+              (existing) => existing.gallery.gid == gallery.gallery.gid,
+            )) {
+              merged.add(gallery);
+            }
+          }
+          _galleries = merged;
+          _nextCursor = page.next;
+          _loadingMore = false;
+        } else {
+          _page = page;
+          _galleries = page.galleries;
+          _prevCursor = page.previous;
+          _nextCursor = page.next;
+          _activeSearch = query;
+          _loading = false;
+        }
       });
     } on Object catch (error) {
       if (!mounted) return;
       setState(() {
         _loading = false;
+        _loadingMore = false;
         if (error is CoreApiException &&
             error.code == 'authentication_required') {
           _authRequired = true;
@@ -1076,100 +1114,167 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
         final columns = widget.galleryPreference.resolveColumns(autoColumns);
         final preference = widget.galleryPreference;
         final page = _page;
-        return CustomScrollView(
-          slivers: [
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
-              sliver: SliverToBoxAdapter(
-                child: _EhBrowseToolbar(
-                  title: 'E-Hentai · ${widget.tab}',
-                  generation: page?.generation,
-                  loading: _loading,
-                  controller: _searchController,
-                  onSearch: (value) => _load(search: value),
-                  onRefresh: () => _load(),
-                ),
-              ),
-            ),
-            if (_loading && page == null)
-              const SliverFillRemaining(
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (_error != null && page == null)
-              SliverFillRemaining(
-                child: _EmptySection(
-                  icon: Icons.cloud_off_outlined,
-                  title: 'E-Hentai 查询失败',
-                  message: _error!,
-                  actionLabel: '重新加载',
-                  onAction: _load,
-                ),
-              )
-            else if (page == null || page.galleries.isEmpty)
-              SliverFillRemaining(
-                child: _EmptySection(
-                  icon: Icons.search_off_outlined,
-                  title: '没有结果',
-                  message: _activeSearch.isEmpty
-                      ? 'fvcore 返回了空的 E-Hentai 主页列表。'
-                      : '没有匹配 “$_activeSearch” 的画廊。',
-                  actionLabel: '刷新',
-                  onAction: _load,
-                ),
-              )
-            else ...[
-              if (_error != null)
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(18, 4, 18, 0),
-                  sliver: SliverToBoxAdapter(
-                    child: _InlineError(message: _error!),
+        final galleries = _galleries;
+        return NotificationListener<ScrollNotification>(
+          onNotification: (notification) {
+            if (preference.infiniteScroll &&
+                notification.metrics.extentAfter < 400 &&
+                _nextCursor != null &&
+                !_loading &&
+                !_loadingMore &&
+                _error == null) {
+              unawaited(_load());
+            }
+            return false;
+          },
+          child: CustomScrollView(
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+                sliver: SliverToBoxAdapter(
+                  child: _EhBrowseToolbar(
+                    title: 'E-Hentai · ${widget.tab}',
+                    generation: page?.generation,
+                    loading: _loading,
+                    controller: _searchController,
+                    onSearch: (value) => _load(search: value),
+                    onRefresh: () => _load(),
                   ),
                 ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
-                sliver: preference.layout == GalleryLayoutMode.masonry
-                    ? SliverMasonryGrid.count(
-                        crossAxisCount: columns,
-                        mainAxisSpacing: 14,
-                        crossAxisSpacing: 14,
-                        childCount: page.galleries.length,
-                        itemBuilder: (context, index) => _EhGalleryCard(
-                          client: widget.client,
-                          profile: page.profile,
-                          gallery: page.galleries[index],
-                          showText: !preference.hideTextInMasonry,
-                        ),
-                      )
-                    : SliverGrid.builder(
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              ),
+              if (_loading && page == null && galleries.isEmpty)
+                const SliverFillRemaining(
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              else if (_error != null && galleries.isEmpty)
+                SliverFillRemaining(
+                  child: _EmptySection(
+                    icon: Icons.cloud_off_outlined,
+                    title: 'E-Hentai 查询失败',
+                    message: _error!,
+                    actionLabel: '重新加载',
+                    onAction: _load,
+                  ),
+                )
+              else if (galleries.isEmpty)
+                SliverFillRemaining(
+                  child: _EmptySection(
+                    icon: Icons.search_off_outlined,
+                    title: '没有结果',
+                    message: _activeSearch.isEmpty
+                        ? 'fvcore 返回了空的 E-Hentai 主页列表。'
+                        : '没有匹配 “$_activeSearch” 的画廊。',
+                    actionLabel: '刷新',
+                    onAction: _load,
+                  ),
+                )
+              else ...[
+                if (_error != null)
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(18, 4, 18, 0),
+                    sliver: SliverToBoxAdapter(
+                      child: _InlineError(message: _error!),
+                    ),
+                  ),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
+                  sliver: preference.layout == GalleryLayoutMode.masonry
+                      ? SliverMasonryGrid.count(
                           crossAxisCount: columns,
                           mainAxisSpacing: 14,
                           crossAxisSpacing: 14,
-                          childAspectRatio: 0.72,
+                          childCount: galleries.length,
+                          itemBuilder: (context, index) => _EhGalleryCard(
+                            client: widget.client,
+                            profile: page?.profile ?? widget.profile,
+                            gallery: galleries[index],
+                            showText: !preference.hideTextInMasonry,
+                          ),
+                        )
+                      : SliverGrid.builder(
+                          gridDelegate:
+                              SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: columns,
+                                mainAxisSpacing: 14,
+                                crossAxisSpacing: 14,
+                                childAspectRatio: 0.72,
+                              ),
+                          itemCount: galleries.length,
+                          itemBuilder: (context, index) => _EhGalleryCard(
+                            client: widget.client,
+                            profile: page?.profile ?? widget.profile,
+                            gallery: galleries[index],
+                          ),
                         ),
-                        itemCount: page.galleries.length,
-                        itemBuilder: (context, index) => _EhGalleryCard(
-                          client: widget.client,
-                          profile: page.profile,
-                          gallery: page.galleries[index],
-                        ),
-                      ),
-              ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(18, 0, 18, 100),
-                sliver: SliverToBoxAdapter(
-                  child: _EhPager(
-                    previous: page.previous,
-                    next: page.next,
-                    onPage: (cursor) => _load(cursor: cursor),
-                    enabled: !_loading,
+                ),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(18, 0, 18, 100),
+                  sliver: SliverToBoxAdapter(
+                    child: preference.infiniteScroll
+                        ? _InfiniteFooter(
+                            previous: _prevCursor,
+                            loadingMore: _loadingMore,
+                            enabled: !_loading,
+                            onPrevious: (cursor) => _load(cursor: cursor),
+                          )
+                        : _EhPager(
+                            previous: page?.previous,
+                            next: page?.next,
+                            onPage: (cursor) => _load(cursor: cursor),
+                            enabled: !_loading,
+                          ),
                   ),
                 ),
-              ),
+              ],
             ],
-          ],
+          ),
         );
       },
+    );
+  }
+}
+
+/// Bottom bar for seamless paging: previous page plus loading indicator.
+class _InfiniteFooter extends StatelessWidget {
+  const _InfiniteFooter({
+    required this.previous,
+    required this.loadingMore,
+    required this.enabled,
+    required this.onPrevious,
+  });
+
+  final EhPageCursor? previous;
+  final bool loadingMore;
+  final bool enabled;
+  final ValueChanged<EhPageCursor> onPrevious;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        if (loadingMore) ...[
+          const SizedBox.square(
+            dimension: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            '加载下一页…',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(width: 12),
+        ],
+        OutlinedButton.icon(
+          onPressed: previous == null || !enabled
+              ? null
+              : () => onPrevious(previous!),
+          icon: const Icon(Icons.chevron_left),
+          label: const Text('上一页'),
+        ),
+      ],
     );
   }
 }
@@ -1742,6 +1847,20 @@ class _SettingsPageState extends State<_SettingsPage> {
                           ),
                   ),
                 ],
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('无缝加载'),
+                  subtitle: const Text('滚动到底部自动追加下一页，上一页内容保留'),
+                  value: widget.galleryPreference.infiniteScroll,
+                  onChanged: widget.onGalleryPreferenceChanged == null
+                      ? null
+                      : (value) => widget.onGalleryPreferenceChanged!(
+                          widget.galleryPreference.copyWith(
+                            infiniteScroll: value,
+                          ),
+                        ),
+                ),
               ],
             ),
           ),

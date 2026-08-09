@@ -188,86 +188,102 @@ class _PixivFeedPageState extends State<PixivFeedPage> {
             : 3;
         final columns = widget.galleryPreference.resolveColumns(autoColumns);
         final preference = widget.galleryPreference;
-        return CustomScrollView(
-          slivers: [
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
-              sliver: SliverToBoxAdapter(child: _buildToolbar(context)),
-            ),
-            if (_loading && _items.isEmpty)
-              const SliverFillRemaining(
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (_error != null && _items.isEmpty)
-              SliverFillRemaining(
-                child: _EmptyFeedError(
-                  message: _error!,
-                  onRetry: () => _load(reset: true),
-                ),
-              )
-            else if (_items.isEmpty)
-              SliverFillRemaining(
-                child: _EmptyFeedError(
-                  message: _isSearch ? '没有匹配 “$_query” 的作品。' : 'Pixiv 返回了空列表。',
-                  onRetry: () => _load(reset: true),
-                ),
-              )
-            else ...[
+        return NotificationListener<ScrollNotification>(
+          onNotification: (notification) {
+            if (preference.infiniteScroll &&
+                notification.metrics.extentAfter < 400 &&
+                _hasMore &&
+                !_loading &&
+                !_loadingMore &&
+                _error == null) {
+              unawaited(_load(reset: false));
+            }
+            return false;
+          },
+          child: CustomScrollView(
+            slivers: [
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
-                sliver: preference.layout == GalleryLayoutMode.masonry
-                    ? SliverMasonryGrid.count(
-                        crossAxisCount: columns,
-                        mainAxisSpacing: 14,
-                        crossAxisSpacing: 14,
-                        childCount: _items.length,
-                        itemBuilder: (context, index) => _PixivCard(
-                          client: widget.client,
-                          profile: widget.profile,
-                          item: _items[index],
-                          rank: widget.kind == PixivFeedKind.ranking
-                              ? _rankBase + index + 1
-                              : null,
-                          masonry: true,
-                          hideText: preference.hideTextInMasonry,
-                        ),
-                      )
-                    : SliverGrid.builder(
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+                sliver: SliverToBoxAdapter(child: _buildToolbar(context)),
+              ),
+              if (_loading && _items.isEmpty)
+                const SliverFillRemaining(
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              else if (_error != null && _items.isEmpty)
+                SliverFillRemaining(
+                  child: _EmptyFeedError(
+                    message: _error!,
+                    onRetry: () => _load(reset: true),
+                  ),
+                )
+              else if (_items.isEmpty)
+                SliverFillRemaining(
+                  child: _EmptyFeedError(
+                    message: _isSearch
+                        ? '没有匹配 “$_query” 的作品。'
+                        : 'Pixiv 返回了空列表。',
+                    onRetry: () => _load(reset: true),
+                  ),
+                )
+              else ...[
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
+                  sliver: preference.layout == GalleryLayoutMode.masonry
+                      ? SliverMasonryGrid.count(
                           crossAxisCount: columns,
                           mainAxisSpacing: 14,
                           crossAxisSpacing: 14,
-                          childAspectRatio: 0.68,
+                          childCount: _items.length,
+                          itemBuilder: (context, index) => _PixivCard(
+                            client: widget.client,
+                            profile: widget.profile,
+                            item: _items[index],
+                            rank: widget.kind == PixivFeedKind.ranking
+                                ? _rankBase + index + 1
+                                : null,
+                            masonry: true,
+                            hideText: preference.hideTextInMasonry,
+                          ),
+                        )
+                      : SliverGrid.builder(
+                          gridDelegate:
+                              SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: columns,
+                                mainAxisSpacing: 14,
+                                crossAxisSpacing: 14,
+                                childAspectRatio: 0.68,
+                              ),
+                          itemCount: _items.length,
+                          itemBuilder: (context, index) => _PixivCard(
+                            client: widget.client,
+                            profile: widget.profile,
+                            item: _items[index],
+                            rank: widget.kind == PixivFeedKind.ranking
+                                ? _rankBase + index + 1
+                                : null,
+                            masonry: false,
+                          ),
                         ),
-                        itemCount: _items.length,
-                        itemBuilder: (context, index) => _PixivCard(
-                          client: widget.client,
-                          profile: widget.profile,
-                          item: _items[index],
-                          rank: widget.kind == PixivFeedKind.ranking
-                              ? _rankBase + index + 1
-                              : null,
-                          masonry: false,
-                        ),
+                ),
+                if (_hasMore || (_page > 1 && !_isSearch))
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(18, 0, 18, 100),
+                    sliver: SliverToBoxAdapter(
+                      child: Center(
+                        child: _loadingMore
+                            ? const CircularProgressIndicator()
+                            : OutlinedButton.icon(
+                                onPressed: () => _load(reset: false),
+                                icon: const Icon(Icons.expand_more),
+                                label: const Text('加载更多'),
+                              ),
                       ),
-              ),
-              if (_hasMore || (_page > 1 && !_isSearch))
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(18, 0, 18, 100),
-                  sliver: SliverToBoxAdapter(
-                    child: Center(
-                      child: _loadingMore
-                          ? const CircularProgressIndicator()
-                          : OutlinedButton.icon(
-                              onPressed: () => _load(reset: false),
-                              icon: const Icon(Icons.expand_more),
-                              label: const Text('加载更多'),
-                            ),
                     ),
                   ),
-                ),
+              ],
             ],
-          ],
+          ),
         );
       },
     );

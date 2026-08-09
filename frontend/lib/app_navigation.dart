@@ -13,6 +13,7 @@ class GalleryListPreference {
     this.columnsMode = GalleryColumnsMode.auto,
     this.fixedColumns = 3,
     this.hideTextInMasonry = true,
+    this.infiniteScroll = true,
   });
 
   final GalleryLayoutMode layout;
@@ -21,6 +22,9 @@ class GalleryListPreference {
 
   /// In masonry mode, cards show covers only (maximized images).
   final bool hideTextInMasonry;
+
+  /// Reaching the bottom automatically appends the next page.
+  final bool infiniteScroll;
 
   int resolveColumns(int autoColumns) {
     return columnsMode == GalleryColumnsMode.fixed ? fixedColumns : autoColumns;
@@ -31,12 +35,14 @@ class GalleryListPreference {
     GalleryColumnsMode? columnsMode,
     int? fixedColumns,
     bool? hideTextInMasonry,
+    bool? infiniteScroll,
   }) {
     return GalleryListPreference(
       layout: layout ?? this.layout,
       columnsMode: columnsMode ?? this.columnsMode,
       fixedColumns: fixedColumns ?? this.fixedColumns,
       hideTextInMasonry: hideTextInMasonry ?? this.hideTextInMasonry,
+      infiniteScroll: infiniteScroll ?? this.infiniteScroll,
     );
   }
 }

@@ -136,6 +136,32 @@ void main() {
     expect(client.homeLoads, 1);
   });
 
+  testWidgets('infinite scroll appends the next page at the bottom', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FletViewerApp(client: client));
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(find.text('Rust 查询 fixture'), findsOneWidget);
+    expect(client.homeLoads, 1);
+
+    await tester.drag(
+      find.byType(CustomScrollView).first,
+      const Offset(0, -2000),
+    );
+    await tester.pumpAndSettle();
+
+    // 第二页追加到瀑布流，第一页内容保留。
+    expect(find.text('Page Two Gallery'), findsOneWidget);
+    expect(find.text('Rust 查询 fixture'), findsOneWidget);
+    expect(client.homeLoads, 2);
+  });
+
   testWidgets('masonry hides card text by default', (tester) async {
     SharedPreferences.setMockInitialValues({});
     tester.view.physicalSize = const Size(1280, 800);
@@ -291,6 +317,31 @@ final class _FakeCoreClient implements CoreClient {
     EhPageCursor? cursor,
   }) async {
     homeLoads++;
+    if (cursor != null) {
+      return const EhHomePage(
+        profile: 'default',
+        generation: 2,
+        galleries: [
+          EhGallerySummary(
+            gallery: EhGalleryRef(gid: 99, token: 'page-two-token'),
+            pageUrl: 'https://e-hentai.org/g/99/page-two-token/',
+            title: 'Page Two Gallery',
+            category: null,
+            published: null,
+            uploader: null,
+            pageCount: null,
+            rating: null,
+            language: null,
+            tags: [],
+            coverUrl: null,
+            coverWidth: null,
+            coverHeight: null,
+          ),
+        ],
+        previous: null,
+        next: null,
+      );
+    }
     return const EhHomePage(
       profile: 'default',
       generation: 1,
@@ -312,7 +363,7 @@ final class _FakeCoreClient implements CoreClient {
         ),
       ],
       previous: null,
-      next: null,
+      next: EhPageCursor(direction: 'next', gid: 123),
     );
   }
 
