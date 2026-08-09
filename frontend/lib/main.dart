@@ -48,6 +48,7 @@ class _FletViewerAppState extends State<FletViewerApp> {
     final galleryLayout = prefs.getString('gallery_layout');
     final galleryColumns = prefs.getString('gallery_columns_mode');
     final fixedColumns = prefs.getInt('gallery_fixed_columns') ?? 3;
+    final hideText = prefs.getBool('gallery_masonry_hide_text');
     if (!mounted) return;
     setState(() {
       _themeMode = switch (stored) {
@@ -65,6 +66,7 @@ class _FletViewerAppState extends State<FletViewerApp> {
           _ => GalleryColumnsMode.auto,
         },
         fixedColumns: fixedColumns.clamp(2, 5),
+        hideTextInMasonry: hideText ?? true,
       );
     });
   }
@@ -88,6 +90,10 @@ class _FletViewerAppState extends State<FletViewerApp> {
           preference.columnsMode.name,
         );
         await prefs.setInt('gallery_fixed_columns', preference.fixedColumns);
+        await prefs.setBool(
+          'gallery_masonry_hide_text',
+          preference.hideTextInMasonry,
+        );
       }),
     );
   }
@@ -1053,6 +1059,7 @@ class _GalleryBrowserState extends State<_GalleryBrowser> {
                           client: widget.client,
                           profile: page.profile,
                           gallery: page.galleries[index],
+                          showText: !preference.hideTextInMasonry,
                         ),
                       )
                     : SliverGrid.builder(
@@ -1172,11 +1179,13 @@ class _EhGalleryCard extends StatefulWidget {
     required this.client,
     required this.profile,
     required this.gallery,
+    this.showText = true,
   });
 
   final CoreClient client;
   final String profile;
   final EhGallerySummary gallery;
+  final bool showText;
 
   @override
   State<_EhGalleryCard> createState() => _EhGalleryCardState();
@@ -1291,40 +1300,41 @@ class _EhGalleryCardState extends State<_EhGalleryCard> {
                 ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    gallery.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    tags.isEmpty
-                        ? gallery.uploader ?? gallery.published ?? ''
-                        : tags,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: colors.onSurfaceVariant,
+            if (widget.showText)
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      gallery.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '#${gallery.gallery.gid}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: colors.onSurfaceVariant,
+                    const SizedBox(height: 6),
+                    Text(
+                      tags.isEmpty
+                          ? gallery.uploader ?? gallery.published ?? ''
+                          : tags,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 4),
+                    Text(
+                      '#${gallery.gallery.gid}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
           ],
         ),
       ),
@@ -1635,6 +1645,23 @@ class _SettingsPageState extends State<_SettingsPage> {
                               ),
                       ),
                     ],
+                  ),
+                ],
+                if (widget.galleryPreference.layout ==
+                    GalleryLayoutMode.masonry) ...[
+                  const SizedBox(height: 12),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('瀑布流下隐藏文字'),
+                    subtitle: const Text('最大化显示封面；标题仅在详情页可见'),
+                    value: widget.galleryPreference.hideTextInMasonry,
+                    onChanged: widget.onGalleryPreferenceChanged == null
+                        ? null
+                        : (value) => widget.onGalleryPreferenceChanged!(
+                            widget.galleryPreference.copyWith(
+                              hideTextInMasonry: value,
+                            ),
+                          ),
                   ),
                 ],
               ],

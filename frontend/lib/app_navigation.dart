@@ -12,11 +12,15 @@ class GalleryListPreference {
     this.layout = GalleryLayoutMode.masonry,
     this.columnsMode = GalleryColumnsMode.auto,
     this.fixedColumns = 3,
+    this.hideTextInMasonry = true,
   });
 
   final GalleryLayoutMode layout;
   final GalleryColumnsMode columnsMode;
   final int fixedColumns;
+
+  /// In masonry mode, cards show covers only (maximized images).
+  final bool hideTextInMasonry;
 
   int resolveColumns(int autoColumns) {
     return columnsMode == GalleryColumnsMode.fixed ? fixedColumns : autoColumns;
@@ -26,11 +30,13 @@ class GalleryListPreference {
     GalleryLayoutMode? layout,
     GalleryColumnsMode? columnsMode,
     int? fixedColumns,
+    bool? hideTextInMasonry,
   }) {
     return GalleryListPreference(
       layout: layout ?? this.layout,
       columnsMode: columnsMode ?? this.columnsMode,
       fixedColumns: fixedColumns ?? this.fixedColumns,
+      hideTextInMasonry: hideTextInMasonry ?? this.hideTextInMasonry,
     );
   }
 }

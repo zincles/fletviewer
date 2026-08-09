@@ -13,7 +13,9 @@ void main() {
   late _FakeCoreClient client;
 
   setUp(() {
-    SharedPreferences.setMockInitialValues({});
+    SharedPreferences.setMockInitialValues({
+      'gallery_masonry_hide_text': false,
+    });
     client = _FakeCoreClient();
   });
   testWidgets('shows the responsive Flet-style browse shell', (tester) async {
@@ -110,6 +112,21 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('masonry hides card text by default', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FletViewerApp(client: client));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(const Key('eh-cover-image-123')), findsOneWidget);
+    expect(find.text('Rust 查询 fixture'), findsNothing);
+  });
+
   testWidgets('EH toplist tab shows ranked galleries', (tester) async {
     tester.view.physicalSize = const Size(1280, 800);
     tester.view.devicePixelRatio = 1;
@@ -157,6 +174,7 @@ void main() {
 
     expect(find.text('画廊列表'), findsOneWidget);
     expect(find.text('瀑布流'), findsOneWidget);
+    expect(find.text('瀑布流下隐藏文字'), findsOneWidget);
     expect(find.text('外观主题'), findsOneWidget);
     expect(find.text('浅色'), findsOneWidget);
     await tester.tap(find.text('深色'));

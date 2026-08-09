@@ -229,6 +229,7 @@ class _PixivFeedPageState extends State<PixivFeedPage> {
                               ? _rankBase + index + 1
                               : null,
                           masonry: true,
+                          hideText: preference.hideTextInMasonry,
                         ),
                       )
                     : SliverGrid.builder(
@@ -371,6 +372,7 @@ class _PixivCard extends StatelessWidget {
     required this.item,
     required this.rank,
     this.masonry = false,
+    this.hideText = false,
   });
 
   final CoreClient client;
@@ -378,6 +380,7 @@ class _PixivCard extends StatelessWidget {
   final PixivSearchItem item;
   final int? rank;
   final bool masonry;
+  final bool hideText;
 
   Widget _cover(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -421,36 +424,37 @@ class _PixivCard extends StatelessWidget {
               AspectRatio(aspectRatio: 1, child: _cover(context))
             else
               Expanded(child: _cover(context)),
-            Padding(
-              padding: const EdgeInsets.all(10),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    item.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    item.user.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: colors.onSurfaceVariant,
+            if (!hideText)
+              Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    item.pageCount > 1 ? '${item.pageCount} 页' : '单页',
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: colors.onSurfaceVariant,
+                    const SizedBox(height: 4),
+                    Text(
+                      item.user.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 2),
+                    Text(
+                      item.pageCount > 1 ? '${item.pageCount} 页' : '单页',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
           ],
         ),
       ),
