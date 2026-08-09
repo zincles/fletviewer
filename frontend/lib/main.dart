@@ -707,7 +707,7 @@ class _FloatingNavigationBar extends StatelessWidget {
   }
 }
 
-class _BrowsePage extends StatelessWidget {
+class _BrowsePage extends StatefulWidget {
   const _BrowsePage({
     required this.client,
     required this.provider,
@@ -727,44 +727,107 @@ class _BrowsePage extends StatelessWidget {
   final GalleryListPreference galleryPreference;
 
   @override
+  State<_BrowsePage> createState() => _BrowsePageState();
+}
+
+class _BrowsePageState extends State<_BrowsePage> {
+  late PageController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = PageController(initialPage: widget.selectedTab);
+  }
+
+  @override
+  void didUpdateWidget(covariant _BrowsePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.provider != widget.provider) {
+      // Provider switch: a fresh page group replaces the previous one.
+      _controller.dispose();
+      _controller = PageController(initialPage: widget.selectedTab);
+    } else if (oldWidget.selectedTab != widget.selectedTab &&
+        _controller.hasClients &&
+        widget.selectedTab != _controller.page?.round()) {
+      // External selection (e.g. provider reset) follows the tab bar.
+      _controller.jumpToPage(widget.selectedTab);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _selectTab(int index) {
+    widget.onTabSelected(index);
+    if (_controller.hasClients) {
+      _controller.animateToPage(
+        index,
+        duration: const Duration(milliseconds: 260),
+        curve: Curves.easeOutCubic,
+      );
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final tabs = widget.provider.tabs;
     return Column(
       children: [
         _ReadingHeader(
-          provider: provider,
-          selectedTab: selectedTab,
-          onTabSelected: onTabSelected,
-          onProviderSelected: onProviderSelected,
-          showProviderPicker: showProviderRail,
+          provider: widget.provider,
+          selectedTab: widget.selectedTab,
+          onTabSelected: _selectTab,
+          onProviderSelected: widget.onProviderSelected,
+          showProviderPicker: widget.showProviderRail,
         ),
         Expanded(
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 220),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, animation) => FadeTransition(
-              opacity: animation,
-              child: SlideTransition(
-                position: Tween<Offset>(
-                  begin: const Offset(0.05, 0),
-                  end: Offset.zero,
-                ).animate(animation),
-                child: child,
-              ),
-            ),
-            child: _GalleryBrowser(
-              key: ValueKey('${provider.name}-$selectedTab'),
-              client: client,
-              provider: provider,
-              tab:
-                  provider.tabs[selectedTab.clamp(0, provider.tabs.length - 1)],
-              profile: 'default',
-              galleryPreference: galleryPreference,
-            ),
+          child: PageView(
+            controller: _controller,
+            onPageChanged: (index) {
+              if (index != widget.selectedTab) widget.onTabSelected(index);
+            },
+            children: [
+              for (var index = 0; index < tabs.length; index++)
+                _KeepAliveTab(
+                  key: ValueKey('${widget.provider.name}-$index'),
+                  child: _GalleryBrowser(
+                    client: widget.client,
+                    provider: widget.provider,
+                    tab: tabs[index],
+                    profile: 'default',
+                    galleryPreference: widget.galleryPreference,
+                  ),
+                ),
+            ],
           ),
         ),
       ],
     );
+  }
+}
+
+/// Keeps one visited tab's state alive while the provider page group lives.
+class _KeepAliveTab extends StatefulWidget {
+  const _KeepAliveTab({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  State<_KeepAliveTab> createState() => _KeepAliveTabState();
+}
+
+class _KeepAliveTabState extends State<_KeepAliveTab>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return widget.child;
   }
 }
 
@@ -872,7 +935,6 @@ class _ReadingHeader extends StatelessWidget {
 
 class _GalleryBrowser extends StatefulWidget {
   const _GalleryBrowser({
-    super.key,
     required this.client,
     required this.provider,
     required this.tab,

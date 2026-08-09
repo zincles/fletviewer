@@ -112,6 +112,30 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('visited tabs keep state and do not reload on return', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FletViewerApp(client: client));
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(client.homeLoads, 1);
+
+    await tester.tap(find.byKey(const Key('reading-tab-1')));
+    await tester.pumpAndSettle();
+    expect(find.text('E-Hentai 需要登录'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('reading-tab-0')));
+    await tester.pumpAndSettle();
+    expect(find.text('Rust 查询 fixture'), findsOneWidget);
+    // Keep-alive: returning to the visited home tab does not refetch.
+    expect(client.homeLoads, 1);
+  });
+
   testWidgets('masonry hides card text by default', (tester) async {
     SharedPreferences.setMockInitialValues({});
     tester.view.physicalSize = const Size(1280, 800);
@@ -250,6 +274,7 @@ final class _FakeCoreClient implements CoreClient {
   int? startedPage;
   int coverRequests = 0;
   int thumbnailRequests = 0;
+  int homeLoads = 0;
   String? archiveStartedVariant;
   (String, String)? resourceRequest;
 
@@ -265,6 +290,7 @@ final class _FakeCoreClient implements CoreClient {
     String search = '',
     EhPageCursor? cursor,
   }) async {
+    homeLoads++;
     return const EhHomePage(
       profile: 'default',
       generation: 1,
