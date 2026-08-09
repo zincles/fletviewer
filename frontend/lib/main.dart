@@ -738,13 +738,29 @@ class _BrowsePage extends StatelessWidget {
           showProviderPicker: showProviderRail,
         ),
         Expanded(
-          child: _GalleryBrowser(
-            key: ValueKey('${provider.name}-$selectedTab'),
-            client: client,
-            provider: provider,
-            tab: provider.tabs[selectedTab.clamp(0, provider.tabs.length - 1)],
-            profile: 'default',
-            galleryPreference: galleryPreference,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                  begin: const Offset(0.05, 0),
+                  end: Offset.zero,
+                ).animate(animation),
+                child: child,
+              ),
+            ),
+            child: _GalleryBrowser(
+              key: ValueKey('${provider.name}-$selectedTab'),
+              client: client,
+              provider: provider,
+              tab:
+                  provider.tabs[selectedTab.clamp(0, provider.tabs.length - 1)],
+              profile: 'default',
+              galleryPreference: galleryPreference,
+            ),
           ),
         ),
       ],
