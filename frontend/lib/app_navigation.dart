@@ -111,3 +111,25 @@ extension ProviderFamilyPresentation on ProviderFamily {
     ProviderFamily.booru => '搜索 Booru 标签',
   };
 }
+
+/// SharedPreferences key storing a provider's customized tab order.
+String tabOrderKey(ProviderFamily provider) => 'tab_order_${provider.name}';
+
+/// Applies a drag-reorder of the tab at [movedFrom] onto the slot of
+/// [movedTo] and returns the resulting order together with the corrected
+/// index of the previously selected tab (which stays selected by identity).
+(List<String>, int) applyTabReorder(
+  List<String> before,
+  int selectedIndex,
+  int movedFrom,
+  int movedTo,
+) {
+  final order = [...before];
+  if (movedFrom < 0 || movedFrom >= order.length || movedFrom == movedTo) {
+    return (before, selectedIndex);
+  }
+  final moved = order.removeAt(movedFrom);
+  order.insert(movedTo.clamp(0, order.length), moved);
+  final selected = before[selectedIndex.clamp(0, before.length - 1)];
+  return (order, order.indexOf(selected));
+}

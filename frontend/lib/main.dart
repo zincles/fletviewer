@@ -296,6 +296,7 @@ class _FletViewerShellState extends State<FletViewerShell> {
   ProviderFamily _provider = ProviderFamily.ehentai;
   int _readingTab = 0;
   bool _connectionExpanded = false;
+  Map<ProviderFamily, List<String>> _tabOrders = const {};
 
   @override
   void initState() {
@@ -304,6 +305,49 @@ class _FletViewerShellState extends State<FletViewerShell> {
         widget.client ??
         widget.connection?.client ??
         CoreClient(Uri.parse('http://127.0.0.1:8787'));
+    unawaited(_loadTabOrders());
+  }
+
+  List<String> _tabsFor(ProviderFamily provider) =>
+      _tabOrders[provider] ?? provider.tabs;
+
+  Future<void> _loadTabOrders() async {
+    final prefs = await SharedPreferences.getInstance();
+    final orders = <ProviderFamily, List<String>>{};
+    for (final provider in ProviderFamily.values) {
+      final raw = prefs.getString(tabOrderKey(provider));
+      if (raw == null || raw.isEmpty) continue;
+      final names = <String>[
+        for (final name in raw.split('|'))
+          if (provider.tabs.contains(name)) name,
+      ];
+      if (names.isEmpty) continue;
+      // 未来新增的 tab 追加到自定义顺序尾部。
+      for (final name in provider.tabs) {
+        if (!names.contains(name)) names.add(name);
+      }
+      orders[provider] = names;
+    }
+    if (!mounted) return;
+    setState(() => _tabOrders = orders);
+  }
+
+  void _handleTabReorder(ProviderFamily provider, int movedFrom, int movedTo) {
+    final (order, corrected) = applyTabReorder(
+      _tabsFor(provider),
+      _readingTab,
+      movedFrom,
+      movedTo,
+    );
+    setState(() {
+      _tabOrders = {..._tabOrders, provider: order};
+      _readingTab = corrected;
+    });
+    unawaited(
+      SharedPreferences.getInstance().then(
+        (prefs) => prefs.setString(tabOrderKey(provider), order.join('|')),
+      ),
+    );
   }
 
   @override
@@ -334,8 +378,11 @@ class _FletViewerShellState extends State<FletViewerShell> {
           AppSection.browse => _BrowsePage(
             client: _client,
             provider: _provider,
+            tabs: _tabsFor(_provider),
             selectedTab: _readingTab,
             onTabSelected: (index) => setState(() => _readingTab = index),
+            onReorder: (movedFrom, movedTo) =>
+                _handleTabReorder(_provider, movedFrom, movedTo),
             onProviderSelected: _selectProvider,
             showProviderRail: !wide,
             galleryPreference: widget.galleryPreference,
@@ -717,8 +764,10 @@ class _BrowsePage extends StatefulWidget {
   const _BrowsePage({
     required this.client,
     required this.provider,
+    required this.tabs,
     required this.selectedTab,
     required this.onTabSelected,
+    required this.onReorder,
     required this.onProviderSelected,
     required this.showProviderRail,
     required this.galleryPreference,
@@ -726,8 +775,10 @@ class _BrowsePage extends StatefulWidget {
 
   final CoreClient client;
   final ProviderFamily provider;
+  final List<String> tabs;
   final int selectedTab;
   final ValueChanged<int> onTabSelected;
+  final void Function(int movedFrom, int movedTo) onReorder;
   final ValueChanged<ProviderFamily> onProviderSelected;
   final bool showProviderRail;
   final GalleryListPreference galleryPreference;
@@ -772,15 +823,31 @@ class _BrowsePageState extends State<_BrowsePage> {
     widget.onTabSelected(index);
   }
 
+  void _handleReorder(int movedFrom, int movedTo) {
+    // 先同步当前页到重排后的选中位，再让上层更新状态。
+    final (_, corrected) = applyTabReorder(
+      widget.tabs,
+      widget.selectedTab,
+      movedFrom,
+      movedTo,
+    );
+    if (_controller.hasClients) {
+      _controller.jumpToPage(corrected);
+    }
+    widget.onReorder(movedFrom, movedTo);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final tabs = widget.provider.tabs;
+    final tabs = widget.tabs;
     return Column(
       children: [
         _ReadingHeader(
           provider: widget.provider,
+          tabs: tabs,
           selectedTab: widget.selectedTab,
           onTabSelected: _selectTab,
+          onReorder: _handleReorder,
           onProviderSelected: widget.onProviderSelected,
           showProviderPicker: widget.showProviderRail,
         ),
@@ -793,7 +860,7 @@ class _BrowsePageState extends State<_BrowsePage> {
             children: [
               for (var index = 0; index < tabs.length; index++)
                 _KeepAliveTab(
-                  key: ValueKey('${widget.provider.name}-$index'),
+                  key: ValueKey('${widget.provider.name}-${tabs[index]}'),
                   child: _GalleryBrowser(
                     client: widget.client,
                     provider: widget.provider,
@@ -832,24 +899,35 @@ class _KeepAliveTabState extends State<_KeepAliveTab>
   }
 }
 
-class _ReadingHeader extends StatelessWidget {
+class _ReadingHeader extends StatefulWidget {
   const _ReadingHeader({
     required this.provider,
+    required this.tabs,
     required this.selectedTab,
     required this.onTabSelected,
     required this.onProviderSelected,
+    required this.onReorder,
     required this.showProviderPicker,
   });
 
   final ProviderFamily provider;
+  final List<String> tabs;
   final int selectedTab;
   final ValueChanged<int> onTabSelected;
   final ValueChanged<ProviderFamily> onProviderSelected;
+  final void Function(int movedFrom, int movedTo) onReorder;
   final bool showProviderPicker;
 
   @override
+  State<_ReadingHeader> createState() => _ReadingHeaderState();
+}
+
+class _ReadingHeaderState extends State<_ReadingHeader> {
+  @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final provider = widget.provider;
+    final tabs = widget.tabs;
     return Container(
       decoration: BoxDecoration(
         color: colors.surface,
@@ -857,7 +935,7 @@ class _ReadingHeader extends StatelessWidget {
       ),
       child: Column(
         children: [
-          if (showProviderPicker)
+          if (widget.showProviderPicker)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
               child: Align(
@@ -865,7 +943,7 @@ class _ReadingHeader extends StatelessWidget {
                 child: PopupMenuButton<ProviderFamily>(
                   tooltip: '切换 Provider',
                   initialValue: provider,
-                  onSelected: onProviderSelected,
+                  onSelected: widget.onProviderSelected,
                   itemBuilder: (context) => [
                     for (final family in ProviderFamily.values)
                       PopupMenuItem(value: family, child: Text(family.label)),
@@ -882,53 +960,143 @@ class _ReadingHeader extends StatelessWidget {
             child: ListView.separated(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               scrollDirection: Axis.horizontal,
-              itemCount: provider.tabs.length,
+              itemCount: tabs.length,
               separatorBuilder: (_, _) => const SizedBox(width: 4),
               itemBuilder: (context, index) {
-                final selected = index == selectedTab;
-                return TextButton(
-                  key: Key('reading-tab-$index'),
-                  onPressed: () => onTabSelected(index),
-                  style: TextButton.styleFrom(
-                    foregroundColor: selected
-                        ? colors.primary
-                        : colors.onSurfaceVariant,
-                    shape: const RoundedRectangleBorder(),
-                    side: BorderSide(
-                      color: selected ? colors.primary : Colors.transparent,
-                      width: 0,
-                    ),
-                  ),
-                  child: Stack(
-                    alignment: Alignment.bottomCenter,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 5),
-                        child: Text(
-                          provider.tabs[index],
-                          style: TextStyle(
-                            fontWeight: selected
-                                ? FontWeight.w700
-                                : FontWeight.w500,
+                final selected = index == widget.selectedTab;
+                final tab = tabs[index];
+                return DragTarget<int>(
+                  onWillAcceptWithDetails: (details) => details.data != index,
+                  onAcceptWithDetails: (details) {
+                    widget.onReorder(details.data, index);
+                  },
+                  builder: (context, candidate, rejected) {
+                    final highlight = candidate.isNotEmpty;
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 120),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        color: highlight
+                            ? colors.primaryContainer.withValues(alpha: 0.45)
+                            : Colors.transparent,
+                      ),
+                      child: LongPressDraggable<int>(
+                        data: index,
+                        delay: const Duration(milliseconds: 250),
+                        dragAnchorStrategy: pointerDragAnchorStrategy,
+                        feedback: _TabDragFeedback(
+                          tab: tab,
+                          selected: selected,
+                          colors: colors,
+                        ),
+                        childWhenDragging: Opacity(
+                          opacity: 0.35,
+                          child: _ReadingTabButton(
+                            key: Key('reading-tab-$index'),
+                            tab: tab,
+                            selected: selected,
+                            onPressed: () => widget.onTabSelected(index),
                           ),
                         ),
-                      ),
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 160),
-                        width: selected ? 28 : 0,
-                        height: 3,
-                        decoration: BoxDecoration(
-                          color: colors.primary,
-                          borderRadius: BorderRadius.circular(3),
+                        child: _ReadingTabButton(
+                          key: Key('reading-tab-$index'),
+                          tab: tab,
+                          selected: selected,
+                          onPressed: () => widget.onTabSelected(index),
                         ),
                       ),
-                    ],
-                  ),
+                    );
+                  },
                 );
               },
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// One tab button in the reading header tab strip.
+class _ReadingTabButton extends StatelessWidget {
+  const _ReadingTabButton({
+    super.key,
+    required this.tab,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  final String tab;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return TextButton(
+      onPressed: onPressed,
+      style: TextButton.styleFrom(
+        foregroundColor: selected ? colors.primary : colors.onSurfaceVariant,
+        shape: const RoundedRectangleBorder(),
+        side: BorderSide(
+          color: selected ? colors.primary : Colors.transparent,
+          width: 0,
+        ),
+      ),
+      child: Stack(
+        alignment: Alignment.bottomCenter,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 5),
+            child: Text(
+              tab,
+              style: TextStyle(
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            width: selected ? 28 : 0,
+            height: 3,
+            decoration: BoxDecoration(
+              color: colors.primary,
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Floating pill shown while dragging a reading tab.
+class _TabDragFeedback extends StatelessWidget {
+  const _TabDragFeedback({
+    required this.tab,
+    required this.selected,
+    required this.colors,
+  });
+
+  final String tab;
+  final bool selected;
+  final ColorScheme colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 6,
+      borderRadius: BorderRadius.circular(8),
+      color: colors.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        child: Text(
+          tab,
+          style: TextStyle(
+            fontWeight: FontWeight.w700,
+            color: selected ? colors.primary : colors.onSurface,
+          ),
+        ),
       ),
     );
   }

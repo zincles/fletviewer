@@ -162,6 +162,58 @@ void main() {
     expect(client.homeLoads, 2);
   });
 
+  testWidgets('long-press drag reorders reading tabs and persists', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(FletViewerApp(client: client));
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    // 默认顺序：主页 在 订阅 左侧。
+    expect(
+      tester.getTopLeft(find.text('主页').first).dx,
+      lessThan(tester.getTopLeft(find.text('订阅').first).dx),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('订阅').first),
+    );
+    await tester.pump(const Duration(milliseconds: 300)); // 长按起拖
+    await gesture.moveTo(tester.getCenter(find.text('主页').first));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    // 顺序已交换：订阅 现在在 主页 左侧。
+    expect(
+      tester.getTopLeft(find.text('订阅').first).dx,
+      lessThan(tester.getTopLeft(find.text('主页').first).dx),
+    );
+
+    // 顺序持久化到 prefs。
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('tab_order_ehentai'), '订阅|主页|热门|排行榜|收藏|历史');
+
+    // 选中 tab 按身份校正：主页仍选中，keep-alive 状态未丢。
+    expect(find.text('Rust 查询 fixture'), findsOneWidget);
+    expect(client.homeLoads, 1);
+
+    // 重启后从 prefs 恢复自定义顺序。
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(FletViewerApp(client: client));
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(find.text('订阅').first).dx,
+      lessThan(tester.getTopLeft(find.text('主页').first).dx),
+    );
+  });
+
   testWidgets('masonry hides card text by default', (tester) async {
     SharedPreferences.setMockInitialValues({});
     tester.view.physicalSize = const Size(1280, 800);

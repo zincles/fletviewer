@@ -104,6 +104,7 @@ Flutter Web / NAS / CLI -> HTTP + SSE + binary resource/stream -> fvcore executa
 - [x] EH 排行榜接通：官方 `toplist.php`（公开），宽松解析排名/封面/标题；榜单周期切换已真机确认（all-time=11、past year=12、past month=13、yesterday=15）。
 - [x] 无缝加载（`gallery_infinite_scroll`，默认开）：EH/Pixiv 列表滚动到底部自动追加下一页、前一页内容保留、按 gid 去重；关闭时退回分页按钮。Pixiv 已有 append 逻辑 + 滚动触发；EH 用 `_prevCursor/_nextCursor` 双指针。
 - [x] tab 切换改为 `animateToPage` 滑动动画：点 tab 先动画再通知父级；`didUpdateWidget` 不再 `jumpToPage`（保留 Provider 切换重建分支）。
+- [x] 标签拖动排序：长按 250ms 拖动 tab 到目标槽位重排（桌面鼠标/Android 触屏通用），按 provider 持久化到 prefs（`tab_order_<provider>`，新增 tab 自动补尾）；keep-alive key 改为稳定 tab 名（重排不丢状态）；选中 tab 按身份校正 index 并同步 PageView。
 - [ ] 本地画廊 inventory/detail/page 从占位内容替换为真实 Rust 调用（本地端下一步）。
 - [ ] 持续完善 UI 操作逻辑：浏览/阅读/下载的交互细节、状态反馈与桌面体验（长列表性能、键盘操作、图片缩放、错误重试路径）。
 - [x] `flutter analyze`、`flutter test`、Rust gate、Python sidecar probe 和真实 Linux desktop smoke 全部通过。
